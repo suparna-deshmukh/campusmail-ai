@@ -304,7 +304,7 @@ Pages.templates = async function () {
       if (b.dataset.act === "activate") api("/api/templates/" + id + "/activate", { body: {} }).then(() => { toast("Template set active", "ok"); load(); refreshState(); });
       if (b.dataset.act === "polish") {
         b.disabled = true;
-        api("/api/templates/" + id + "/polish", {}).then(() => { toast("Template polished by AI", "ok"); load(); })
+        api("/api/templates/" + id + "/polish", { body: {} }).then(() => { toast("Template polished by AI", "ok"); load(); })
           .catch((err) => toast(err.message, "err"));
       }
       if (b.dataset.act === "del") typeToConfirm("Delete template", "Delete this template? Queued emails already generated keep their rendered bodies.", "DELETE",
@@ -1032,7 +1032,7 @@ Pages.queue = async function () {
       }, "Send now");
   });
   $("#btn-q-trigger").addEventListener("click", async () => {
-    try { await api("/api/scheduler/trigger", {}); toast("Scheduler ticked", "ok"); refreshState(); }
+    try { await api("/api/scheduler/trigger", { body: {} }); toast("Scheduler ticked", "ok"); refreshState(); }
     catch (err) { toast(err.message, "err"); }
   });
   function viewEmail(id) {
@@ -1215,7 +1215,7 @@ Pages.settings = async function () {
   $("#btn-ai-test").addEventListener("click", async () => {
     try {
       await api("/api/settings", { body: { ai_base_url: $("#set-base-url").value, ai_model: $("#set-model").value, ai_api_key: $("#set-key").value || undefined } });
-      const r = await api("/api/ai/test", {});
+      const r = await api("/api/ai/test", { body: {} });
       toast(r.ok ? "AI connection OK (" + (r.model || "") + ")" : "AI test failed: " + (r.error || ""), r.ok ? "ok" : "err");
     } catch (e) { toast(e.message, "err"); }
   });
