@@ -17,6 +17,7 @@
     <button class="btn sm" data-s="sent" data-label="Sent">Sent</button>
     <button class="btn sm" data-s="replied" data-label="Replied">Replied</button>
     <button class="btn sm" data-s="error" data-label="Errors">Errors</button>
+    <button class="btn sm" data-s="cancelled" data-label="Stopped">Stopped</button>
   </div>
   <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     <span class="chip">selected: <span id="q-sel-count">0</span> (empty = pending rows)</span>
@@ -24,7 +25,8 @@
       <select class="input" id="q-account" style="width:auto;padding:4px 8px;font-size:12.5px;margin-left:4px"></select>
     </label>
     <button class="btn" id="btn-q-draft">Create drafts</button>
-    <button class="btn primary" id="btn-q-schedule">Schedule send</button>
+    <button class="btn primary" id="btn-q-schedule">Schedule / Reschedule</button>
+    <button class="btn" id="btn-q-stop">Stop</button>
     <button class="btn danger" id="btn-q-send" disabled>Send now</button>
   </div>
 </div>

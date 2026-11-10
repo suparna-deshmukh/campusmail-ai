@@ -4,6 +4,7 @@ Google login at the front door; team roles and access requests; multiple
 Gmail send-accounts (private or shared); mail merge from Word/HTML templates;
 local scheduler worker.  Run:  python app.py  ->  http://localhost:5001
 """
+import base64
 import csv
 import json
 import mimetypes
@@ -393,6 +394,12 @@ def page_campaigns():
 @login_required
 def page_campaign_detail(cid):
     return render_template("campaigns.html", page="campaigns")
+
+
+@app.route("/assistant")
+@login_required
+def page_assistant():
+    return render_template("assistant.html", page="assistant")
 
 
 @app.route("/local_img/<name>")
@@ -931,7 +938,10 @@ def api_merge_preview():
 @app.route("/api/merge/generate", methods=["POST"])
 @login_required
 def api_merge_generate():
-    d = request.get_json(force=True)
+    return _run_merge(request.get_json(force=True))
+
+
+def _run_merge(d):
     tid = d.get("template_id")
     mapping = d.get("mapping") or {}
     name = (d.get("name") or "").strip() or "Batch " + datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1030,6 +1040,8 @@ def api_merge_generate():
                       (account_id, t.isoformat(), eid))
             c.execute("UPDATE contacts SET status='scheduled' WHERE id=(SELECT contact_id FROM emails WHERE id=?)", (eid,))
         c.commit()
+        for eid in eids:
+            _cloud_push_email(eid, "scheduled")
         extra.update(scheduled=len(eids),
                      last=(when + timedelta(minutes=stagger * max(0, len(eids) - 1))).isoformat())
     elif action == "send":
@@ -1371,6 +1383,7 @@ def api_emails_draft():
             c.execute("UPDATE emails SET status='drafted', account_id=?, error='' WHERE id=?", (account_id, eid))
             c.execute("UPDATE contacts SET status='drafted' WHERE id=?", (r["contact_id"],))
             made += 1
+            _cloud_push_email(eid, "drafted")
         except Exception as e:
             c.execute("UPDATE emails SET status='error', error=? WHERE id=?", (str(e)[:300], eid))
             failed += 1
@@ -1413,6 +1426,8 @@ def api_emails_schedule():
         c.execute("UPDATE contacts SET status='scheduled' WHERE id=(SELECT contact_id FROM emails WHERE id=?)", (eid,))
         n += 1
     c.commit()
+    for eid in ids:
+        _cloud_push_email(eid, "scheduled")
     log("schedule", str(n) + " emails scheduled for " + when_str + " (stagger " + str(stagger) + " min, account " + str(account_id) + ")")
     c.close()
     return jsonify({"ok": True, "scheduled": n, "first": when.isoformat(),
@@ -1681,10 +1696,102 @@ def reminders_tick():
 
 
 
+# ---------------- cloud relay sync ----------------
+
+def _cloud_cfg():
+    url = (db.get_setting("cloud_relay_url", "") or "").strip().rstrip("/")
+    secret = (db.get_setting("cloud_relay_secret", "") or "").strip()
+    return url, secret
+
+
+def _relay_enabled():
+    url, secret = _cloud_cfg()
+    return bool(url and secret)
+
+
+def _cloud_push_email(email_id, status=None):
+    """Best-effort: mirror one email row to the cloud relay (which sends it)."""
+    url, secret = _cloud_cfg()
+    if not url or not secret:
+        return
+    c = db.conn()
+    r = c.execute("SELECT * FROM emails WHERE id=?", (email_id,)).fetchone()
+    if not r:
+        c.close()
+        return
+    r = dict(r)
+    batch = c.execute("SELECT * FROM batches WHERE id=?", (r["batch_id"],)).fetchone()
+    cam = None
+    if batch and (batch["campaign_id"] or 0):
+        cam = c.execute("SELECT name FROM campaigns WHERE id=?", (batch["campaign_id"],)).fetchone()
+    c.close()
+    # the relay has no local image files - send fully rendered HTML
+    try:
+        r["body_html"] = gmail_client.inline_local_images(r["body_html"])
+    except Exception:
+        pass
+    atts = []
+    if batch:
+        for aname, abyte, amime in _load_attachments(dict(batch)):
+            atts.append({"name": aname, "mime": amime,
+                         "b64": base64.b64encode(abyte).decode("ascii")})
+    payload = {"emails": [{
+        "local_id": r["id"], "account_id": r["account_id"], "to_addr": r["to_addr"],
+        "cc": (batch or {}).get("cc", ""), "subject": r["subject"],
+        "body_html": r["body_html"], "attachments": atts,
+        "status": status or r["status"], "scheduled_at": r["scheduled_at"],
+        "batch_name": (batch or {}).get("name", "") if batch else "",
+        "campaign_name": cam["name"] if cam else "",
+        "is_reminder": r["is_reminder"], "serial": r["serial"],
+        "sent_at": r["sent_at"], "message_id": r["message_id"], "error": r["error"],
+    }]}
+    try:
+        req = urllib.request.Request(url + "/api/emails",
+                                     data=json.dumps(payload).encode("utf-8"),
+                                     headers={"Content-Type": "application/json",
+                                              "x-relay-secret": secret}, method="POST")
+        urllib.request.urlopen(req, timeout=10)
+    except Exception:
+        pass
+
+
+def relay_status_pull():
+    """Pull send results back from the cloud relay into the local DB."""
+    url, secret = _cloud_cfg()
+    if not url or not secret:
+        return
+    try:
+        req = urllib.request.Request(url + "/api/status", headers={"x-relay-secret": secret})
+        data = json.loads(urllib.request.urlopen(req, timeout=10).read().decode("utf-8"))
+    except Exception as e:
+        db.log_activity("relay_pull_error", str(e)[:150], "scheduler")
+        return
+    c = db.conn()
+    for e in data.get("emails", []):
+        lid, st = e.get("local_id"), e.get("status")
+        if not lid or st not in ("sent", "error", "scheduled", "cancelled", "drafted"):
+            continue
+        c.execute("UPDATE emails SET status=?, error=? WHERE id=?",
+                  (st, e.get("error") or "", lid))
+        if st == "sent":
+            sent_at, mid = e.get("sent_at") or None, e.get("message_id") or ""
+            if mid:
+                c.execute("UPDATE emails SET sent_at=COALESCE(?, sent_at), message_id=? WHERE id=?", (sent_at, mid, lid))
+            elif sent_at:
+                c.execute("UPDATE emails SET sent_at=COALESCE(?, sent_at) WHERE id=?", (sent_at, lid))
+            c.execute("UPDATE contacts SET status='sent' WHERE id=(SELECT contact_id FROM emails WHERE id=?)", (lid,))
+    c.commit()
+    c.close()
+
+
 def scheduler_tick():
     SCHEDULER_STATE["last_tick"] = time.strftime("%Y-%m-%d %H:%M:%S")
     if db.get_setting("safe_mode") == "1":
         return
+    if _relay_enabled():
+        relay_status_pull()
+        return
+
     now = datetime.now().astimezone()
     now_iso_str = now.isoformat()
     c = db.conn()
@@ -1784,16 +1891,54 @@ def api_settings_get():
     return jsonify({"ok": True, "settings": s})
 
 
+@app.route("/api/settings/relay-pack")
+@login_required
+def api_settings_relay_pack():
+    """One-click pack of the 5 values needed to configure the Cloudflare relay."""
+    if request.user["role"] != "admin":
+        return api_err("Only the admin can view the relay setup pack.", 403)
+    account_id = int(request.args.get("account_id") or 0)
+    c = db.conn()
+    acc = c.execute("SELECT * FROM gmail_accounts WHERE id=?", (account_id,)).fetchone()
+    c.close()
+    if not acc:
+        return api_err("Pick a connected Gmail account first.", 409)
+    acc = dict(acc)
+    secret = (db.get_setting("cloud_relay_secret", "") or "").strip()
+    if not secret:
+        import secrets as _s
+        secret = _s.token_urlsafe(32)
+        db.set_setting("cloud_relay_secret", secret)
+        log("relay", "Relay secret generated")
+    tok = {}
+    try:
+        tok = json.loads(db.account_token_json(acc["id"]) or "{}")
+    except Exception:
+        tok = {}
+    if not tok.get("refresh_token"):
+        return api_err("This account has no refresh token saved. Reconnect the Gmail account first.", 409)
+    if not (db.get_setting("google_client_id", "") or "").strip():
+        return api_err("Paste the Gmail client JSON in Settings first (needed for GMAIL_CLIENT_ID / SECRET).", 409)
+    return jsonify({"ok": True, "pack": {
+        "RELAY_SECRET": secret,
+        "GMAIL_CLIENT_ID": db.get_setting("google_client_id", "").strip(),
+        "GMAIL_CLIENT_SECRET": db.get_setting("google_client_secret", "").strip(),
+        "GMAIL_SENDER_EMAIL": acc["email"] or "",
+        "GMAIL_REFRESH_TOKEN": tok.get("refresh_token", ""),
+    }})
+
+
 @app.route("/api/settings", methods=["POST"])
 @login_required
 def api_settings_post():
     d = request.get_json(force=True)
     u = request.user
     for k in ("safe_mode", "max_sends_per_day", "default_stagger_min", "catchup_policy",
-              "ai_base_url", "ai_model", "ai_enabled"):
+              "ai_base_url", "ai_model", "ai_enabled", "cloud_relay_url"):
         if k in d:
             db.set_setting(k, d[k])
-    for k in ("ai_api_key", "google_client_id", "google_client_secret", "client_secret_json", "admin_email"):
+    for k in ("ai_api_key", "google_client_id", "google_client_secret", "client_secret_json",
+              "admin_email", "cloud_relay_secret"):
         if k in d and u["role"] == "admin":
             db.set_setting(k, d[k])
     log("settings", "Settings updated")
@@ -1830,6 +1975,270 @@ def api_ai_mapping():
     except Exception as e:
         return api_err("AI request failed: " + str(e), 502)
     return jsonify({"ok": True, "mapping": mapping})
+
+
+# ---------------- AI assistant (chat + agentic) ----------------
+
+AI_TOOLS = [
+    {"type": "function", "function": {"name": "list_campaigns",
+     "description": "List all campaigns with ids and names.",
+     "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "create_campaign",
+     "description": "Create a new campaign to group outreach work.",
+     "parameters": {"type": "object", "properties": {
+         "name": {"type": "string"}, "description": {"type": "string"}},
+         "required": ["name"]}}},
+    {"type": "function", "function": {"name": "list_templates",
+     "description": "List email templates with id, name, subject and replaceable fields.",
+     "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "get_template",
+     "description": "Get one template's full subject and body HTML.",
+     "parameters": {"type": "object", "properties": {
+         "id": {"type": "integer"}}, "required": ["id"]}}},
+    {"type": "function", "function": {"name": "create_template",
+     "description": "Create a new email template. body_html MUST be real HTML markup (for example '<p>Dear {recruiter_name}, Thank you ...</p>'), never a plain-text description of the body. Per-recipient values use {field} placeholders like {recruiter_name}. Use inline styles only.",
+     "parameters": {"type": "object", "properties": {
+         "name": {"type": "string"}, "subject": {"type": "string"}, "body_html": {"type": "string"}},
+         "required": ["name", "subject", "body_html"]}}},
+    {"type": "function", "function": {"name": "list_sheets",
+     "description": "List uploaded data sheets with ids, columns and row counts.",
+     "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "queue_batch",
+     "description": "Generate a batch of emails from a template + data (sheet_id, or blank for the main contact list). action: 'queue' (hold), 'draft' (Gmail drafts) or 'schedule' (automatic send at 'at', format YYYY-MM-DD HH:MM local, at least 30 min ahead). Never sends immediately.",
+     "parameters": {"type": "object", "properties": {
+         "campaign_id": {"type": "integer"}, "template_id": {"type": "integer"},
+         "sheet_id": {"type": "integer"}, "serial_from": {"type": "integer"}, "serial_to": {"type": "integer"},
+         "action": {"type": "string", "enum": ["queue", "draft", "schedule"]},
+         "at": {"type": "string"}, "stagger": {"type": "integer"}, "name": {"type": "string"}},
+         "required": ["template_id", "action"]}}},
+    {"type": "function", "function": {"name": "list_emails",
+     "description": "List recent queue emails with id, to, subject and status.",
+     "parameters": {"type": "object", "properties": {
+         "status": {"type": "string"}, "limit": {"type": "integer"}}}}},
+    {"type": "function", "function": {"name": "cancel_emails",
+     "description": "Stop queue/scheduled emails so they will not be sent.",
+     "parameters": {"type": "object", "properties": {
+         "ids": {"type": "array", "items": {"type": "integer"}}}, "required": ["ids"]}}},
+    {"type": "function", "function": {"name": "reschedule_emails",
+     "description": "Move queue/scheduled emails to a new time (YYYY-MM-DD HH:MM local, at least 30 min ahead).",
+     "parameters": {"type": "object", "properties": {
+         "ids": {"type": "array", "items": {"type": "integer"}},
+         "at": {"type": "string"}, "stagger": {"type": "integer"}},
+         "required": ["ids", "at"]}}},
+]
+
+
+def _assistant_context():
+    c = db.conn()
+    camps = [dict(r) for r in c.execute("SELECT * FROM campaigns ORDER BY id").fetchall()]
+    tpls = [dict(r) for r in c.execute("SELECT * FROM email_templates ORDER BY id").fetchall()]
+    sheets = [dict(r) for r in c.execute("SELECT * FROM sheets ORDER BY id").fetchall()]
+    all_accts = [dict(r) for r in c.execute("SELECT * FROM gmail_accounts").fetchall()]
+    usable = [a for a in all_accts if db.account_for(request.user["id"], a["id"]) and db.account_token_json(a["id"])]
+    st = {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM emails GROUP BY status").fetchall()}
+    c.close()
+    safe = db.get_setting("safe_mode") == "1"
+    return "\n".join([
+        "You are the built-in assistant of MailForge, a CRM for the outreach team.",
+        "You help by chatting and by doing safe actions directly in the platform: creating campaigns and templates, "
+        "planning batches (queue / Gmail drafts / scheduled sends), stopping or rescheduling emails, and reporting status.",
+        "Hard rules: you can NEVER send emails immediately and must never claim you sent something. If the user asks to "
+        "send now, explain that live sending is a manual step in Queue and Schedule (and needs Safe mode OFF).",
+        "If an action is missing a detail (which sheet, which time, which template, how many rows), ask ONE short "
+        "question instead of guessing.",
+        "Be concise and friendly. After doing something, state exactly what was done (names, counts, times).",
+        "",
+        "Current context:",
+        "- Signed in: " + request.user["email"] + " (" + (request.user.get("role") or "user") + ")",
+        "- Safe mode: " + ("ON (only queue/draft/schedule possible)" if safe else "OFF"),
+        "- Gmail send accounts available: " + (", ".join(a["email"] + " (id " + str(a["id"]) + ")" for a in usable) or "none"),
+        "- Campaigns: " + (", ".join(str(x["id"]) + " " + x["name"] for x in camps) or "none"),
+        "- Templates: " + (", ".join(str(x["id"]) + " " + x["name"] + " [" + ", ".join(json.loads(x["fields"] or "[]")) + "]" for x in tpls) or "none"),
+        "- Data sheets: " + (", ".join(str(x["id"]) + " " + x["name"] + " (" + str(x["n_rows"]) + " rows: " + ", ".join(json.loads(x["headers"] or "[]")) + ")" for x in sheets) or "none"),
+        "- Email queue counts: " + (", ".join(k + "=" + str(v) for k, v in sorted(st.items())) or "empty"),
+        "- Local date/time: " + datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"),
+    ])
+
+
+def _exec_tool(name, a):
+    c = db.conn()
+    try:
+        if name == "list_campaigns":
+            return {"ok": True, "campaigns": [
+                {"id": x["id"], "name": x["name"]} for x in c.execute("SELECT id, name FROM campaigns ORDER BY id").fetchall()]}
+        if name == "create_campaign":
+            nm = (a.get("name") or "").strip()
+            if not nm:
+                return {"ok": False, "error": "name required"}
+            c.execute("INSERT INTO campaigns(name, description, created_by, created_at) VALUES(?,?,?,?)",
+                      (nm, (a.get("description") or "").strip(), request.user["email"], db.now_iso()))
+            cid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+            c.commit()
+            db.log_activity("campaign_create", nm + " (by AI assistant)", "ai")
+            return {"ok": True, "id": cid, "name": nm}
+        if name == "list_templates":
+            return {"ok": True, "templates": [
+                {"id": x["id"], "name": x["name"], "subject": x["subject"],
+                 "fields": json.loads(x["fields"] or "[]"), "active": bool(x["is_active"])}
+                for x in c.execute("SELECT * FROM email_templates ORDER BY id").fetchall()]}
+        if name == "get_template":
+            x = c.execute("SELECT * FROM email_templates WHERE id=?", (int(a.get("id") or 0),)).fetchone()
+            if not x:
+                return {"ok": False, "error": "template not found"}
+            return {"ok": True, "id": x["id"], "name": x["name"], "subject": x["subject"], "body_html": x["body_html"]}
+        if name == "create_template":
+            nm = (a.get("name") or "AI template " + datetime.now().strftime("%Y-%m-%d %H:%M")).strip()
+            subj = (a.get("subject") or "").strip()
+            body = (a.get("body_html") or "").strip()
+            if not subj or not body:
+                return {"ok": False, "error": "subject and body_html are required"}
+            fields = all_fields(subj, body)
+            c.execute("INSERT INTO email_templates(name, type, subject, body_html, fields, is_active) VALUES(?,?,?,?,?,0)",
+                      (nm, "html", subj, body, json.dumps(fields)))
+            tid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+            c.commit()
+            db.log_activity("template_add", nm + " (by AI assistant)", "ai")
+            return {"ok": True, "id": tid, "name": nm, "fields": fields}
+        if name == "list_sheets":
+            return {"ok": True, "sheets": [
+                {"id": x["id"], "name": x["name"], "n_rows": x["n_rows"],
+                 "columns": json.loads(x["headers"] or "[]")}
+                for x in c.execute("SELECT * FROM sheets ORDER BY id").fetchall()]}
+        if name == "queue_batch":
+            t = c.execute("SELECT * FROM email_templates WHERE id=?", (int(a.get("template_id") or 0),)).fetchone()
+            if not t:
+                return {"ok": False, "error": "template not found"}
+            if int(a.get("sheet_id") or 0):
+                sh = c.execute("SELECT * FROM sheets WHERE id=?", (int(a["sheet_id"]),)).fetchone()
+                if not sh:
+                    return {"ok": False, "error": "sheet not found"}
+                cols = json.loads(sh["headers"] or "[]")
+            else:
+                cols = ["serial", "company", "hr_name", "hr_email"]
+            mapping = {k: "column:" + v for k, v in
+                       docx_convert.suggest_mapping(json.loads(t["fields"] or "[]"), cols).items() if v}
+            acct = 0
+            if a.get("action") in ("draft", "schedule"):
+                last = last_account_for(request.user["id"])
+                if db.account_for(request.user["id"], last) and db.account_token_json(last):
+                    acct = last
+                else:
+                    for x in c.execute("SELECT id FROM gmail_accounts ORDER BY id").fetchall():
+                        if db.account_for(request.user["id"], x["id"]) and db.account_token_json(x["id"]):
+                            acct = x["id"]
+                            break
+                if not acct:
+                    return {"ok": False, "error": "no connected Gmail send account available"}
+            d = {
+                "template_id": t["id"], "action": a.get("action") or "queue",
+                "sheet_id": int(a.get("sheet_id") or 0), "campaign_id": int(a.get("campaign_id") or 0),
+                "serial_from": a.get("serial_from"), "serial_to": a.get("serial_to"),
+                "at": a.get("at") or "", "stagger": int(a.get("stagger") or 0),
+                "name": (a.get("name") or "").strip() or "AI batch " + datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "mapping": mapping, "account_id": acct,
+            }
+            res = _run_merge(d)
+            if res.status_code != 200:
+                return {"ok": False, "error": (res.get_json() or {}).get("error", "merge failed")}
+            out = res.get_json() or {}
+            out.pop("ok", None)
+            return out
+        if name == "list_emails":
+            rows = _email_rows({"status": a.get("status") or "", "limit": min(int(a.get("limit") or 20), 50)})
+            return {"ok": True, "emails": [
+                {"id": r["id"], "serial": r["serial"], "to": r["to_addr"], "subject": r["subject"],
+                 "status": r["status"], "scheduled_at": r["scheduled_at"], "sent_at": r["sent_at"]} for r in rows]}
+        if name == "cancel_emails":
+            ids = [int(i) for i in (a.get("ids") or [])][:200]
+            if not ids:
+                return {"ok": False, "error": "no ids given"}
+            n = 0
+            for i in ids:
+                r = c.execute("SELECT id, status FROM emails WHERE id=?", (i,)).fetchone()
+                if r and r["status"] in ("scheduled", "pending"):
+                    c.execute("UPDATE emails SET status='cancelled', scheduled_at=NULL, error='' WHERE id=?", (i,))
+                    n += 1
+            c.commit()
+            db.log_activity("emails_cancel", "Stopped " + str(n) + " (by AI assistant)", "ai")
+            for i in ids:
+                _cloud_push_email(i, "cancelled")
+            return {"ok": True, "cancelled": n}
+        if name == "reschedule_emails":
+            ids = [int(i) for i in (a.get("ids") or [])][:200]
+            when_str = (a.get("at") or "").strip()
+            if not ids or not when_str:
+                return {"ok": False, "error": "ids and at are required"}
+            try:
+                when = datetime.strptime(when_str, "%Y-%m-%d %H:%M").replace(tzinfo=datetime.now().astimezone().tzinfo)
+            except ValueError:
+                return {"ok": False, "error": "time format must be YYYY-MM-DD HH:MM"}
+            now = datetime.now().astimezone()
+            if when < now + timedelta(minutes=30):
+                return {"ok": False, "error": "time must be at least 30 minutes in the future"}
+            if when > now + timedelta(days=45):
+                return {"ok": False, "error": "up to 45 days ahead only"}
+            stagger = int(a.get("stagger") or 0)
+            n = 0
+            for i, eid in enumerate(ids):
+                r = c.execute("SELECT id, status FROM emails WHERE id=?", (eid,)).fetchone()
+                if r and r["status"] in ("scheduled", "pending"):
+                    t = when + timedelta(minutes=stagger * i)
+                    c.execute("UPDATE emails SET status='scheduled', scheduled_at=?, error='' WHERE id=?", (t.isoformat(), eid))
+                    n += 1
+            c.commit()
+            for eid in ids:
+                _cloud_push_email(eid, "scheduled")
+            db.log_activity("schedule", "AI rescheduled " + str(n) + " to " + when_str, "ai")
+            return {"ok": True, "rescheduled": n, "first": when.isoformat()}
+        return {"ok": False, "error": "unknown tool " + name}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+    finally:
+        c.close()
+
+
+@app.route("/api/ai/chat", methods=["POST"])
+@login_required
+def api_ai_chat():
+    if not ai_client.ai_configured():
+        return api_err("Set an AI key in Settings first.", 409)
+    d = request.get_json(force=True)
+    msgs = d.get("messages") or []
+    if not msgs:
+        return api_err("Empty conversation.")
+    full = [{"role": "system", "content": _assistant_context()}]
+    for m in msgs[-20:]:
+        if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip():
+            full.append({"role": m["role"], "content": m["content"]})
+    events, reply = [], ""
+    try:
+        for _step in range(5):
+            msg = ai_client.chat_raw(full, max_tokens=1500, temperature=0.4, tools=AI_TOOLS)
+            tcs = msg.get("tool_calls") or []
+            if not tcs:
+                reply = (msg.get("content") or "").strip()
+                break
+            full.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tcs})
+            for tc in tcs:
+                fn = tc.get("function", {})
+                nm = fn.get("name", "")
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except Exception:
+                    args = {}
+                res = _exec_tool(nm, args)
+                events.append({"tool": nm, "result": res})
+                db.log_activity("ai_tool", nm + " -> " + json.dumps(res)[:140], "ai")
+                full.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                             "content": json.dumps(res)[:4000]})
+        else:
+            reply = reply or "Done - the actions I took are listed above the message."
+    except Exception as e:
+        if events:
+            return jsonify({"ok": True, "reply": "The action was carried out (see the action chips above), but I "
+                                    "could not generate my summary. " + str(e)[:120], "events": events})
+        return api_err("AI request failed: " + str(e)[:200], 502)
+    return jsonify({"ok": True, "reply": reply, "events": events})
 
 
 # ---------------- activity ----------------

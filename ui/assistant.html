@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}AI Assistant - MailForge{% endblock %}
+{% block page_title %}AI Assistant{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">Chat with the platform. It can create campaigns and templates, plan mail merges (queue, Gmail drafts, or scheduled sends), stop or reschedule emails, and report on how things are going. It <b>never sends anything</b> without your manual step.</p>
+    <div id="chat-log" style="max-height:520px;overflow:auto;padding:14px;border:1px solid var(--border);border-radius:10px;background:#fafbfc"></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <textarea class="input" id="chat-input" rows="1" placeholder='e.g. "Schedule the first 5 rows of my newest sheet for tomorrow 10:30 as drafts"' style="flex:1;resize:vertical"></textarea>
+      <button class="btn primary" id="chat-send">Send</button>
+    </div>
+    <div id="chat-sugg" style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap"></div>
+  </div>
+</div>
+{% endblock %}

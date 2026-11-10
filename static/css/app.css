@@ -112,6 +112,7 @@ body > .main { margin-left: 236px; min-height: 100vh; display: flex; flex-direct
 .pill.sent { background: var(--success-bg); color: #15803d; }
 .pill.error { background: var(--danger-bg); color: #b91c1c; }
 .pill.deleted { background: #f8fafc; color: #cbd5e1; text-decoration: line-through; }
+.pill.cancelled { background: #f1f5f9; color: #64748b; }
 
 /* ---------- cards ---------- */
 .card {

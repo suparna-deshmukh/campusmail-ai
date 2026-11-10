@@ -101,6 +101,8 @@ DEFAULT_SETTINGS = {
     "google_client_id": "",
     "google_client_secret": "",
     "admin_email": "",
+    "cloud_relay_url": "",
+    "cloud_relay_secret": "",
 }
 
 COLUMN_ALIASES = {

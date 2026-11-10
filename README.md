@@ -133,12 +133,20 @@ field-mapping suggestions. Everything works fine without it.
    - **Schedule send** → `YYYY-MM-DD HH:MM` local time + optional stagger (minutes between
      emails). The built-in worker sends them at that moment from the chosen account.
    - **Send now** → only when **Safe mode** is OFF (Settings), and it asks you to type SEND.
-   - Open any row (**View**) to see the rendered email, **mark it replied**, or let
-     **AI polish** it (subject + body, saved on confirm).
+   - **Stop / Reschedule / Delete / Save as draft** — full control over scheduled rows,
+     individually or in bulk (a "Stopped" tab keeps the ones you halted).
+   - Open any row (**View**) to see the rendered email, **mark it replied**, **Reply**
+     (opens a pre-filled compose; in safe mode it lands as a Gmail draft), get an
+     **AI-suggested reply**, or let **AI polish** it (subject + body, saved on confirm).
 6. **Outreach Reports** — everything bucketised: sends per day (14-day chart), pipeline
    buckets, top companies with reply rates, and a table of **every** email (searchable,
    CSV-exportable). Replies are detected automatically by checking the sender's inbox for a
    reply to each sent message; you can also mark them by hand.
+7. **AI Assistant** (nav → AI Assistant) — a normal chat box (your AI key from Settings).
+   Ask for status ("how many are sent this week?"), or let it act: it can create
+   campaigns and templates, list sheets, and even **generate + schedule batches from a
+   serial range** (it never sends immediately). After the first message it behaves like
+   a regular chat with memory of the conversation.
 
 ### Safety rails (Settings → Sending rules)
 
@@ -151,21 +159,38 @@ field-mapping suggestions. Everything works fine without it.
 
 ---
 
-## 5. Cloud / "send while I'm away" options
+## 5. Cloud scheduler — send while the laptop is off (built-in, $0)
 
-The scheduler lives inside the app, so the simplest reliable options are:
+The platform ships with a **cloud relay** (`cloud/`, a Cloudflare Worker + D1 + R2) that
+holds scheduled emails and sends them at the exact minute, 24/7 — no laptop, no VPS.
 
-1. **Leave it running** on an always-on lab machine (recommended to start — zero cost).
-2. **Same app on a small VPS** (any $5/mo Linux box: run.sh, Python 3.9+). You get 24/7
-   scheduling and reply-detection; expose the port only to the team (SSH tunnel or a
-   reverse proxy). The Google redirect URIs would need to include the server address
-   (add e.g. `https://mailforge.yourdomain/api/google/callback` as a second authorized URI).
-3. **Managed hosting (Cloud Run / small container)**: wrap the same Flask app; store the
-   `data/` folder on persistent disk. Works, but the OAuth callbacks and "always on" needs
-   make a plain VPS the least-friction choice for a small team.
+**Set it up once (10–15 minutes, step-by-step in `cloud/README-CLOUD.md`):**
 
-A separate queue service (SQS/BullMQ etc.) would only help at far larger scale — for a
-outreach cell, the in-app worker with the daily cap is the right size.
+1. Free Cloudflare account → `npx wrangler login` (one browser click).
+2. Create the D1 database + R2 bucket (two commands), point `wrangler.toml` at them.
+3. In Settings → **Cloud scheduler**, click **"Show relay setup values"** — it shows the
+   5 values (relay secret, Gmail client id/secret, sender email, refresh token) with copy
+   buttons; paste each with `npx wrangler secret put …`.
+4. `npx wrangler deploy`, then paste the relay URL + secret back into Settings →
+   the chip turns **relay ON**.
+
+With the relay ON:
+
+- Scheduling, **stop / reschedule / delete / save-as-draft** all happen in the platform
+  and are mirrored to the cloud instantly — stop it here and it won't send there.
+- Send results (status, error, message-id → replies are still detected) flow back to the
+  queue automatically.
+- Clear the relay URL + secret in Settings to go back to 100%-local scheduling.
+
+**Limits to know:** the relay sends up to 10 emails/minute (an 800-mail batch at 1-min
+stagger goes out exactly on schedule; 0-min stagger drains over ~80 min). Auto follow-up
+**reminders run on the platform**, so keep it running during reminder windows. Safe mode
+still blocks everything, cloud included.
+
+If you'd rather not use the relay, the alternatives are: leave it running on an
+always-on machine, or run the same app on a small VPS (any $5/mo box, Python 3.9+;
+the Google redirect URIs would need the server address added). For a outreach cell,
+the relay or a plain VPS are the right size — no big queue infrastructure needed.
 
 ---
 
@@ -194,7 +219,8 @@ gmail_client.py   Gmail OAuth + drafts/send, attachments, reply detection
 docx_convert.py   Word → email HTML (bold, colour, bullets, links, images), field detection
 ai_client.py      OpenAI-compatible AI calls (writer, polisher, subject improver, mapping)
 ui/               Jinja pages (login, dashboard, contacts, templates, merge, queue, reports,
-                  guide, activity, settings, admin)
+                  guide, activity, settings, admin, AI assistant)
+cloud/            Cloudflare relay: worker + D1 schema + wrangler config + README-CLOUD.md
 static/           app.css, app.js (vanilla JS), img/guide/ (step screenshots)
 seed_template/    bundled template + subject + signature image (used on a brand-new DB)
 template_images/  images from templates/signatures (stored once, inlined at send time)

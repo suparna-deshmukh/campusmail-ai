@@ -897,6 +897,9 @@ Pages.queue = async function () {
       (r.reminder_count ? " <br>reminders sent: " + r.reminder_count : "") +
       (r.error ? "<br><span style='color:var(--danger)'>" + esc(r.error.slice(0, 60)) + "</span>" : "") + "</td>" +
       "<td style='white-space:nowrap'><button class='btn sm ghost' data-view='" + r.id + "'>View</button> " +
+      ((r.status === "scheduled" || r.status === "pending") ? "<button class='btn sm ghost' data-stop='" + r.id + "'>Stop</button> " : "") +
+      (r.status === "scheduled" ? "<button class='btn sm ghost' data-resch='" + r.id + "'>Reschedule</button> " : "") +
+      ((r.status === "sent" || r.status === "replied") ? "<button class='btn sm ghost' data-reply='" + r.id + "'>Reply</button> " : "") +
       "<button class='btn sm ghost' data-del='" + r.id + "'>Remove</button></td></tr>"
     ).join("") : "<tr><td colspan='7' class='muted'>Queue is empty - generate a batch in Mail Merge first.</td></tr>";
     $all(".q-sel").forEach((cb) => cb.addEventListener("change", () => {
@@ -908,6 +911,15 @@ Pages.queue = async function () {
     $all("[data-del]").forEach((b) => b.addEventListener("click", () => {
       typeToConfirm("Remove from queue", "Remove this email from the queue? It will not be sent or drafted.", "DELETE",
         () => api("/api/emails/delete", { body: { ids: [+b.dataset.del] } }).then(() => { toast("Removed", "ok"); load(); refreshState(); }), "Remove");
+    }));
+    $all("[data-stop]").forEach((b) => b.addEventListener("click", () => {
+      typeToConfirm("Stop sending", "This email will be stopped - it will NOT be sent or drafted. You can draft or delete it later.", "STOP",
+        () => api("/api/emails/cancel", { body: { ids: [+b.dataset.stop] } }).then(() => { toast("Stopped", "ok"); load(); refreshState(); }), "Stop");
+    }));
+    $all("[data-resch]").forEach((b) => b.addEventListener("click", () => openScheduleModal([+b.dataset.resch])));
+    $all("[data-reply]").forEach((b) => b.addEventListener("click", () => {
+      const r = state.rows.find((x) => x.id === +b.dataset.reply);
+      if (r) replyModal(r);
     }));
     $("#select-all").onchange = (e) => {
       state.sel = e.target.checked ? new Set(state.rows.map((r) => r.id)) : new Set();
@@ -931,11 +943,10 @@ Pages.queue = async function () {
         load(); refreshState();
       }, "Create drafts");
   });
-  $("#btn-q-schedule").addEventListener("click", () => {
+  function openScheduleModal(ids) {
     const accountId = requireAccount($("#q-account"));
     if (!accountId) return;
-    const ids = selectedOrFilter();
-    if (!ids.length) return toast("Nothing to schedule (select rows or have pending emails)", "err");
+    if (!ids.length) return toast("Nothing to schedule", "err");
     const defStagger = STATE ? STATE.settings.default_stagger_min : "0";
     Modal.open("Schedule send",
       '<div class="field"><label>Send at (local time)</label><input class="input" id="sch-when" placeholder="YYYY-MM-DD HH:MM   e.g. 2026-11-12 10:30"></div>' +
@@ -959,7 +970,53 @@ Pages.queue = async function () {
         load(); refreshState();
       } catch (err) { toast(err.message, "err"); }
     });
+  }
+  $("#btn-q-schedule").addEventListener("click", () => openScheduleModal(selectedOrFilter()));
+  $("#btn-q-stop").addEventListener("click", () => {
+    let ids = state.sel.size ? Array.from(state.sel) : state.rows.map((r) => r.id);
+    ids = ids.filter((id) => {
+      const r = state.rows.find((x) => x.id === id);
+      return r && (r.status === "scheduled" || r.status === "pending");
+    });
+    if (!ids.length) return toast("Nothing to stop - select scheduled or pending rows", "err");
+    typeToConfirm("Stop sending", "Stops <b>" + ids.length + "</b> email(s) - they will NOT be sent or drafted. You can draft or delete them later.", "STOP",
+      async () => {
+        const d = await api("/api/emails/cancel", { body: { ids: ids } });
+        toast(d.cancelled + " stopped", "ok");
+        load(); refreshState();
+      }, "Stop");
   });
+  function replyModal(r) {
+    Modal.open("Reply to " + r.to_addr,
+      "<div class='hint' style='margin-top:0'>Subject: <b>Re: " + esc(r.subject) + "</b></div>" +
+      "<div class='field'><label>Your reply</label><textarea class='input' id='rep-body' rows='7' placeholder='Write your reply...'></textarea></div>" +
+      "<div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap'>" +
+      "<button class='btn ai sm' id='rep-ai'>&#10022; Draft with AI</button>" +
+      "<span class='hint'>" + (window.__safeMode ? "Safe mode ON - it will be saved as a Gmail draft (nothing is sent)." : "Sends from the selected account.") + "</span></div>",
+      "<button class='btn ghost' data-close>Cancel</button><button class='btn primary' id='rep-go'>" + (window.__safeMode ? "Save as draft" : "Send reply") + "</button>");
+    $("#rep-ai").addEventListener("click", async () => {
+      $("#rep-ai").disabled = true;
+      try {
+        const d = await api("/api/emails/" + r.id + "/reply-suggest", { body: {} });
+        const ta = $("#rep-body");
+        ta.value = d.draft;
+        ta.focus();
+      } catch (e) { toast(e.message, "err"); }
+      $("#rep-ai").disabled = false;
+    });
+    $("#rep-go").addEventListener("click", async () => {
+      const body = $("#rep-body").value.trim();
+      if (!body) return toast("Write the reply first", "err");
+      const accountId = requireAccount($("#q-account"));
+      if (!accountId) return;
+      try {
+        const d = await api("/api/emails/" + r.id + "/reply", { body: { body: body, account_id: accountId } });
+        Modal.close();
+        toast(d.drafted ? "Reply saved as a Gmail draft" : "Reply sent", "ok");
+        load(); refreshState();
+      } catch (e) { toast(e.message, "err"); }
+    });
+  }
   $("#btn-q-send").addEventListener("click", () => {
     if (window.__safeMode) return toast("Safe mode is ON - turn it off in Settings first", "err");
     const accountId = requireAccount($("#q-account"));
@@ -1141,6 +1198,7 @@ Pages.settings = async function () {
   });
   const PROVIDERS = {
     openai: ["https://api.openai.com/v1", "gpt-4o-mini"],
+    groq: ["https://api.groq.com/openai/v1", "qwen/qwen3.8-27b"],
     gemini: ["https://generativelanguage.googleapis.com/v1beta/openai/", "gemini-1.5-flash"],
     custom: ["", ""],
   };
@@ -1169,6 +1227,62 @@ Pages.settings = async function () {
       toast("AI settings saved", "ok");
     } catch (e) { toast(e.message, "err"); }
   });
+
+  // cloud relay
+  set("set-relay-url", s.cloud_relay_url || "");
+  if (s.cloud_relay_secret) $("#set-relay-secret").placeholder = "(secret saved - leave blank to keep)";
+  const relayChip = $("#relay-state");
+  function relayChipRender() {
+    const on = (s.cloud_relay_url || "").trim();
+    relayChip.textContent = on ? "relay ON" : "relay off";
+    relayChip.className = "chip " + (on ? "on" : "");
+  }
+  relayChipRender();
+  $("#btn-save-relay").addEventListener("click", async () => {
+    try {
+      const body = { cloud_relay_url: $("#set-relay-url").value.trim() };
+      if ($("#set-relay-secret").value.trim()) body.cloud_relay_secret = $("#set-relay-secret").value.trim();
+      await api("/api/settings", { body });
+      if (body.cloud_relay_url) s.cloud_relay_url = body.cloud_relay_url;
+      relayChipRender();
+      toast("Cloud relay settings saved", "ok");
+    } catch (e) { toast(e.message, "err"); }
+  });
+
+  // relay setup pack (admin)
+  if (isAdmin) {
+    const rs = $("#relay-acct-select");
+    api("/api/accounts").then((a) => {
+      const connected = a.accounts.filter((x) => x.connected);
+      rs.innerHTML = '<option value="">choose the Gmail account…</option>' +
+        connected.map((x) => '<option value="' + x.id + '">' + esc(x.email || x.label) + '</option>').join("");
+      if (connected.length === 1) rs.value = String(connected[0].id);
+    }).catch(() => {});
+    $("#btn-relay-pack").addEventListener("click", async () => {
+      if (!rs.value) return toast("Pick the Gmail account the relay should send from.", "err");
+      try {
+        const r = await api("/api/settings/relay-pack?account_id=" + rs.value);
+        const rows = Object.entries(r.pack).map(([k, v]) =>
+          '<div style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">' +
+          '<code style="min-width:210px;font-size:12px">' + k + '</code>' +
+          '<code style="flex:1;word-break:break-all;font-size:12px">' + esc(v) + '</code>' +
+          '<button class="btn sm" data-copy="' + esc(v) + '">Copy</button></div>'
+        ).join("");
+        Modal.open("Cloud relay setup values",
+          '<p class="hint" style="margin-top:0">Paste these 5 values into Cloudflare (one-time setup, see <code>cloud/README-CLOUD.md</code>). ' +
+          'The relay secret is already saved on this platform - once you paste the relay URL and this secret below, the cloud scheduler goes live.</p>' +
+          '<div style="max-height:50vh;overflow:auto">' + rows + '</div>' +
+          '<div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="rp-copyall">Copy all (name=value)</button></div>');
+        $all("#modal-box [data-copy]").forEach((b) => b.addEventListener("click", async () => {
+          try { await navigator.clipboard.writeText(b.dataset.copy); toast("Copied", "ok"); } catch (e) { toast("Copy failed - select manually", "err"); }
+        }));
+        $("#rp-copyall").addEventListener("click", async () => {
+          const txt = Object.entries(r.pack).map(([k, v]) => k + "=" + v).join("\n");
+          try { await navigator.clipboard.writeText(txt); toast("All copied", "ok"); } catch (e) { toast("Copy failed - select manually", "err"); }
+        });
+      } catch (e) { toast(e.message, "err"); }
+    });
+  }
 
   // admin: google sign-in + client json
   if (isAdmin) {
@@ -1302,6 +1416,70 @@ Pages.reports = async function () {
   $("#rep-q").addEventListener("input", (e) => { clearTimeout(deb); deb = setTimeout(() => { state.q = e.target.value.trim(); loadRows(); }, 300); });
   $("#rep-status").addEventListener("change", (e) => { state.status = e.target.value; loadRows(); });
   load();
+};
+
+// ---------- AI assistant (chat) ----------
+Pages.assistant = async function () {
+  if (!(STATE && STATE.ai_has_key === "1")) {
+    $("#chat-log").innerHTML = "<div class='empty'><div class='big'>&#10022;</div><p>AI is not set up yet. Add your API key in <a href='/settings'>Settings</a> (AI section), then come back.</p></div>";
+    $("#chat-send").disabled = true;
+    return;
+  }
+  const log = $("#chat-log");
+  let msgs = [];
+  try { msgs = JSON.parse(localStorage.getItem("mf_chat") || "[]"); } catch (e) { msgs = []; }
+  function addBubble(role, text, events) {
+    const d = document.createElement("div");
+    d.style.cssText = "margin-bottom:12px;max-width:88%";
+    if (role === "user") d.style.marginLeft = "auto";
+    let h = "<div style='background:" + (role === "user" ? "var(--primary)" : "#fff") + ";color:" + (role === "user" ? "#fff" : "var(--text)") + ";padding:10px 14px;border-radius:12px;font-size:13.5px;white-space:pre-wrap'>" + esc(text) + "</div>";
+    if (events && events.length) {
+      h += "<div style='margin-top:6px;display:flex;gap:5px;flex-wrap:wrap'>" + events.map((ev) =>
+        "<span class='chip' style='font-size:11px'>&#9881; " + esc(ev.tool) + " &rarr; " + esc(JSON.stringify(ev.result).slice(0, 180)) + "</span>").join("") + "</div>";
+    }
+    d.innerHTML = h;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+  if (!msgs.length) addBubble("assistant", "Hi! I'm your MailForge assistant. Ask me about your campaigns, or tell me to do something - create a template, plan a batch, schedule or stop emails. I can't send anything without your manual step.");
+  msgs.forEach((m) => addBubble(m.role, m.content, m.events));
+  const SUGG = [
+    "What's the status of my campaigns?",
+    "Draft a polite Diwali follow-up template",
+    "Schedule the first 5 rows of my newest sheet for tomorrow 10:30 as drafts",
+    "How many emails did I send and how many replies came back?",
+  ];
+  $("#chat-sugg").innerHTML = SUGG.map((t) => "<button class='btn sm' data-sugg='" + esc(t) + "'>" + esc(t) + "</button>").join("");
+  async function send(text) {
+    text = (text != null ? text : $("#chat-input").value).trim();
+    if (!text) return;
+    $("#chat-input").value = "";
+    addBubble("user", text);
+    msgs.push({ role: "user", content: text });
+    $("#chat-send").disabled = true;
+    const thinking = document.createElement("div");
+    thinking.className = "muted";
+    thinking.textContent = "Thinking...";
+    log.appendChild(thinking);
+    log.scrollTop = log.scrollHeight;
+    try {
+      const d = await api("/api/ai/chat", { body: { messages: msgs.map((m) => ({ role: m.role, content: m.content })) } });
+      thinking.remove();
+      addBubble("assistant", d.reply || "(no reply)", d.events);
+      msgs.push({ role: "assistant", content: d.reply, events: d.events });
+    } catch (e) {
+      thinking.remove();
+      addBubble("assistant", "Sorry - " + e.message);
+    }
+    $("#chat-send").disabled = false;
+    $("#chat-input").focus();
+    try { localStorage.setItem("mf_chat", JSON.stringify(msgs.slice(-30))); } catch (err) {}
+  }
+  $("#chat-send").addEventListener("click", () => send());
+  $("#chat-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  $all("[data-sugg]").forEach((b) => b.addEventListener("click", () => send(b.dataset.sugg)));
 };
 
 // ---------- campaigns (CRM) ----------

@@ -1,0 +1,18 @@
+name = "mailforge-relay"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Cron: every minute, pump due emails
+[triggers]
+crons = ["* * * * *"]
+
+# D1 database (created with: wrangler d1 create relay_db)
+[[d1_databases]]
+binding = "DB"
+database_name = "mailforge-relay-db"
+database_id = "PASTE_YOUR_D1_DATABASE_ID_HERE"
+
+# R2 bucket for large email bodies (created with: wrangler r2 bucket create mailforge-bodies)
+[[r2_buckets]]
+binding = "BODIES"
+bucket_name = "mailforge-bodies"

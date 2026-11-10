@@ -1,5 +1,7 @@
 """OpenAI-compatible chat client for MailForge. Key lives in settings (blank by default)."""
 import json
+import time
+import urllib.error
 import urllib.request
 
 from db import get_setting
@@ -26,11 +28,58 @@ def chat(messages, max_tokens=1200, temperature=0.7):
         headers={
             "Content-Type": "application/json",
             "Authorization": "Bearer " + key,
+            "User-Agent": "MailForge/1.0",
         },
     )
     with urllib.request.urlopen(req, timeout=90) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return data["choices"][0]["message"]["content"].strip()
+
+
+def chat_raw(messages, max_tokens=1500, temperature=0.4, tools=None):
+    """One chat round. Returns the assistant message dict (content and/or tool_calls)."""
+    key = get_setting("ai_api_key", "").strip()
+    if not key:
+        raise RuntimeError("AI API key is not set. Add it in Settings.")
+    base = get_setting("ai_base_url", "https://api.openai.com/v1").rstrip("/")
+    model = get_setting("ai_model", "gpt-4o-mini")
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    req = urllib.request.Request(
+        base + "/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + key,
+            "User-Agent": "MailForge/1.0",
+        },
+    )
+    last_err = None
+    for _try in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return data["choices"][0]["message"]
+        except urllib.error.HTTPError as e:
+            last_err = RuntimeError("HTTP " + str(e.code) + ": " + e.read().decode("utf-8", "ignore")[:200])
+            if e.code in (400, 429, 500, 502, 503) and _try < 2:
+                time.sleep(6 * (_try + 1))
+                continue
+            raise last_err
+        except Exception as e:
+            last_err = e
+            if _try < 2:
+                time.sleep(4)
+                continue
+            raise
+    raise last_err
 
 
 def test_connection():
