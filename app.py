@@ -1968,7 +1968,7 @@ def api_settings_get():
 @app.route("/api/settings/relay-pack")
 @login_required
 def api_settings_relay_pack():
-    """One-click pack of the 5 values needed to configure the Cloudflare relay."""
+    """One-click pack of the 5 values needed to configure the Supabase relay."""
     if request.user["role"] != "admin":
         return api_err("Only the admin can view the relay setup pack.", 403)
     account_id = int(request.args.get("account_id") or 0)

@@ -1284,7 +1284,7 @@ Pages.settings = async function () {
           '<button class="btn sm" data-copy="' + esc(v) + '">Copy</button></div>'
         ).join("");
         Modal.open("Cloud relay setup values",
-          '<p class="hint" style="margin-top:0">Paste these 5 values into Cloudflare (one-time setup, see <code>cloud/README-CLOUD.md</code>). ' +
+          '<p class="hint" style="margin-top:0">Paste these 5 values into Supabase (one-time setup, see <code>supabase/README-SUPABASE.md</code>). ' +
           'The relay secret is already saved on this platform - once you paste the relay URL and this secret below, the cloud scheduler goes live.</p>' +
           '<div style="max-height:50vh;overflow:auto">' + rows + '</div>' +
           '<div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="rp-copyall">Copy all (name=value)</button></div>');

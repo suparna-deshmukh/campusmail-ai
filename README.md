@@ -187,9 +187,7 @@ How it works:
 - Safe mode ON blocks everything, cloud included.
 - The Supabase project pauses only after a week with zero activity — the per-minute cron
   keeps it awake; a paused project resumes on the next request.
-- The relay code lives in `supabase/` (schema + function + this guide). A second,
-  already-built relay implementation for Cloudflare (Worker + D1 + R2) lives in `cloud/`
-  if you ever want a different provider.
+- The relay code lives in `supabase/` (schema + function + this guide).
 
 If you'd rather not use the relay at all, leave the platform running on an always-on
 machine — the built-in scheduler does everything locally.
@@ -220,7 +218,6 @@ docx_convert.py   Word → email HTML (bold, colour, bullets, links, images), fi
 ai_client.py      OpenAI-compatible AI calls (writer, polisher, subject improver, mapping)
 ui/               Jinja pages (login, dashboard, contacts, templates, merge, queue, reports,
                   guide, activity, settings, admin, AI assistant)
-cloud/            Cloudflare relay: worker + D1 schema + wrangler config + README-CLOUD.md
 static/           app.css, app.js (vanilla JS), img/guide/ (step screenshots)
 seed_template/    bundled template + subject + signature image (used on a brand-new DB)
 template_images/  images from templates/signatures (stored once, inlined at send time)

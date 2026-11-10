@@ -20,4 +20,3 @@ campusmail_ai.db
 static/img/guide/
 .supabase/
 .temp/
-.wrangler/

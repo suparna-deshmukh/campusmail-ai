@@ -117,9 +117,9 @@
 <div class="card" style="margin-top:18px">
   <div class="card-head"><h3>Cloud scheduler (optional)</h3><span class="sub">send scheduled emails even when this laptop is off</span></div>
   <div class="card-body">
-    <p class="hint" style="margin-top:0">Deploy the files in the <code>cloud/</code> folder once (see <code>cloud/README-CLOUD.md</code>). Then paste the relay's address and secret here. When set, scheduled emails are sent from the cloud on the minute - this laptop can sleep. Stop / reschedule / delete / save-as-draft still work right here and are mirrored to the cloud automatically. Leave blank to run 100% locally.</p>
+    <p class="hint" style="margin-top:0">Deploy the files in the <code>supabase/</code> folder once (see <code>supabase/README-SUPABASE.md</code>). Then paste the relay's address and secret here. When set, scheduled emails are sent from the cloud on the minute - this laptop can sleep. Stop / reschedule / delete / save-as-draft still work right here and are mirrored to the cloud automatically. Leave blank to run 100% locally.</p>
     <div class="grid cols-2">
-      <div class="field"><label>Relay URL</label><input class="input" id="set-relay-url" placeholder="https://campusmail-ai-relay.yourname.workers.dev"></div>
+      <div class="field"><label>Relay URL</label><input class="input" id="set-relay-url" placeholder="https://YOUR-PROJECT-REF.functions.supabase.co/relay"></div>
       <div class="field"><label>Relay secret</label><input class="input" id="set-relay-secret" type="password" autocomplete="off" placeholder="paste the RELAY_SECRET"></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap">
@@ -131,7 +131,7 @@
       <span class="muted" style="font-size:13px">First-time setup (admin):</span>
       <select class="input" id="relay-acct-select" style="min-width:260px"><option value="">choose the Gmail account…</option></select>
       <button class="btn" id="btn-relay-pack">Show relay setup values</button>
-      <span class="muted" style="font-size:12px">copies the 5 values you paste into Cloudflare</span>
+      <span class="muted" style="font-size:12px">copies the 5 values you paste into Supabase</span>
     </div>
   </div>
 </div>
