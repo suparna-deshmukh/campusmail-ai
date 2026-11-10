@@ -10,7 +10,7 @@ crons = ["* * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "mailforge-relay-db"
-database_id = "PASTE_YOUR_D1_DATABASE_ID_HERE"
+database_id = "b879fb0a-26c9-4959-9f03-9dd42aa54e54"
 
 # R2 bucket for large email bodies (created with: wrangler r2 bucket create mailforge-bodies)
 [[r2_buckets]]
