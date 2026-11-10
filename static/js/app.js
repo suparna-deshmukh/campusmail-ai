@@ -65,13 +65,15 @@ function typeToConfirm(title, bodyHtml, word, onConfirm, confirmLabel) {
 // ---------- account picker (shared) ----------
 async function fillAccountSelect(sel) {
   if (!sel) return "";
+  const keep = sel.value;
   let last = 0;
   try {
     const d = await api("/api/accounts");
     last = d.last_account_id || 0;
     const conn = d.accounts.filter((a) => a.connected);
+    const preferred = conn.some((a) => String(a.id) === String(keep)) ? keep : String(last);
     sel.innerHTML = conn.length
-      ? conn.map((a) => '<option value="' + a.id + '"' + (a.id === last ? " selected" : "") + ">" + esc(a.email || a.label) + (a.mine ? " (mine)" : "") + "</option>").join("")
+      ? conn.map((a) => '<option value="' + a.id + '"' + (String(a.id) === preferred ? " selected" : "") + ">" + esc(a.email || a.label) + (a.mine ? " (mine)" : "") + "</option>").join("")
       : '<option value="">- no connected account -</option>';
     if (!conn.length) {
       const add = document.createElement("option");
@@ -496,7 +498,7 @@ Pages.merge = async function () {
     for (let i = 1; i <= 5; i++) $("#step-" + i).className = "step" + (i === n ? " active" : i < n ? " done" : "");
     panels.forEach((p, i) => { p.style.display = (i + 1 === n ? "" : "none"); });
     if (n === 4) loadMapping();
-    if (n === 5) loadPreview();
+    if (n === 5) { fillAccountSelect($("#merge-account")); loadPreview(); }
   }
 
   // ---------- step 1: campaign ----------
@@ -714,19 +716,32 @@ Pages.merge = async function () {
   });
 
   // ---------- step 5: preview & generate ----------
+  let previewGen = 0;
+  let previewBadge = null;
   async function loadPreview() {
-    fillAccountSelect($("#merge-account"));
-    $("#preview-box").innerHTML = "<div class='muted'>Rendering previews with real data...</div>";
     const sigEl = $("#sig-append");
     const sf = $("#range-from") ? $("#range-from").value.trim() : "";
     const st = $("#range-to") ? $("#range-to").value.trim() : "";
+    const gen = ++previewGen;
+    if (!previewBadge) {
+      previewBadge = document.createElement("div");
+      previewBadge.className = "hint";
+      previewBadge.style.cssText = "margin:0 0 8px;height:16px;line-height:16px;visibility:hidden";
+      previewBadge.textContent = "Updating previews...";
+      $("#preview-box").insertBefore(previewBadge, $("#preview-box").firstChild);
+    }
+    previewBadge.style.visibility = "";
     const d = await api("/api/merge/preview", { body: { template_id: S.tpl, mapping: S.mapping, limit: 3,
       append_signature: sigEl ? sigEl.checked : false, serial_from: sf, serial_to: st, sheet_id: S.sheetId } });
+    if (gen !== previewGen) return;
+    previewBadge.style.visibility = "hidden";
     $("#merge-total").innerHTML = "Generating will add <b>" + d.total + "</b> emails to the queue (one per row) as <b>pending</b>. Nothing is sent yet.";
-    $("#preview-box").innerHTML = d.previews.map((p) =>
+    const pbox = $("#preview-box");
+    pbox.innerHTML = d.previews.map((p) =>
       "<div style='margin-bottom:18px'><div class='preview-note'>Serial " + esc(p.serial) + " &middot; " + esc(p.hr_name) + " &middot; <b>" + esc(p.company) + "</b> &middot; " + esc(p.hr_email) +
       "<br>Subject: " + esc(p.subject) + "</div><iframe class='email-frame' style='height:380px'></iframe></div>"
     ).join("");
+    if (previewBadge.parentNode !== pbox) pbox.insertBefore(previewBadge, pbox.firstChild);
     $all("#preview-box iframe").forEach((fr, i) => {
       fr.srcdoc = "<!DOCTYPE html><html><head><meta charset='utf-8'></head><body style='margin:0;background:#fff'>" + embedLocal(d.previews[i].body) + "</body></html>";
     });
