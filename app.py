@@ -6,6 +6,7 @@ local scheduler worker.  Run:  python app.py  ->  http://localhost:5001
 """
 import base64
 import csv
+import hashlib
 import json
 import mimetypes
 import os
@@ -14,6 +15,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -28,6 +30,60 @@ import gmail_client
 BASE = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE / "uploads"
 ATTACH_DIR = BASE / "data" / "attachments"
+WORKSPACES_DIR = BASE / "data" / "workspaces"
+_TEAM_DIRS = {"uploads": UPLOAD_DIR, "attach": ATTACH_DIR, "images": BASE / "template_images"}
+_TENANT_DIRS = ContextVar("campusmail_tenant_dirs", default=None)
+_RESOLVED_USER = ContextVar("campusmail_resolved_user", default=None)
+
+
+def _tenant_dirs():
+    return _TENANT_DIRS.get() or _TEAM_DIRS
+
+
+def upload_dir():
+    return _tenant_dirs()["uploads"]
+
+
+def attach_dir():
+    return _tenant_dirs()["attach"]
+
+
+def images_dir():
+    return _tenant_dirs()["images"]
+
+
+def workspace_key(email):
+    return hashlib.sha1(email.strip().lower().encode("utf-8")).hexdigest()[:16]
+
+
+def _personal_paths(email):
+    key = workspace_key(email)
+    return WORKSPACES_DIR / (key + ".db"), WORKSPACES_DIR / key
+
+
+def _enter_personal_tenant(email, display_name, team_status):
+    db_path, root = _personal_paths(email)
+    root.mkdir(parents=True, exist_ok=True)
+    for sub in ("uploads", "attachments", "images"):
+        (root / sub).mkdir(exist_ok=True)
+    db.set_tenant_db(db_path)
+    if not db_path.exists():
+        db.init_db(seed=False)
+    pu = db.get_user_by_email(email)
+    if not pu:
+        pu = db.upsert_google_user(email, display_name or email)
+    if pu["role"] != "admin":
+        db.set_user_role(pu["id"], "admin")
+    if pu["status"] != "active":
+        db.set_user_status(pu["id"], "active")
+    pu = db.get_user_by_email(email)
+    _TENANT_DIRS.set({"uploads": root / "uploads", "attach": root / "attachments",
+                      "images": root / "images"})
+    docx_convert.set_img_dir(root / "images")
+    pu = dict(pu)
+    pu["personal_workspace"] = True
+    pu["team_status"] = team_status
+    _RESOLVED_USER.set(pu)
 ALLOWED_ATTACH_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".txt", ".png",
                       ".jpg", ".jpeg", ".zip", ".ppt", ".pptx", ".html"}
 MAX_ATTACH_PER_BATCH = 10
@@ -35,6 +91,28 @@ MAX_ATTACH_TOTAL = 15 * 1024 * 1024
 app = Flask(__name__, template_folder=str(BASE / "ui"), static_folder=str(BASE / "static"))
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 app.secret_key = "boot"
+
+
+@app.before_request
+def bind_tenant():
+    # every request starts on the team DB; non-team members switch to their own
+    db.set_tenant_db(db.DB_PATH)
+    uid = session.get("uid")
+    if not uid:
+        return
+    u = db.get_user(uid)
+    if not u:
+        session.pop("uid", None)
+        return
+    if u["status"] != "active":
+        _enter_personal_tenant(u["email"], u["display_name"], u["status"])
+        return
+    _RESOLVED_USER.set(u)
+
+
+@app.teardown_request
+def reset_tenant(exc=None):
+    db.reset_tenant_db()
 SCHEDULER_STATE = {"running": True, "last_tick": None, "last_error": ""}
 TICK_COUNTER = {"n": 0}
 DEV_LOGIN_EMAIL = os.environ.get("CAMPUSMAIL_AI_DEV_LOGIN", "").strip().lower()
@@ -44,22 +122,20 @@ DEV_LOGIN_EMAIL = os.environ.get("CAMPUSMAIL_AI_DEV_LOGIN", "").strip().lower()
 
 @app.context_processor
 def inject_globals():
-    return {"me": current_user()}
+    u = current_user()
+    return {"me": u, "me_email": u["email"] if u else None,
+            "in_personal": bool(u and u.get("personal_workspace"))}
 
 
 
 def current_user():
     if DEV_LOGIN_EMAIL:
-        u = db.dev_user(DEV_LOGIN_EMAIL)
+        with db.team_context():
+            u = db.dev_user(DEV_LOGIN_EMAIL)
         if u:
+            _RESOLVED_USER.set(u)
             return u
-    uid = session.get("uid")
-    if not uid:
-        return None
-    u = db.get_user(uid)
-    if not u or u["status"] != "active":
-        return None
-    return u
+    return _RESOLVED_USER.get()
 
 
 def login_required(f):
@@ -187,7 +263,7 @@ def google_start():
         return api_err("Google sign-in is not configured yet (Settings, Google sign-in).", 409)
     p = urllib.parse.urlencode({
         "client_id": cid,
-        "redirect_uri": "http://localhost:5001/api/google/callback",
+        "redirect_uri": request.host_url.rstrip("/") + "/api/google/callback",
         "response_type": "code",
         "scope": "openid email profile",
         "prompt": "select_account",
@@ -199,16 +275,17 @@ def google_start():
 def google_request_note():
     d = request.get_json(force=True)
     email = (d.get("email") or "").strip().lower()
-    u = db.get_user_by_email(email)
-    if not u:
-        return api_err("No request found for this email.", 404)
-    if u["status"] != "pending":
-        return api_err("Your request is no longer pending.")
-    c = db.conn()
-    c.execute("UPDATE users SET request_note=? WHERE id=?",
-              ((d.get("note") or "").strip()[:300], u["id"]))
-    c.commit()
-    c.close()
+    with db.team_context():
+        u = db.get_user_by_email(email)
+        if not u:
+            return api_err("No request found for this email.", 404)
+        if u["status"] != "pending":
+            return api_err("Your request is no longer pending.")
+        c = db.conn()
+        c.execute("UPDATE users SET request_note=? WHERE id=?",
+                  ((d.get("note") or "").strip()[:300], u["id"]))
+        c.commit()
+        c.close()
     db.log_activity("request_note", email, "system")
     return jsonify({"ok": True})
 
@@ -224,7 +301,7 @@ def google_callback():
         "client_id": db.get_setting("google_client_id", ""),
         "client_secret": db.get_setting("google_client_secret", ""),
         "grant_type": "authorization_code",
-        "redirect_uri": "http://localhost:5001/api/google/callback",
+        "redirect_uri": request.host_url.rstrip("/") + "/api/google/callback",
     }).encode()
     req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data,
                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
@@ -248,9 +325,9 @@ def google_callback():
         db.set_user_role(u["id"], "admin")
         u = db.get_user_by_email(email)
         db.log_activity("user_promoted", email + " promoted to admin (matches admin_email)", "system")
+    session["uid"] = u["id"]
     if u["status"] != "active":
         return render_template("login.html", email=email, name=name, status=u["status"], request_open=False)
-    session["uid"] = u["id"]
     db.log_activity("login", email, email)
     return redirect("/")
 
@@ -426,7 +503,7 @@ def page_assistant():
 @login_required
 def local_img(name):
     safe = re.sub(r"[^A-Za-z0-9._\-]", "", name)
-    return send_from_directory(str(BASE / "template_images"), safe)
+    return send_from_directory(str(images_dir()), safe)
 
 
 # ---------------- state ----------------
@@ -619,8 +696,8 @@ def api_contact_import():
     f = request.files.get("file")
     if not f:
         return api_err("No file uploaded.")
-    UPLOAD_DIR.mkdir(exist_ok=True)
-    path = UPLOAD_DIR / f.filename
+    upload_dir().mkdir(exist_ok=True)
+    path = upload_dir() / f.filename
     f.save(str(path))
     c = db.conn()
     if f.filename.lower().endswith(".xlsx"):
@@ -765,11 +842,11 @@ def api_template_upload():
     pasted = (request.form.get("body_html") or "").strip()
     if not f and not pasted:
         return api_err("Upload a file or paste the body text first.")
-    UPLOAD_DIR.mkdir(exist_ok=True)
+    upload_dir().mkdir(exist_ok=True)
     if f:
         fname = f.filename.lower()
         if fname.endswith(".docx"):
-            path = UPLOAD_DIR / f.filename
+            path = upload_dir() / f.filename
             f.save(str(path))
             body = docx_convert.docx_to_html(str(path))
             ttype = "docx"
@@ -1936,6 +2013,10 @@ def scheduler_loop():
     while SCHEDULER_STATE["running"]:
         try:
             scheduler_tick()
+            if WORKSPACES_DIR.exists():
+                for ws_db in sorted(WORKSPACES_DIR.glob("*.db")):
+                    with db.tenant(ws_db):
+                        scheduler_tick()
         except Exception as e:
             SCHEDULER_STATE["last_error"] = str(e)[:200]
         time.sleep(8)
@@ -2356,8 +2437,8 @@ def api_signature_upload():
     if len(data) > 4 * 1024 * 1024:
         return api_err("Image must be under 4 MB.")
     name = "sig_" + datetime.now().strftime("%Y%m%d%H%M%S") + ext
-    (BASE / "template_images").mkdir(exist_ok=True)
-    (BASE / "template_images" / name).write_bytes(data)
+    images_dir().mkdir(exist_ok=True)
+    (images_dir() / name).write_bytes(data)
     log("signature_image", name)
     return jsonify({"ok": True, "html": '<img src="local:' + name + '" alt="signature" style="max-width:220px;">'})
 
@@ -2374,7 +2455,7 @@ def _load_attachments(batch):
     out = []
     for name in names:
         safe = re.sub(r"[^A-Za-z0-9._\-]", "_", str(name))
-        f = ATTACH_DIR / safe
+        f = attach_dir() / safe
         if f.exists():
             ctype = mimetypes.guess_type(safe)[0] or "application/octet-stream"
             out.append((safe, f.read_bytes(), ctype))
@@ -2399,8 +2480,8 @@ def api_batch_attachments_add(bid):
         return api_err("No files uploaded.")
     if len(names) + len(files) > MAX_ATTACH_PER_BATCH:
         return api_err("Maximum " + str(MAX_ATTACH_PER_BATCH) + " attachments per batch.")
-    ATTACH_DIR.mkdir(exist_ok=True)
-    existing = sum((ATTACH_DIR / n).stat().st_size for n in names if (ATTACH_DIR / n).exists())
+    attach_dir().mkdir(exist_ok=True)
+    existing = sum((attach_dir() / n).stat().st_size for n in names if (attach_dir() / n).exists())
     added = 0
     for f in files:
         ext = Path(f.filename).suffix.lower()
@@ -2411,7 +2492,7 @@ def api_batch_attachments_add(bid):
         if existing > MAX_ATTACH_TOTAL:
             return api_err("Total attachments must stay under 15 MB per batch.")
         safe = "b" + str(bid) + "_" + re.sub(r"[^A-Za-z0-9._\-]", "_", Path(f.filename).name)
-        (ATTACH_DIR / safe).write_bytes(data)
+        (attach_dir() / safe).write_bytes(data)
         names.append(safe)
         added += 1
     c = db.conn()
@@ -2438,7 +2519,7 @@ def api_batch_attachments_remove(bid):
         names = []
     if name in names:
         names.remove(name)
-        f = ATTACH_DIR / name
+        f = attach_dir() / name
         if f.exists():
             f.unlink()
     c = db.conn()
@@ -2689,10 +2770,14 @@ def api_template_ai_reminder():
 
 
 
-def main():
+def bootstrap():
     db.init_db()
     app.secret_key = db.app_secret()
     threading.Thread(target=scheduler_loop, daemon=True).start()
+
+
+def main():
+    bootstrap()
     print()
     print("  CampusMail AI - outreach team")
     print("    http://localhost:5001")

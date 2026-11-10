@@ -57,7 +57,7 @@
             Sign in with Google
           </a>
           <div class="divider"></div>
-          <p class="muted" style="font-size:12.5px;text-align:center">Sign in with your <b>institutional Google account</b>. Team members get in directly; everyone else is asked to request access.</p>
+          <p class="muted" style="font-size:12.5px;text-align:center">Sign in with your <b>institutional Google account</b>. Team members share one workspace; everyone else gets their own personal workspace and can request team access.</p>
           {% else %}
           <div class="banner banner-warn">Google sign-in is not set up yet.<br><span style="font-size:12.5px">Ask the admin (the first person to set up this platform) to paste the Google sign-in client ID and secret in <b>Settings &#8594; Google sign-in</b>. Then reload this page.</span></div>
           {% endif %}
@@ -65,7 +65,7 @@
       </div>
       {% endif %}
     </div>
-    <div class="login-foot">{% if brand_foot %}{{ brand_foot }} {% endif %}For the {{ brand_team }} only.</div>
+    <div class="login-foot">{% if brand_foot %}{{ brand_foot }} {% endif %}One shared {{ brand_team }} workspace + personal workspaces for everyone else.</div>
   </div>
 <script>
 const email = {{ email|tojson if email else 'null' }};

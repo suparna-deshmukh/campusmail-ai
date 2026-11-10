@@ -5,6 +5,7 @@ Handles: bold/italic, run colors, font sizes, hyperlinks, inline images
 """
 import hashlib
 import re
+from contextvars import ContextVar
 from pathlib import Path
 
 from docx import Document
@@ -14,6 +15,15 @@ from docx.text.run import Run
 from docx.table import Table
 
 IMG_DIR = Path(__file__).resolve().parent / "template_images"
+_IMG_DIR_OVERRIDE = ContextVar("campusmail_img_dir", default=None)
+
+
+def set_img_dir(path):
+    _IMG_DIR_OVERRIDE.set(Path(path))
+
+
+def img_dir():
+    return _IMG_DIR_OVERRIDE.get() or IMG_DIR
 
 A = chr(38)  # ampersand, to build entities without the decoder eating them
 BLIP = '{http://schemas.openxmlformats.org/drawingml/2006/main}blip'
@@ -69,9 +79,10 @@ def _inline_image_html(doc, rel_id):
         data = part.blob
         ext = Path(part.partname).suffix or ".png"
         name = "img_" + hashlib.md5(data).hexdigest()[:10] + ext
-        IMG_DIR.mkdir(exist_ok=True)
-        if not (IMG_DIR / name).exists():
-            (IMG_DIR / name).write_bytes(data)
+        d = img_dir()
+        d.mkdir(exist_ok=True)
+        if not (d / name).exists():
+            (d / name).write_bytes(data)
         return '<img src="local:' + name + '" alt="" style="max-width:100%;">'
     except Exception:
         return ""

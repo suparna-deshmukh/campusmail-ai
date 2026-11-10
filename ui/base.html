@@ -44,6 +44,17 @@
       <div class="chips" id="topbar-chips"></div>
     </div>
     <div class="content">
+      {% if in_personal %}
+      <div class="banner banner-warn" style="margin-bottom:14px">
+        {% if me.team_status == 'pending' %}
+        &#9203; <b>Your request to join the {{ brand_team }} is under review.</b> You are working in your own personal workspace for now - your data is separate from the team's. As soon as an admin approves your request, you will get access to the shared workspace.
+        <div class="field" style="margin-top:8px;max-width:440px"><label>Add a note for the team (optional)</label><textarea class="input" id="req-note" rows="1" placeholder="e.g. I handle the core committee / company visits..."></textarea></div>
+        <div style="display:flex;gap:8px;margin-top:6px;align-items:center"><button class="btn sm" id="btn-send-note">Send note</button><span class="hint" id="note-status"></span></div>
+        {% else %}
+        &#10060; <b>Your request to join the {{ brand_team }} was not approved.</b> This is your personal workspace - your data here is separate from the team's.
+        {% endif %}
+      </div>
+      {% endif %}
       {% block content %}{% endblock %}
     </div>
   </div>
@@ -58,6 +69,23 @@
   </div>
 
 <script src="/static/js/app.js"></script>
+<script>
+(function () {
+  const btn = document.getElementById("btn-send-note");
+  if (!btn || !window.me_email) return;
+  btn.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/google/callback/request", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({email: window.me_email, note: document.getElementById("req-note").value}),
+      });
+      const d = await res.json();
+      document.getElementById("note-status").textContent = d.ok ? "Note sent to the team." : (d.error || "Could not send note.");
+    } catch (e) { alert("Error: " + e.message); }
+  });
+})();
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

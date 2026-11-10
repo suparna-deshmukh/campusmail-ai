@@ -221,6 +221,8 @@ ui/               Jinja pages (login, dashboard, contacts, templates, merge, que
 static/           app.css, app.js (vanilla JS), img/guide/ (step screenshots)
 seed_template/    bundled template + subject + signature image (used on a brand-new DB)
 template_images/  images from templates/signatures (stored once, inlined at send time)
-data/             campusmail_ai.db (the database), companies.csv (bundled sheet), attachments/
+data/             campusmail_ai.db (the team database), companies.csv (bundled sheet),
+                  attachments/, workspaces/ (one isolated database per non-team user)
 run.sh / run.bat  launchers (auto-create the virtualenv)
+wsgi.py           WSGI entry point for hosting (e.g. PythonAnywhere, see DEPLOY.md)
 ```

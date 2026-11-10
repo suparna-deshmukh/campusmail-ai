@@ -1,14 +1,51 @@
 """SQLite storage for CampusMail AI. Stdlib only - no ORM, works on Python 3.9+."""
+import contextlib
 import csv
 import json
 import os
 import sqlite3
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
 DATA_DIR = BASE / "data"
 DB_PATH = DATA_DIR / "campusmail_ai.db"
+PINNED_ADMIN = "f20230611@goa.bits-pilani.ac.in"
+
+_TENANT_DB = ContextVar("campusmail_tenant_db", default=DB_PATH)
+
+
+def tenant_db():
+    return _TENANT_DB.get()
+
+
+def set_tenant_db(path):
+    """Point all db calls at `path` for the current request/thread context."""
+    return _TENANT_DB.set(Path(path))
+
+
+def reset_tenant_db():
+    """Back to the team database."""
+    _TENANT_DB.set(DB_PATH)
+
+
+@contextlib.contextmanager
+def tenant(path):
+    tok = _TENANT_DB.set(Path(path))
+    try:
+        yield
+    finally:
+        _TENANT_DB.reset(tok)
+
+
+@contextlib.contextmanager
+def team_context():
+    tok = _TENANT_DB.set(DB_PATH)
+    try:
+        yield
+    finally:
+        _TENANT_DB.reset(tok)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
@@ -133,17 +170,16 @@ def app_secret():
 # ---------- users ----------
 
 def upsert_google_user(email, display_name, note=""):
-    """First contact from a Google login. First user ever becomes admin."""
+    """First contact from a Google login. First user or the pinned admin email becomes admin."""
     c = conn()
     existing = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
     if existing:
         c.close()
         return dict(existing)
     first = c.execute("SELECT COUNT(*) n FROM users").fetchone()["n"] == 0
-    role = "admin" if first else "user"
-    status = "active"  # admins and invited members are active when they log in
-    if not first:
-        status = "pending"
+    is_admin = first or email.strip().lower() == PINNED_ADMIN
+    role = "admin" if is_admin else "user"
+    status = "active" if is_admin else "pending"
     c.execute("INSERT INTO users(email, display_name, role, status, request_note, created_at) "
               "VALUES(?,?,?,?,?,?)",
               (email, display_name or email, role, status, note if not first else "first account", now_iso()))
@@ -151,7 +187,8 @@ def upsert_google_user(email, display_name, note=""):
     uid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
     c.close()
     log_activity("user_first" if first else "user_request",
-                 f"{email} ({display_name}) - " + ("first login, made admin" if first else "request created"),
+                 f"{email} ({display_name}) - " + ("first login, made admin" if first
+                                                  else ("pinned admin" if is_admin else "request created")),
                  "system")
     return get_user_by_email(email)
 
@@ -279,8 +316,9 @@ def account_token_json(account_id):
 
 
 def conn():
-    DATA_DIR.mkdir(exist_ok=True)
-    c = sqlite3.connect(str(DB_PATH), timeout=15)
+    p = tenant_db()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(str(p), timeout=15)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     return c
@@ -327,14 +365,15 @@ def dev_user(email):
     return get_user_by_email(email)
 
 
-def init_db():
+def init_db(seed=True):
     c = conn()
     c.executescript(SCHEMA)
     _migrate(c)
     for k, v in DEFAULT_SETTINGS.items():
         c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)", (k, v))
     c.commit()
-    seed_if_empty(c)
+    if seed:
+        seed_if_empty(c)
     c.close()
 
 
