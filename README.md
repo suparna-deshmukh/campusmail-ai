@@ -159,40 +159,40 @@ field-mapping suggestions. Everything works fine without it.
 
 ---
 
-## 5. Cloud scheduler — send while the laptop is off (built-in, $0)
+## 5. Cloud scheduler — send while the laptop is off (deployed, $0, no card)
 
-The platform ships with a **cloud relay** (`cloud/`, a Cloudflare Worker + D1 + R2) that
-holds scheduled emails and sends them at the exact minute, 24/7 — no laptop, no VPS.
+The platform is connected to a **Supabase cloud relay** (free tier: Postgres + Edge
+Functions). Scheduled emails and their **auto follow-up reminders** are sent from the
+cloud at the exact minute — the laptop can be asleep or off. No credit card was needed.
 
-**Set it up once (10–15 minutes, step-by-step in `cloud/README-CLOUD.md`):**
+How it works:
 
-1. Free Cloudflare account → `npx wrangler login` (one browser click).
-2. Create the D1 database + R2 bucket (two commands), point `wrangler.toml` at them.
-3. In Settings → **Cloud scheduler**, click **"Show relay setup values"** — it shows the
-   5 values (relay secret, Gmail client id/secret, sender email, refresh token) with copy
-   buttons; paste each with `npx wrangler secret put …`.
-4. `npx wrangler deploy`, then paste the relay URL + secret back into Settings →
-   the chip turns **relay ON**.
-
-With the relay ON:
-
-- Scheduling, **stop / reschedule / delete / save-as-draft** all happen in the platform
-  and are mirrored to the cloud instantly — stop it here and it won't send there.
+- Scheduling, **stop / reschedule / delete / save-as-draft** happen on the platform and
+  are mirrored to Supabase instantly.
+- A per-minute cron (pg_cron → pg_net) pings the relay function, which sends up to 6 due
+  emails and any due reminders via the Gmail API.
 - Send results (status, error, message-id → replies are still detected) flow back to the
   queue automatically.
-- Clear the relay URL + secret in Settings to go back to 100%-local scheduling.
+- **Reminders run in the cloud too:** each scheduled mail carries its pre-rendered
+  reminder subject/body (from the batch's reminder template); the cloud sends reminder N
+  when `sent_at + N × reminder_days` passes with no reply. Marking a mail as replied
+  (auto-detection or by hand) is pushed to the cloud, which then skips its reminders.
+- Clear the relay URL + secret in Settings → "Cloud scheduler" to go back to 100%-local
+  scheduling.
 
-**Limits to know:** the relay sends up to 10 emails/minute (an 800-mail batch at 1-min
-stagger goes out exactly on schedule; 0-min stagger drains over ~80 min). Auto follow-up
-**reminders run on the platform**, so keep it running during reminder windows. Safe mode
-still blocks everything, cloud included.
+**Limits to know**
 
-If you'd rather not use the relay, the alternatives are: leave it running on an
-always-on machine, or run the same app on a small VPS (any $5/mo box, Python 3.9+;
-the Google redirect URIs would need the server address added). For a outreach cell,
-the relay or a plain VPS are the right size — no big queue infrastructure needed.
+- The cloud sends up to 6 emails + 6 reminders per minute. An 800-mail batch at 1-minute
+  stagger goes out exactly on schedule; a 0-minute-stagger batch drains over ~2.5 hours.
+- Safe mode ON blocks everything, cloud included.
+- The Supabase project pauses only after a week with zero activity — the per-minute cron
+  keeps it awake; a paused project resumes on the next request.
+- The relay code lives in `supabase/` (schema + function + this guide). A second,
+  already-built relay implementation for Cloudflare (Worker + D1 + R2) lives in `cloud/`
+  if you ever want a different provider.
 
----
+If you'd rather not use the relay at all, leave the platform running on an always-on
+machine — the built-in scheduler does everything locally.
 
 ## 6. Troubleshooting
 

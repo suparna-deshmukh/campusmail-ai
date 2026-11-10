@@ -6,7 +6,9 @@ sends them at the exact minute — your laptop can be asleep or off.
 **Architecture**
 
 - `migrations/0001_init.sql` — queue tables (`relay_emails`, `relay_token_cache`,
-  `relay_config`) + a `pg_cron` job that pings the relay function every minute.
+  `relay_config`) + a `pg_cron` job that pings the relay's `/api/pump` every minute.
+- `migrations/0002_reminders.sql` — reminder columns (pre-rendered reminder subject/body,
+  replied_at, reminder counter).
 - `functions/relay/index.ts` — the Edge Function. Routes:
   - `POST /api/emails` — upsert queue rows (called by the platform)
   - `GET  /api/status` — recent results (pulled by the platform)
@@ -27,5 +29,8 @@ cloud; results flow back automatically (sent / error + message-id → replies de
   stagger batch of 800 drains in ~2.5 hours.
 - Free Postgres pauses after a week with no activity — the per-minute cron keeps the
   project awake while it exists; a paused project resumes on the next request.
-- Auto follow-up reminders still run on the platform (keep it running during those windows).
+- **Auto follow-up reminders run in the cloud.** Each pushed mail carries its rendered
+  reminder subject/body + reply state; the relay sends reminder N at
+  `sent_at + N × reminder_days` if there is no reply. Reminders created here appear in the
+  platform queue as normal (reminder) rows.
 - Safe mode ON blocks everything, cloud included.

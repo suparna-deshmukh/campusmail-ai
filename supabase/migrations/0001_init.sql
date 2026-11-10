@@ -40,14 +40,16 @@ CREATE EXTENSION IF NOT EXISTS pg_net;
 -- every minute: ping the relay function to pump due emails (fire-and-forget)
 SELECT cron.unschedule('mailforge-pump')
  WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'mailforge-pump');
-SELECT cron.schedule('mailforge-pump', '* * * * *', $$
+SELECT cron.schedule('mailforge-pump', '* * * * *', $cron$
+  DO $body$
   BEGIN
     PERFORM net.http_post(
-      url       := (SELECT relay_url FROM relay_config LIMIT 1),
-      headers   := jsonb_build_object('x-relay-secret', (SELECT relay_secret FROM relay_config LIMIT 1)),
-      body      := '{}',
-      timeout_ms := 55000
+      url                  := (SELECT relay_url || '/api/pump' FROM relay_config LIMIT 1),
+      body                 := '{}'::jsonb,
+      headers              := jsonb_build_object('x-relay-secret', (SELECT relay_secret FROM relay_config LIMIT 1)),
+      timeout_milliseconds := 55000
     );
     DELETE FROM net._http_response;
   END;
-$$);
+  $body$;
+$cron$);

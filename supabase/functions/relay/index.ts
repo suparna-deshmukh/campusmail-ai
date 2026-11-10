@@ -1,5 +1,5 @@
 // MailForge cloud relay - Supabase Edge Function edition.
-// Sends scheduled emails from the cloud at the minute, without the laptop on.
+// Sends scheduled emails (and auto follow-up reminders) from the cloud, 24/7.
 // Secrets (set via `supabase secrets set`): DATABASE_URL, RELAY_SECRET,
 // GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, GMAIL_SENDER_EMAIL.
 import postgres from "npm:postgres@3.4.5";
@@ -19,10 +19,6 @@ function json(obj: unknown, code = 200): Response {
     status: code,
     headers: { "Content-Type": "application/json" },
   });
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
 }
 
 Deno.serve(async (req: Request) => {
@@ -55,12 +51,15 @@ async function upsertEmails(req: Request): Promise<Response> {
     if (!e || !e.local_id) continue;
     await sql`
       INSERT INTO relay_emails(local_id, account_id, to_addr, cc, subject, body_text,
-        attachments, status, scheduled_at, batch_name, campaign_name, is_reminder, serial, error, updated_at)
+        attachments, status, scheduled_at, batch_name, campaign_name, is_reminder, serial,
+        error, reminder_days, reminder_max, reminder_subject, reminder_body, replied_at, updated_at)
       VALUES (${e.local_id}, ${e.account_id || 0}, ${e.to_addr || ""}, ${e.cc || ""}, ${e.subject || ""},
         ${e.body_html || ""}, ${JSON.stringify(e.attachments || [])}, ${e.status || "scheduled"},
         ${e.scheduled_at ? new Date(e.scheduled_at) : null}, ${e.batch_name || ""},
         ${e.campaign_name || ""}, ${e.is_reminder ? 1 : 0}, ${String(e.serial || "")},
-        ${e.error || ""}, now())
+        ${e.error || ""}, ${e.reminder_days || 0}, ${e.reminder_max || 0},
+        ${e.reminder_subject || ""}, ${e.reminder_body || ""},
+        ${e.replied_at ? new Date(e.replied_at) : null}, now())
       ON CONFLICT (local_id) DO UPDATE SET
         account_id = excluded.account_id, to_addr = excluded.to_addr, cc = excluded.cc,
         subject = excluded.subject, body_text = excluded.body_text,
@@ -68,6 +67,9 @@ async function upsertEmails(req: Request): Promise<Response> {
         scheduled_at = excluded.scheduled_at, batch_name = excluded.batch_name,
         campaign_name = excluded.campaign_name, is_reminder = excluded.is_reminder,
         serial = excluded.serial, error = excluded.error,
+        reminder_days = excluded.reminder_days, reminder_max = excluded.reminder_max,
+        reminder_subject = excluded.reminder_subject, reminder_body = excluded.reminder_body,
+        replied_at = excluded.replied_at,
         sent_at = CASE WHEN excluded.status = 'sent' THEN now() ELSE relay_emails.sent_at END,
         message_id = CASE WHEN excluded.status = 'sent' AND excluded.message_id IS NOT NULL
                    AND excluded.message_id != '' THEN excluded.message_id ELSE relay_emails.message_id END,
@@ -80,7 +82,8 @@ async function upsertEmails(req: Request): Promise<Response> {
 
 async function statusPull(): Promise<Response> {
   const rows: any[] = await sql`
-    SELECT local_id, status, sent_at, message_id, error, updated_at
+    SELECT local_id, status, sent_at, message_id, error, updated_at,
+           is_reminder, parent_local_id, to_addr, subject, reminder_count, body_text
     FROM relay_emails
     WHERE updated_at >= now() - interval '10 days'
     ORDER BY updated_at DESC LIMIT 500`;
@@ -89,6 +92,10 @@ async function statusPull(): Promise<Response> {
     sent_at: r.sent_at ? new Date(r.sent_at).toISOString() : null,
     message_id: r.message_id || "", error: r.error || "",
     updated_at: new Date(r.updated_at).toISOString(),
+    is_reminder: !!r.is_reminder, parent_local_id: r.parent_local_id || 0,
+    to_addr: r.to_addr || "", subject: r.subject || "",
+    reminder_count: r.reminder_count || 0,
+    body_html: r.is_reminder ? (r.body_text || "") : undefined,
   })) });
 }
 
@@ -99,6 +106,8 @@ async function pump(): Promise<Response> {
   await sql`
     UPDATE relay_emails SET status = 'scheduled', updated_at = now()
     WHERE status = 'sending' AND updated_at < now() - interval '15 minutes'`;
+
+  // 1) send scheduled mails that are due
   const due: any[] = await sql`
     UPDATE relay_emails SET status = 'sending', updated_at = now()
     WHERE local_id IN (
@@ -124,7 +133,44 @@ async function pump(): Promise<Response> {
           updated_at = now() WHERE local_id = ${e.local_id}`;
     }
   }
-  return json({ ok: true, due: due.length, sent, failed });
+
+  // 2) auto follow-up reminders (rendered by the platform, pushed with each mail)
+  const rem: any[] = await sql`
+    SELECT * FROM relay_emails
+    WHERE status = 'sent' AND is_reminder = 0 AND reminder_days > 0
+      AND reminder_count < reminder_max AND replied_at IS NULL
+      AND sent_at IS NOT NULL
+      AND sent_at + make_interval(days => reminder_days * (reminder_count + 1)) <= now()
+    ORDER BY sent_at LIMIT ${PUMP_LIMIT}`;
+  let remSent = 0, remFailed = 0;
+  for (const p of rem) {
+    try {
+      const n = (p.reminder_count || 0) + 1;
+      const raw = buildRaw(p.to_addr, p.reminder_subject || "(no subject)", p.reminder_body || "",
+        parseAtts(p.attachments), parseCc(p.cc));
+      const res = await gmailSend(raw);
+      const mid = await gmailMessageId(res.id).catch(() => "");
+      const rid = -(p.local_id * 10 + n);
+      await sql`
+        INSERT INTO relay_emails(local_id, account_id, to_addr, cc, subject, body_text,
+          attachments, status, scheduled_at, batch_name, campaign_name, is_reminder, serial,
+          error, sent_at, message_id, parent_local_id, updated_at)
+        VALUES (${rid}, ${p.account_id}, ${p.to_addr}, ${p.cc}, ${p.reminder_subject || ""},
+          ${p.reminder_body || ""}, ${p.attachments}, 'sent', NULL, ${p.batch_name},
+          ${p.campaign_name}, 1, ${p.serial}, '', now(), ${mid || ""}, ${p.local_id}, now())
+        ON CONFLICT (local_id) DO NOTHING`;
+      await sql`
+        UPDATE relay_emails SET reminder_count = ${n}, error = '', updated_at = now()
+        WHERE local_id = ${p.local_id}`;
+      remSent++;
+    } catch (err) {
+      remFailed++;
+      await sql`
+        UPDATE relay_emails SET error = ${String((err as Error).message || err).slice(0, 300)},
+          updated_at = now() WHERE local_id = ${p.local_id}`;
+    }
+  }
+  return json({ ok: true, due: due.length, sent, failed, reminders_sent: remSent, reminders_failed: remFailed });
 }
 
 function parseAtts(s: string | null): any[] {
@@ -141,12 +187,9 @@ function b64url(bytes: Uint8Array): string {
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function b64(bytes: Uint8Array): string {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
+function enc(s: string): Uint8Array {
+  return new TextEncoder().encode(s);
 }
-const enc = (s: string) => new TextEncoder().encode(s);
 
 function buildRaw(to: string, subject: string, bodyHtml: string, atts: any[], cc: string[]): string {
   if (!atts.length) {

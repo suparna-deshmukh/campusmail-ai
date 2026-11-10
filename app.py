@@ -1621,9 +1621,11 @@ def replies_tick():
             r0 = c.execute("SELECT contact_id FROM emails WHERE id=?", (int(lid),)).fetchone()
             if r0:
                 c.execute("UPDATE contacts SET status='replied' WHERE id=?", (r0["contact_id"],))
-            db.log_activity("reply_detected", "email " + str(lid) + " replied", "scheduler")
         c.commit()
         c.close()
+        for lid in found:
+            db.log_activity("reply_detected", "email " + str(lid) + " replied", "scheduler")
+            _cloud_push_email(int(lid))
 
 
 def reminders_tick():
@@ -1632,6 +1634,7 @@ def reminders_tick():
         return
     now = datetime.now().astimezone()
     c = db.conn()
+    pending_logs = []
     batches = [dict(r) for r in c.execute(
         "SELECT * FROM batches WHERE reminder_days > 0 AND reminder_template_id > 0").fetchall()]
     for b in batches:
@@ -1678,7 +1681,7 @@ def reminders_tick():
                                               _load_attachments(b) or None, _cc_of(b))
             except Exception as ex:
                 c.execute("UPDATE emails SET error=? WHERE id=?", (str(ex)[:300], e["id"]))
-                db.log_activity("reminder_error", "serial " + str(e["serial"]) + ": " + str(ex)[:200], "scheduler")
+                pending_logs.append(("reminder_error", "serial " + str(e["serial"]) + ": " + str(ex)[:200]))
                 break
             c.execute("UPDATE emails SET reminder_count=reminder_count+1 WHERE id=?", (e["id"],))
             c.execute("INSERT INTO emails(batch_id, contact_id, serial, to_addr, subject, body_html, "
@@ -1686,12 +1689,14 @@ def reminders_tick():
                       "VALUES(?,?,?,?,?,?, 'sent', ?, ?, 1, ?)",
                       (b["id"], e["contact_id"], e["serial"], e["to_addr"], subj, body,
                        db.now_iso(), e["account_id"], db.now_iso()))
-            db.log_activity("reminder_sent",
+            pending_logs.append(("reminder_sent",
                             "serial " + str(e["serial"]) + " -> " + e["to_addr"] +
-                            " (reminder " + str(e["reminder_count"] + 1) + ")", "scheduler")
+                            " (reminder " + str(e["reminder_count"] + 1) + ")"))
             time.sleep(0.4)
     c.commit()
     c.close()
+    for action, detail in pending_logs:
+        db.log_activity(action, detail, "scheduler")
 
 
 
@@ -1724,6 +1729,32 @@ def _cloud_push_email(email_id, status=None):
     cam = None
     if batch and (batch["campaign_id"] or 0):
         cam = c.execute("SELECT name FROM campaigns WHERE id=?", (batch["campaign_id"],)).fetchone()
+    rem_days = rem_max = 0
+    rem_subj = rem_body = ""
+    if batch:
+        b = dict(batch)
+        if (b.get("reminder_days") or 0) > 0 and (b.get("reminder_template_id") or 0) > 0:
+            t = c.execute("SELECT * FROM email_templates WHERE id=?",
+                          (b["reminder_template_id"],)).fetchone()
+            if t:
+                rem_days, rem_max = int(b["reminder_days"]), int(b.get("reminder_max") or 1)
+                try:
+                    bmap = json.loads(b.get("mapping") or "{}")
+                except Exception:
+                    bmap = {}
+                mapping = {}
+                for f in json.loads(dict(t)["fields"] or "[]"):
+                    if f in bmap:
+                        mapping[f] = bmap[f]
+                    else:
+                        sug = docx_convert.suggest_mapping([f], ["serial", "company", "hr_name", "hr_email"]).get(f, "")
+                        if sug:
+                            mapping[f] = "column:" + sug
+                contact = c.execute("SELECT * FROM contacts WHERE id=?", (r["contact_id"],)).fetchone()
+                row = _row_vals(contact) if contact else {}
+                rem_subj, rem_body = render_email(dict(t), row, mapping)
+                rem_subj = rem_subj.replace("{first_subject}", r["subject"])
+                rem_body = rem_body.replace("{first_subject}", r["subject"])
     c.close()
     # the relay has no local image files - send fully rendered HTML
     try:
@@ -1737,13 +1768,16 @@ def _cloud_push_email(email_id, status=None):
                          "b64": base64.b64encode(abyte).decode("ascii")})
     payload = {"emails": [{
         "local_id": r["id"], "account_id": r["account_id"], "to_addr": r["to_addr"],
-        "cc": (batch or {}).get("cc", ""), "subject": r["subject"],
+        "cc": batch["cc"] if batch else "", "subject": r["subject"],
         "body_html": r["body_html"], "attachments": atts,
         "status": status or r["status"], "scheduled_at": r["scheduled_at"],
-        "batch_name": (batch or {}).get("name", "") if batch else "",
+        "batch_name": batch["name"] if batch else "",
         "campaign_name": cam["name"] if cam else "",
         "is_reminder": r["is_reminder"], "serial": r["serial"],
         "sent_at": r["sent_at"], "message_id": r["message_id"], "error": r["error"],
+        "reminder_days": rem_days, "reminder_max": rem_max,
+        "reminder_subject": rem_subj, "reminder_body": rem_body,
+        "replied_at": r["replied_at"],
     }]}
     try:
         req = urllib.request.Request(url + "/api/emails",
@@ -1767,12 +1801,30 @@ def relay_status_pull():
         db.log_activity("relay_pull_error", str(e)[:150], "scheduler")
         return
     c = db.conn()
+    pending_logs = []
     for e in data.get("emails", []):
         lid, st = e.get("local_id"), e.get("status")
         if not lid or st not in ("sent", "error", "scheduled", "cancelled", "drafted"):
             continue
+        exists = c.execute("SELECT 1 FROM emails WHERE id=?", (lid,)).fetchone()
+        if not exists and e.get("is_reminder") and st == "sent":
+            parent = c.execute("SELECT * FROM emails WHERE id=?", (e.get("parent_local_id") or 0,)).fetchone()
+            if parent:
+                c.execute("INSERT INTO emails(id, batch_id, contact_id, serial, to_addr, subject, body_html, "
+                          "status, scheduled_at, sent_at, error, account_id, message_id, "
+                          "reminder_count, is_reminder, created_at) "
+                          "VALUES(?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, '', ?, ?, 0, 1, ?)",
+                          (lid, parent["batch_id"], parent["contact_id"],
+                           e.get("serial") or parent["serial"], e.get("to_addr") or "",
+                           e.get("subject") or "", e.get("body_html") or "",
+                           None, e.get("sent_at") or db.now_iso(), parent["account_id"],
+                           e.get("message_id") or "", db.now_iso()))
+                pending_logs.append("serial " + str(parent["serial"]) + " - reminder sent from cloud")
+            continue
         c.execute("UPDATE emails SET status=?, error=? WHERE id=?",
                   (st, e.get("error") or "", lid))
+        if e.get("reminder_count"):
+            c.execute("UPDATE emails SET reminder_count=? WHERE id=?", (int(e["reminder_count"]), lid))
         if st == "sent":
             sent_at, mid = e.get("sent_at") or None, e.get("message_id") or ""
             if mid:
@@ -1782,6 +1834,8 @@ def relay_status_pull():
             c.execute("UPDATE contacts SET status='sent' WHERE id=(SELECT contact_id FROM emails WHERE id=?)", (lid,))
     c.commit()
     c.close()
+    for detail in pending_logs:
+        db.log_activity("reminder_sent_cloud", detail, "scheduler")
 
 
 def scheduler_tick():
@@ -2562,6 +2616,7 @@ def api_email_mark_replied(eid):
     c.commit()
     c.close()
     log("mark_replied", "email " + str(eid) + (" marked replied" if on else " marked not replied"))
+    _cloud_push_email(eid)
     return jsonify({"ok": True})
 
 
