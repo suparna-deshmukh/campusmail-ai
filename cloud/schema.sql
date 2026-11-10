@@ -1,4 +1,4 @@
--- D1 schema for the MailForge cloud relay
+-- D1 schema for the CampusMail AI cloud relay
 CREATE TABLE IF NOT EXISTS emails (
   local_id     INTEGER PRIMARY KEY,
   account_id   INTEGER DEFAULT 0,

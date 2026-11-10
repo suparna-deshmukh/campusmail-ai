@@ -1,4 +1,4 @@
-// MailForge cloud relay - sends scheduled emails without the laptop being on.
+// CampusMail AI cloud relay - sends scheduled emails without the laptop being on.
 // Deploy: see cloud/README-CLOUD.md. Secrets: RELAY_SECRET, GMAIL_CLIENT_ID,
 // GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, GMAIL_SENDER_EMAIL.
 

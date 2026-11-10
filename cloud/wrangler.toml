@@ -1,4 +1,4 @@
-name = "mailforge-relay"
+name = "campusmail-ai-relay"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 
@@ -9,10 +9,10 @@ crons = ["* * * * *"]
 # D1 database (created with: wrangler d1 create relay_db)
 [[d1_databases]]
 binding = "DB"
-database_name = "mailforge-relay-db"
+database_name = "campusmail-ai-relay-db"
 database_id = "b879fb0a-26c9-4959-9f03-9dd42aa54e54"
 
-# R2 bucket for large email bodies (created with: wrangler r2 bucket create mailforge-bodies)
+# R2 bucket for large email bodies (created with: wrangler r2 bucket create campusmail-ai-bodies)
 [[r2_buckets]]
 binding = "BODIES"
-bucket_name = "mailforge-bodies"
+bucket_name = "campusmail-ai-bodies"

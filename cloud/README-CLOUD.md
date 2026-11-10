@@ -1,4 +1,4 @@
-# MailForge Cloud Scheduler — one-time setup
+# CampusMail AI Cloud Scheduler — one-time setup
 
 This folder contains a tiny "relay" that runs in the cloud (Cloudflare, free tier).
 Once it is deployed, scheduled emails are sent **from the cloud at the exact minute** —
@@ -21,27 +21,27 @@ mirrored to the cloud automatically.
 On a Mac, open **Terminal** and run:
 
 ```bash
-cd mailforge/cloud
+cd campusmail-ai/cloud
 npx wrangler login        # opens the browser once, you click "Authorize"
-npx wrangler d1 create mailforge-relay-db
+npx wrangler d1 create campusmail-ai-relay-db
 ```
 
 The `d1 create` command prints a `database_id`. Open `wrangler.toml` in this folder
 and paste that id in place of `PASTE_YOUR_D1_DATABASE_ID_HERE`. Then:
 
 ```bash
-npx wrangler d1 execute mailforge-relay-db --file=./schema.sql --remote
-npx wrangler r2 bucket create mailforge-bodies
+npx wrangler d1 execute campusmail-ai-relay-db --file=./schema.sql --remote
+npx wrangler r2 bucket create campusmail-ai-bodies
 ```
 
-(If `mailforge-bodies` already exists or the name is taken, pick another name and
+(If `campusmail-ai-bodies` already exists or the name is taken, pick another name and
 also update `bucket_name` in `wrangler.toml`.)
 
 ### Step 3 — Set the 5 secrets
 
 Get all 5 values in one click from the platform:
 
-1. Open MailForge → **Settings** → "Cloud scheduler (optional)" card.
+1. Open CampusMail AI → **Settings** → "Cloud scheduler (optional)" card.
 2. Pick the Gmail account the relay should send from in the dropdown.
 3. Click **"Show relay setup values"** → it shows `RELAY_SECRET`,
    `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_SENDER_EMAIL`,
@@ -63,11 +63,11 @@ npx wrangler secret put GMAIL_REFRESH_TOKEN
 npx wrangler deploy
 ```
 
-It prints a URL like `https://mailforge-relay.<your-subdomain>.workers.dev`.
+It prints a URL like `https://campusmail-ai-relay.<your-subdomain>.workers.dev`.
 
 ## Step 5 — Point the platform at it
 
-Back in MailForge → **Settings** → "Cloud scheduler (optional)":
+Back in CampusMail AI → **Settings** → "Cloud scheduler (optional)":
 
 - **Relay URL** → paste the `https://...workers.dev` URL
 - **Relay secret** → paste the `RELAY_SECRET` value

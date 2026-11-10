@@ -1,4 +1,4 @@
-"""MailForge - recruiter outreach control center for the outreach team.
+"""CampusMail AI - recruiter outreach control center for the outreach team.
 
 Google login at the front door; team roles and access requests; multiple
 Gmail send-accounts (private or shared); mail merge from Word/HTML templates;
@@ -37,7 +37,7 @@ app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 app.secret_key = "boot"
 SCHEDULER_STATE = {"running": True, "last_tick": None, "last_error": ""}
 TICK_COUNTER = {"n": 0}
-DEV_LOGIN_EMAIL = os.environ.get("MAILFORGE_DEV_LOGIN", "").strip().lower()
+DEV_LOGIN_EMAIL = os.environ.get("CAMPUSMAIL_AI_DEV_LOGIN", "").strip().lower()
 
 
 # ---------------- auth helpers ----------------
@@ -105,14 +105,14 @@ def brand_team():
     """Team display name: setting -> env var (e.g. Vercel) -> neutral default."""
     v = (db.get_setting("brand_team_name", "") or "").strip()
     if not v:
-        v = os.environ.get("MAILFORGE_BRAND_TEAM", "").strip()
+        v = os.environ.get("CAMPUSMAIL_AI_BRAND_TEAM", "").strip()
     return v or "outreach team"
 
 
 def brand_foot():
     v = (db.get_setting("brand_tagline", "") or "").strip()
     if not v:
-        v = os.environ.get("MAILFORGE_BRAND_FOOT", "").strip()
+        v = os.environ.get("CAMPUSMAIL_AI_BRAND_FOOT", "").strip()
     return v
 
 
@@ -739,7 +739,7 @@ def api_export_contacts():
     for r in rows:
         w.writerow([r["serial"], r["company"], r["hr_name"], r["hr_email"], r["status"], r["error"], r["created_at"]])
     return Response(buf.getvalue(), mimetype="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=mailforge_contacts.csv"})
+                    headers={"Content-Disposition": "attachment; filename=campusmail_ai_contacts.csv"})
 
 
 # ---------------- templates ----------------
@@ -2113,7 +2113,7 @@ def _assistant_context():
     c.close()
     safe = db.get_setting("safe_mode") == "1"
     return "\n".join([
-        "You are the built-in assistant of MailForge, a CRM for the outreach team.",
+        "You are the built-in assistant of CampusMail AI, a CRM for the outreach team.",
         "You help by chatting and by doing safe actions directly in the platform: creating campaigns and templates, "
         "planning batches (queue / Gmail drafts / scheduled sends), stopping or rescheduling emails, and reporting status.",
         "Hard rules: you can NEVER send emails immediately and must never claim you sent something. If the user asks to "
@@ -2546,7 +2546,7 @@ def api_reports_csv():
                     r["subject"], r["status"], r["scheduled_at"] or "", r["sent_at"] or "",
                     r["replied_at"] or "", r["reminder_count"], "yes" if r["is_reminder"] else "", r["error"]])
     return Response(buf.getvalue(), mimetype="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=mailforge_outreach.csv"})
+                    headers={"Content-Disposition": "attachment; filename=campusmail_ai_outreach.csv"})
 
 
 @app.route("/api/reports/summary")
@@ -2694,10 +2694,10 @@ def main():
     app.secret_key = db.app_secret()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     print()
-    print("  MailForge - outreach team")
+    print("  CampusMail AI - outreach team")
     print("    http://localhost:5001")
     print()
-    app.run(host="127.0.0.1", port=int(os.environ.get("MAILFORGE_PORT", "5001")), debug=False, threaded=True)
+    app.run(host="127.0.0.1", port=int(os.environ.get("CAMPUSMAIL_AI_PORT", "5001")), debug=False, threaded=True)
 
 
 if __name__ == "__main__":

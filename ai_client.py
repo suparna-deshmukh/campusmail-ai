@@ -1,4 +1,4 @@
-"""OpenAI-compatible chat client for MailForge. Key lives in settings (blank by default)."""
+"""OpenAI-compatible chat client for CampusMail AI. Key lives in settings (blank by default)."""
 import json
 import time
 import urllib.error
@@ -28,7 +28,7 @@ def chat(messages, max_tokens=1200, temperature=0.7):
         headers={
             "Content-Type": "application/json",
             "Authorization": "Bearer " + key,
-            "User-Agent": "MailForge/1.0",
+            "User-Agent": "CampusMail AI/1.0",
         },
     )
     with urllib.request.urlopen(req, timeout=90) as resp:
@@ -58,7 +58,7 @@ def chat_raw(messages, max_tokens=1500, temperature=0.4, tools=None):
         headers={
             "Content-Type": "application/json",
             "Authorization": "Bearer " + key,
-            "User-Agent": "MailForge/1.0",
+            "User-Agent": "CampusMail AI/1.0",
         },
     )
     last_err = None

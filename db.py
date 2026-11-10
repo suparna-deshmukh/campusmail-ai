@@ -1,4 +1,4 @@
-"""SQLite storage for MailForge. Stdlib only - no ORM, works on Python 3.9+."""
+"""SQLite storage for CampusMail AI. Stdlib only - no ORM, works on Python 3.9+."""
 import csv
 import json
 import os
@@ -8,7 +8,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
 DATA_DIR = BASE / "data"
-DB_PATH = DATA_DIR / "mailforge.db"
+DB_PATH = DATA_DIR / "campusmail_ai.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);

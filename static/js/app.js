@@ -1,4 +1,4 @@
-/* MailForge frontend - vanilla JS, no build step. Python 3.9-era browsers all fine. */
+/* CampusMail AI frontend - vanilla JS, no build step. Python 3.9-era browsers all fine. */
 
 // ---------- helpers ----------
 function $(sel, root) { return (root || document).querySelector(sel); }
@@ -1460,7 +1460,7 @@ Pages.assistant = async function () {
     log.appendChild(d);
     log.scrollTop = log.scrollHeight;
   }
-  if (!msgs.length) addBubble("assistant", "Hi! I'm your MailForge assistant. Ask me about your campaigns, or tell me to do something - create a template, plan a batch, schedule or stop emails. I can't send anything without your manual step.");
+  if (!msgs.length) addBubble("assistant", "Hi! I'm your CampusMail AI assistant. Ask me about your campaigns, or tell me to do something - create a template, plan a batch, schedule or stop emails. I can't send anything without your manual step.");
   msgs.forEach((m) => addBubble(m.role, m.content, m.events));
   const SUGG = [
     "What's the status of my campaigns?",

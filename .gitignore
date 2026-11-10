@@ -16,7 +16,7 @@ __pycache__/
 # ---- os / editor ----
 .DS_Store
 *.swp
-mailforge.db
+campusmail_ai.db
 static/img/guide/
 .supabase/
 .temp/

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Settings - MailForge{% endblock %}
+{% block title %}Settings - CampusMail AI{% endblock %}
 {% block page_title %}Settings{% endblock %}
 {% block content %}
 <div class="grid cols-2">
@@ -64,11 +64,11 @@
     <div class="field"><label>Admin email (this Google account is always the admin)</label><input class="input" id="set-admin-email" style="max-width:340px" placeholder="yourname@your-institution.edu"></div>
     <div class="field" style="max-width:520px"><label>Team display name (shown on the login page + navigation)</label>
       <input class="input" id="set-brand-name" placeholder="the exact name you want visitors to see" style="max-width:340px">
-      <span class="hint" style="margin-top:4px">Stored only on this deployment (never in the code or the repo). Blank = the neutral default. An environment variable <code>MAILFORGE_BRAND_TEAM</code> on a hosted deployment overrides this.</span>
+      <span class="hint" style="margin-top:4px">Stored only on this deployment (never in the code or the repo). Blank = the neutral default. An environment variable <code>CAMPUSMAIL_AI_BRAND_TEAM</code> on a hosted deployment overrides this.</span>
     </div>
     <div class="field" style="max-width:520px"><label>Login footer line (optional)</label>
       <input class="input" id="set-brand-foot" placeholder="small line under the sign-in card" style="max-width:340px">
-      <span class="hint" style="margin-top:4px">Override with the <code>MAILFORGE_BRAND_FOOT</code> environment variable on a hosted deployment.</span>
+      <span class="hint" style="margin-top:4px">Override with the <code>CAMPUSMAIL_AI_BRAND_FOOT</code> environment variable on a hosted deployment.</span>
     </div>
     <button class="btn primary" id="btn-save-google">Save Google sign-in</button>
   </div>
@@ -119,7 +119,7 @@
   <div class="card-body">
     <p class="hint" style="margin-top:0">Deploy the files in the <code>cloud/</code> folder once (see <code>cloud/README-CLOUD.md</code>). Then paste the relay's address and secret here. When set, scheduled emails are sent from the cloud on the minute - this laptop can sleep. Stop / reschedule / delete / save-as-draft still work right here and are mirrored to the cloud automatically. Leave blank to run 100% locally.</p>
     <div class="grid cols-2">
-      <div class="field"><label>Relay URL</label><input class="input" id="set-relay-url" placeholder="https://mailforge-relay.yourname.workers.dev"></div>
+      <div class="field"><label>Relay URL</label><input class="input" id="set-relay-url" placeholder="https://campusmail-ai-relay.yourname.workers.dev"></div>
       <div class="field"><label>Relay secret</label><input class="input" id="set-relay-secret" type="password" autocomplete="off" placeholder="paste the RELAY_SECRET"></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap">

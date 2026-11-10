@@ -1,4 +1,4 @@
-# MailForge Cloud Scheduler — Supabase edition (one-time setup, $0, no credit card)
+# CampusMail AI Cloud Scheduler — Supabase edition (one-time setup, $0, no credit card)
 
 A Supabase project (free tier: Postgres + Edge Functions) holds scheduled emails and
 sends them at the exact minute — your laptop can be asleep or off.

@@ -1,6 +1,6 @@
-# MailForge — the outreach team
+# CampusMail AI — the outreach team
 
-MailForge is a **local, self-contained web app** for the outreach team. You write (or upload) one
+CampusMail AI is a **local, self-contained web app** for the outreach team. You write (or upload) one
 email, point it at your company sheet, and it renders **one personalised email per contact** —
 with the right name, company, images, links, attachments and signature — then lets you:
 
@@ -22,7 +22,7 @@ SQLite file inside the `data/` folder. Nothing is sent without a deliberate, con
 **Mac** — open a terminal, then:
 
 ```
-cd /path/to/mailforge
+cd /path/to/campusmail-ai
 ./run.sh
 ```
 
@@ -36,7 +36,7 @@ terminal open** whenever you want scheduled sends to fire.
 
 > The platform uses port **5001** (not 5000, which macOS AirPlay may occupy). If something else
 > is using 5001, start it with a different port:
-> `MAILFORGE_PORT=8080 ./run.sh` — but then use the matching address for setup steps below.
+> `CAMPUSMAIL_AI_PORT=8080 ./run.sh` — but then use the matching address for setup steps below.
 
 ---
 
@@ -60,16 +60,16 @@ terminal open** whenever you want scheduled sends to fire.
 
 This is what powers the login button.
 
-1. Go to **console.cloud.google.com** (use the team's Google account). Create a project, e.g. `mailforge`.
+1. Go to **console.cloud.google.com** (use the team's Google account). Create a project, e.g. `campusmail-ai`.
 2. **APIs & Services → OAuth consent screen** → **External**:
-   - App name: `MailForge (outreach team)`, support email: the team's email.
+   - App name: `CampusMail AI (outreach team)`, support email: the team's email.
    - **Scopes**: add `openid`, `email`, `profile` (User info/email/profile).
    - **Test users**: add every team member's email.
      (If the screen offers **Internal** and the domain is verified, pick that instead and skip test users.)
 3. **APIs & Services → Credentials → Create credentials → OAuth client ID** → type **Web application**:
    - Authorized redirect URIs, add exactly: `http://localhost:5001/api/google/callback`
    - Create. Copy the **Client ID** and **Client secret**.
-4. In MailForge: **Settings → Google sign-in (team login)** → paste both → **Save**.
+4. In CampusMail AI: **Settings → Google sign-in (team login)** → paste both → **Save**.
    Also set your own email as the **Admin email** (it always keeps the admin role).
 
 ### Step B — Gmail sending client (drafts + scheduled sends)
@@ -79,7 +79,7 @@ Same Google Cloud project.
 1. **APIs & Services → Library** → search **Gmail API** → **Enable**.
 2. **Credentials → Create credentials → OAuth client ID** → type **Desktop app** → Create →
    **Download JSON** (a small file). Open it, copy everything.
-3. In MailForge: **Settings → Gmail API client** → paste the whole JSON → **Save**.
+3. In CampusMail AI: **Settings → Gmail API client** → paste the whole JSON → **Save**.
 4. **Settings → Gmail send-accounts → Connect a Gmail account** → the browser opens Google →
    sign in with the account that should send (e.g. `team@yourdomain.com`) →
    allow. It now appears in the list **for the whole team**, saved permanently.
@@ -197,7 +197,7 @@ machine — the built-in scheduler does everything locally.
 ## 6. Troubleshooting
 
 - **"Port 5001 already in use"** → `lsof -i :5001` (Mac) / `netstat -ano | findstr 5001`
-  (Windows), or start with another port: `MAILFORGE_PORT=8080 ./run.sh`.
+  (Windows), or start with another port: `CAMPUSMAIL_AI_PORT=8080 ./run.sh`.
 - **Google error "redirect_uri_mismatch"** → the authorized redirect URI must be exactly
   `http://localhost:5001/api/google/callback` (or the matching host/port you chose).
 - **"Google sign-in is not set up yet"** on the login page → Step A above.
@@ -207,7 +207,7 @@ machine — the built-in scheduler does everything locally.
 - **Nothing sends at the scheduled time** → the computer was asleep or the terminal was closed.
   The send happens on the next tick (≤8 s) once the app is running again (or is marked
   missed, per Settings).
-- **Reset everything** → stop the app, delete `data/mailforge.db*`. (Keep `data/companies.csv`
+- **Reset everything** → stop the app, delete `data/campusmail_ai.db*`. (Keep `data/companies.csv`
   if you want the bundled sheet re-seeded.)
 
 ## 7. File layout
@@ -224,6 +224,6 @@ cloud/            Cloudflare relay: worker + D1 schema + wrangler config + READM
 static/           app.css, app.js (vanilla JS), img/guide/ (step screenshots)
 seed_template/    bundled template + subject + signature image (used on a brand-new DB)
 template_images/  images from templates/signatures (stored once, inlined at send time)
-data/             mailforge.db (the database), companies.csv (bundled sheet), attachments/
+data/             campusmail_ai.db (the database), companies.csv (bundled sheet), attachments/
 run.sh / run.bat  launchers (auto-create the virtualenv)
 ```

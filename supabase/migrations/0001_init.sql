@@ -1,4 +1,4 @@
--- MailForge cloud relay schema (Supabase / Postgres)
+-- CampusMail AI cloud relay schema (Supabase / Postgres)
 CREATE TABLE IF NOT EXISTS relay_emails (
   local_id      INTEGER PRIMARY KEY,
   account_id    INTEGER DEFAULT 0,
@@ -38,9 +38,9 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pg_net;
 
 -- every minute: ping the relay function to pump due emails (fire-and-forget)
-SELECT cron.unschedule('mailforge-pump')
- WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'mailforge-pump');
-SELECT cron.schedule('mailforge-pump', '* * * * *', $cron$
+SELECT cron.unschedule('campusmail-ai-pump')
+ WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'campusmail-ai-pump');
+SELECT cron.schedule('campusmail-ai-pump', '* * * * *', $cron$
   DO $body$
   BEGIN
     PERFORM net.http_post(

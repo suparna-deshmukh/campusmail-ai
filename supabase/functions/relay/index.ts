@@ -1,4 +1,4 @@
-// MailForge cloud relay - Supabase Edge Function edition.
+// CampusMail AI cloud relay - Supabase Edge Function edition.
 // Sends scheduled emails (and auto follow-up reminders) from the cloud, 24/7.
 // Secrets (set via `supabase secrets set`): DATABASE_URL, RELAY_SECRET,
 // GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, GMAIL_SENDER_EMAIL.

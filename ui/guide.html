@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Getting started - MailForge{% endblock %}
+{% block title %}Getting started - CampusMail AI{% endblock %}
 {% block page_title %}Getting started{% endblock %}
 {% block content %}
 <script>
@@ -12,8 +12,8 @@ document.addEventListener("DOMContentLoaded", () => {
 <div class="guide">
   <div class="guide-intro card">
     <div class="card-body">
-      <h2 style="margin:0 0 8px">Welcome to MailForge</h2>
-      <p class="muted" style="margin:0">MailForge lets the outreach team write one email, fill it automatically for every company on the sheet, and then either save everything as Gmail drafts or schedule it to go out at an exact time. Nothing is ever sent without you pressing a confirm button.</p>
+      <h2 style="margin:0 0 8px">Welcome to CampusMail AI</h2>
+      <p class="muted" style="margin:0">CampusMail AI lets the outreach team write one email, fill it automatically for every company on the sheet, and then either save everything as Gmail drafts or schedule it to go out at an exact time. Nothing is ever sent without you pressing a confirm button.</p>
       <p style="margin:14px 0 0"><a class="btn primary" href="/merge">Start a mail merge &#8594;</a> <a class="btn ghost" href="#step1">Jump to step 1</a></p>
     </div>
   </div>
@@ -34,7 +34,7 @@ document.addEventListener("DOMContentLoaded", () => {
       <h3>One-time setup: connect team sign-in (admin only, ~10 minutes)</h3>
       <p class="muted">The very first person to set up the platform does this once in <b>Google Cloud</b>. You paste the results into Settings - nothing is installed.</p>
       <ol class="steps">
-        <li>Go to <b>console.cloud.google.com</b> and sign in. Create a project (any name, e.g. "mailforge").</li>
+        <li>Go to <b>console.cloud.google.com</b> and sign in. Create a project (any name, e.g. "campusmail-ai").</li>
         <li>Open <b>APIs and Services &#8594; OAuth consent screen</b>. Choose <b>External</b>, fill in app name + your email. Under <b>Scopes</b> add <code class="inline">openid</code>, <code class="inline">email</code>, <code class="inline">profile</code>. Under <b>Test users</b> add every team member's email (skip this if the consent screen offers <b>Internal</b> and your domain is verified - then nobody needs to be a test user).</li>
         <li>Open <b>APIs and Services &#8594; Credentials &#8594; Create credentials &#8594; OAuth client ID</b>. Type: <b>Web application</b>. Under <b>Authorized redirect URIs</b> add exactly:<br><code class="inline">http://localhost:5001/api/google/callback</code><br>Create, then copy the <b>Client ID</b> and <b>Client secret</b>.</li>
         <li>Paste both into <b>Settings &#8594; Google sign-in</b> (admin section) and save.</li>
@@ -52,7 +52,7 @@ document.addEventListener("DOMContentLoaded", () => {
         <li>In the project, open <b>APIs and Services &#8594; Library</b>, search <b>Gmail API</b> and press <b>Enable</b>.</li>
         <li>Go to <b>Credentials &#8594; Create credentials &#8594; OAuth client ID</b>. Type: <b>Desktop app</b>. Create.</li>
         <li>Press <b>Download JSON</b> on the new client. Open the file, select all, copy.</li>
-        <li>In MailForge: <b>Settings &#8594; Gmail API client</b> &#8594; paste the whole JSON &#8594; Save.</li>
+        <li>In CampusMail AI: <b>Settings &#8594; Gmail API client</b> &#8594; paste the whole JSON &#8594; Save.</li>
         <li>Then in <b>Settings &#8594; Gmail send-accounts</b> click <b>Connect a Gmail account</b>, sign in with the team's Gmail (e.g. the team account). It now shows in the list for the whole team.</li>
       </ol>
       <div class="guide-img"><img src="/static/img/guide/03-accounts.png" alt="Settings - Gmail accounts"></div>
