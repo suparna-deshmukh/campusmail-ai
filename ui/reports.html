@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Outreach Reports - MailForge{% endblock %}
+{% block page_title %}Outreach Reports{% endblock %}
+{% block content %}
+<div class="grid cols-4" id="rep-cards" style="margin-bottom:20px">
+  <div class="stat"><div class="label">Loading...</div></div>
+</div>
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h3>Sends per day - last 14 days</h3></div>
+    <div class="card-body" id="rep-days"><span class="muted">Loading...</span></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Pipeline buckets</h3><span class="sub">every email, where it is</span></div>
+    <div class="card-body" id="rep-buckets"><span class="muted">Loading...</span></div>
+  </div>
+</div>
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h3>Top companies by outreach volume</h3></div>
+  <div class="table-wrap"><table class="tbl">
+    <tr><th>Company</th><th class="num">Total</th><th class="num">Sent</th><th class="num">Replied</th><th class="num">Reply rate</th></tr>
+    <tbody id="rep-companies"></tbody>
+  </table></div>
+</div>
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h3>Every email - trackable</h3>
+    <div class="actions" style="display:flex;gap:8px;align-items:center">
+      <input class="input" id="rep-q" placeholder="Search company, person, email, subject..." style="width:260px">
+      <select class="input" id="rep-status" style="max-width:150px">
+        <option value="">All statuses</option>
+        <option>pending</option><option>drafted</option><option>scheduled</option>
+        <option>sent</option><option>replied</option><option>error</option>
+      </select>
+      <a class="btn sm" href="/api/reports/emails.csv">Export CSV</a>
+    </div>
+  </div>
+  <div class="table-wrap"><table class="tbl">
+    <tr><th>Serial</th><th>Company</th><th>To</th><th>Subject</th><th>Status</th><th>Sent</th><th>Replied</th><th class="num">Rem.</th></tr>
+    <tbody id="rep-rows"></tbody>
+  </table></div>
+</div>
+{% endblock %}

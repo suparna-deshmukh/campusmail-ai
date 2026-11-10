@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Contacts - MailForge{% endblock %}
+{% block page_title %}Contacts{% endblock %}
+{% block content %}
+<div class="search-row">
+  <input class="input" id="contact-search" placeholder="Search company, person, email or serial...">
+  <select class="input" id="contact-status" style="max-width:160px">
+    <option value="">All statuses</option>
+    <option>new</option><option>drafted</option><option>scheduled</option>
+    <option>sent</option><option>replied</option><option>error</option>
+  </select>
+  <span class="chip" id="contact-total">0</span>
+  <div style="margin-left:auto;display:flex;gap:8px">
+    <button class="btn" id="btn-contact-import">Import sheet</button>
+    <input type="file" id="contact-file" accept=".csv,.xlsx" style="display:none">
+    <button class="btn" id="btn-contact-export">Export CSV</button>
+    <button class="btn" id="btn-contact-add">Add contact</button>
+    <button class="btn danger" id="btn-contact-delete">Delete selected (<span id="sel-count">0</span>)</button>
+  </div>
+</div>
+<div class="card">
+  <div class="table-wrap"><table class="tbl">
+    <tr><th></th><th>Serial</th><th>Company</th><th>HR name</th><th>HR email</th><th>Status</th><th></th></tr>
+    <tbody id="contact-rows"></tbody>
+  </table></div>
+  <div class="card-head" style="border-bottom:none;border-top:1px solid var(--border)">
+    <span class="sub" id="contact-count"></span>
+    <div class="actions"><span id="contact-pager">
+      <button class="btn sm" data-d="-1">&#8592; Prev</button>
+      <button class="btn sm" data-d="1">Next &#8594;</button>
+    </span></div>
+  </div>
+</div>
+{% endblock %}

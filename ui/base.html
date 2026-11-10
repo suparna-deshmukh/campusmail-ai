@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}MailForge{% endblock %}</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body data-page="{{ page }}">
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="mark">M</div>
+      <div>MailForge<small>outreach team</small></div>
+    </div>
+    <nav class="nav">
+      <a href="/" class="{{ 'active' if page=='dashboard' }}"><span class="ico">&#9632;</span>Dashboard</a>
+      <a href="/contacts" class="{{ 'active' if page=='contacts' }}"><span class="ico">&#9679;</span>Contacts</a>
+      <a href="/campaigns" class="{{ 'active' if page=='campaigns' }}"><span class="ico">&#9635;</span>Campaigns</a>
+      <a href="/templates" class="{{ 'active' if page=='templates' }}"><span class="ico">&#9998;</span>Templates</a>
+      <a href="/merge" class="{{ 'active' if page=='merge' }}"><span class="ico">&#9881;</span>Mail Merge</a>
+      <a href="/queue" class="{{ 'active' if page=='queue' }}"><span class="ico">&#9202;</span>Queue and Schedule</a>
+      <a href="/reports" class="{{ 'active' if page=='reports' }}"><span class="ico">&#9636;</span>Outreach Reports</a>
+      <a href="/guide" class="{{ 'active' if page=='guide' }}"><span class="ico">&#9733;</span>Getting started</a>
+      <a href="/activity" class="{{ 'active' if page=='activity' }}"><span class="ico">&#9776;</span>Activity</a>
+      <a href="/settings" class="{{ 'active' if page=='settings' }}"><span class="ico">&#9881;</span>Settings</a>
+      {% if me and me.role == 'admin' %}
+      <a href="/admin" class="{{ 'active' if page=='admin' }}"><span class="ico">&#9829;</span>Team admin</a>
+      {% endif %}
+    </nav>
+    <div class="side-foot">
+      <div><span class="dot" id="sf-dot"></span><span id="sf-safe">loading...</span></div>
+      <div class="acct" id="sf-gmail" style="margin-top:7px">No send account</div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+        <span class="acct" id="sf-user" style="font-size:11.5px;font-weight:500;color:var(--sidebar-text)">you</span>
+        <button class="btn ghost sm" id="btn-logout" style="margin-left:auto;color:#a7adcb;font-size:11px">Sign out</button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <h1>{% block page_title %}{% endblock %}</h1>
+      <div class="chips" id="topbar-chips"></div>
+    </div>
+    <div class="content">
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+  <div class="modal-backdrop" id="modal-backdrop">
+    <div class="modal" id="modal-box">
+      <div class="m-head"><h3 id="modal-title">Title</h3><button class="x" data-close>&times;</button></div>
+      <div class="m-body" id="modal-body"></div>
+      <div class="m-foot" id="modal-foot"></div>
+    </div>
+  </div>
+
+<script src="/static/js/app.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

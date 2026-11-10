@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Mail Merge - MailForge{% endblock %}
+{% block page_title %}Mail Merge{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-body">
+    <div class="wiz-steps" id="wiz-steps"></div>
+    <div id="dataset-info" class="hint" style="margin-bottom:18px"></div>
+
+    <div class="wiz-panel">
+      <div class="section-title" style="margin-top:0">Step 1 - Which campaign is this for?</div>
+      <p class="hint" style="margin-top:0">A campaign groups one outreach effort - the sheets you use, the batches you create, and how they perform. Pick an existing campaign or start a new one.</p>
+      <div id="cam-pick"></div>
+      <div class="field" style="margin-top:14px"><label>&#8230;or create a new campaign</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input class="input" id="new-cam-name" placeholder="e.g. Summer 2027 recruiter outreach" style="max-width:380px">
+          <button class="btn" id="btn-cam-create">Create & use</button>
+        </div>
+      </div>
+      <div style="margin-top:16px"><button class="btn primary" id="btn-to-2">Next: pick template &#8594;</button></div>
+    </div>
+
+    <div class="wiz-panel" style="display:none">
+      <div class="section-title" style="margin-top:0">Step 2 - Pick the email template</div>
+      <div id="tpl-cards"></div>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="btn" id="btn-tpl-upload">&#8682; Upload a new template</button>
+        <div style="margin-left:auto;display:flex;gap:8px">
+          <button class="btn ghost" id="btn-back-2">&#8592; Back</button>
+          <button class="btn primary" id="btn-to-3">Next: who to write to &#8594;</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="wiz-panel" style="display:none">
+      <div class="section-title" style="margin-top:0">Step 3 - Who are we writing to?</div>
+      <p class="hint" style="margin-top:0">Pick the data source. With a sheet, you choose in the next step which of its columns replace each template field.</p>
+      <div id="src-main"></div>
+      <div class="card" style="display:flex;align-items:flex-start;gap:10px;padding:12px 16px;cursor:pointer;margin-bottom:8px">
+        <input type="radio" name="datasrc" value="sheet" style="margin-top:3px">
+        <div style="flex:1;min-width:0"><b>Use an uploaded sheet</b>
+          <select class="input" id="src-sheetsel" style="margin-top:6px;max-width:440px"></select>
+        </div>
+      </div>
+      <div class="card" style="padding:12px 16px;margin-bottom:8px">
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+          <input type="radio" name="datasrc" value="upload" style="margin-top:3px">
+          <div style="flex:1;min-width:0"><b>Upload a new sheet for this merge</b>
+            <div class="muted" style="margin-top:3px">CSV or Excel (.xlsx). First row = column names (e.g. Company Name, HR Name, HR Email). Every row becomes one email.</div>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+              <input type="file" id="sheet-file" accept=".csv,.xlsx">
+              <button class="btn primary sm" id="btn-sheet-upload">Upload sheet</button>
+              <span id="sheet-up-status" class="muted"></span>
+            </div>
+            <div id="sheet-summary" style="display:none;margin-top:12px"></div>
+          </div>
+        </label>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="btn ghost" id="btn-back-3">&#8592; Back</button>
+        <div style="margin-left:auto"></div>
+        <button class="btn primary" id="btn-to-4">Next: map fields &#8594;</button>
+      </div>
+    </div>
+
+    <div class="wiz-panel" style="display:none">
+      <div class="section-title" style="margin-top:0">Step 4 - What replaces each field?</div>
+      <div class="table-wrap" style="max-width:820px"><table class="tbl">
+        <tr><th style="width:220px">Template field</th><th>Replaced with</th></tr>
+        <tbody id="mapping-rows"></tbody>
+      </table></div>
+      <div id="map-sample" class="hint" style="margin-top:10px"></div>
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="btn ghost" id="btn-back-4">&#8592; Back</button>
+        <button class="btn ai" id="btn-ai-map" style="display:none">&#10022; Suggest with AI</button>
+        <div style="margin-left:auto"></div>
+        <button class="btn primary" id="btn-to-5">Preview &#8594;</button>
+      </div>
+    </div>
+
+    <div class="wiz-panel" style="display:none">
+      <div class="section-title" style="margin-top:0">Step 5 - Preview with real data</div>
+      <div id="merge-total" class="hint" style="margin-bottom:14px"></div>
+      <div id="preview-box"></div>
+      <div id="sig-append-box" style="display:none">
+        <div class="divider"></div>
+        <label class="checkbox-row"><input type="checkbox" id="sig-append">
+          Append my saved signature (Settings &#8594; Signature) to every email in this batch</label>
+        <div class="hint" style="margin-top:4px">Tick this only if your template does not already end with your signature. The preview above updates when you toggle it.</div>
+      </div>
+      <div class="divider"></div>
+      <div class="section-title">Attachments (optional - go out with every email in this batch)</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="btn" id="btn-attach-add">Add files</button>
+        <input type="file" id="attach-file" multiple style="display:none"
+          accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg,.zip,.ppt,.pptx,.html">
+        <span class="hint" id="attach-info">No attachments yet. PDFs, spreadsheets, brochures - up to 10 files, 15 MB total. Each file is stored once, attached at send time.</span>
+      </div>
+      <div id="attach-list" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"></div>
+      <div class="divider"></div>
+      <div class="section-title">Automatic follow-up reminders (optional)</div>
+      <div style="max-width:760px">
+        <label class="checkbox-row" style="margin-bottom:10px"><input type="checkbox" id="rem-on">
+          Send a reminder automatically if the recruiter has not replied</label>
+        <div id="rem-box" style="display:none;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--bg)">
+          <div class="grid cols-3">
+            <div class="field" style="margin:0"><label>If no reply after (days)</label>
+              <input class="input" id="rem-days" type="number" min="1" max="90" value="3" style="max-width:110px"></div>
+            <div class="field" style="margin:0"><label>Reminder template</label>
+              <select class="input" id="rem-tpl"></select></div>
+            <div class="field" style="margin:0"><label>Maximum reminders</label>
+              <select class="input" id="rem-max"><option selected>1</option><option>2</option><option>3</option></select></div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
+            <button class="btn ai sm" id="btn-rem-ai">&#10022; AI: write a reminder template</button>
+            <span class="hint">You can also upload your own reminder as a Word/HTML template in Templates and pick it here.</span>
+          </div>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="section-title">Range, CC and what happens next</div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field" style="margin:0">
+          <label>Serial range (optional - blank = everyone in the sheet)</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input class="input" id="range-from" type="number" min="1" placeholder="from" style="width:92px">
+            <span class="muted" style="font-size:12px">to</span>
+            <input class="input" id="range-to" type="number" min="1" placeholder="to" style="width:92px">
+          </div>
+        </div>
+        <div class="field" style="margin:0">
+          <label>CC on every email (optional, comma separated)</label>
+          <input class="input" id="cc-input" placeholder="e.g. team@yourdomain.com, name@company.com" style="max-width:330px">
+        </div>
+        <div class="field" style="margin:0">
+          <label>After generating</label>
+          <select class="input" id="gen-action" style="max-width:290px">
+            <option value="queue">Put in queue only (draft later from Queue page)</option>
+            <option value="draft">Create Gmail drafts now</option>
+            <option value="schedule">Schedule the send at a time</option>
+            <option value="send">Send immediately (Safe mode must be OFF)</option>
+          </select>
+        </div>
+      </div>
+      <div id="sched-fields" style="display:none;margin-top:12px">
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <div class="field" style="margin:0">
+            <label>Send at (local time)</label>
+            <input class="input" id="sched-at" placeholder="YYYY-MM-DD HH:MM   e.g. 2026-11-12 10:30">
+          </div>
+          <div class="field" style="margin:0">
+            <label>Stagger (minutes between emails; 0 = all at once)</label>
+            <input class="input" id="sched-stagger" type="number" min="0" value="0" style="max-width:110px">
+          </div>
+        </div>
+      </div>
+      <div id="send-warn" class="hint" style="display:none;color:var(--danger);margin-top:8px">
+        "Send immediately" sends RIGHT NOW from the selected account - it cannot be undone.
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:14px">
+        <div class="field" style="margin:0;flex:1;min-width:220px">
+          <label>Batch name</label>
+          <input class="input" id="batch-name" value="Outreach batch">
+        </div>
+        <div class="field" style="margin:0;min-width:240px">
+          <label>Send from (Gmail account)</label>
+          <select class="input" id="merge-account"></select>
+        </div>
+        <button class="btn ghost" id="btn-back-5">&#8592; Back</button>
+        <button class="btn primary" id="btn-generate">Generate</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Getting started - MailForge{% endblock %}
+{% block page_title %}Getting started{% endblock %}
+{% block content %}
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll(".guide-img img").forEach((img) => {
+    img.addEventListener("error", () => { img.parentElement.style.display = "none"; });
+  });
+});
+</script>
+<div class="guide">
+  <div class="guide-intro card">
+    <div class="card-body">
+      <h2 style="margin:0 0 8px">Welcome to MailForge</h2>
+      <p class="muted" style="margin:0">MailForge lets the outreach team write one email, fill it automatically for every company on the sheet, and then either save everything as Gmail drafts or schedule it to go out at an exact time. Nothing is ever sent without you pressing a confirm button.</p>
+      <p style="margin:14px 0 0"><a class="btn primary" href="/merge">Start a mail merge &#8594;</a> <a class="btn ghost" href="#step1">Jump to step 1</a></p>
+    </div>
+  </div>
+
+  <div class="guide-step card" id="step1">
+    <div class="guide-num">1</div>
+    <div class="card-body" style="padding:0 22px 20px">
+      <h3>Sign in with your Google account</h3>
+      <p class="muted">Open the platform, click <b>Sign in with Google</b>, and choose your institutional account. If you are part of the team you land straight in; otherwise a request is sent to the admins automatically.</p>
+      <div class="guide-img"><img src="/static/img/guide/01-login.png" alt="Login page"></div>
+      <p class="hint">New person on the team? The admin can either <b>invite your email</b> (Team admin page) or <b>approve your request</b>. Once approved you can sign in any time - your login is remembered on this computer.</p>
+    </div>
+  </div>
+
+  <div class="guide-step card" id="step-google">
+    <div class="guide-num">2</div>
+    <div class="card-body" style="padding:0 22px 20px">
+      <h3>One-time setup: connect team sign-in (admin only, ~10 minutes)</h3>
+      <p class="muted">The very first person to set up the platform does this once in <b>Google Cloud</b>. You paste the results into Settings - nothing is installed.</p>
+      <ol class="steps">
+        <li>Go to <b>console.cloud.google.com</b> and sign in. Create a project (any name, e.g. "mailforge").</li>
+        <li>Open <b>APIs and Services &#8594; OAuth consent screen</b>. Choose <b>External</b>, fill in app name + your email. Under <b>Scopes</b> add <code class="inline">openid</code>, <code class="inline">email</code>, <code class="inline">profile</code>. Under <b>Test users</b> add every team member's email (skip this if the consent screen offers <b>Internal</b> and your domain is verified - then nobody needs to be a test user).</li>
+        <li>Open <b>APIs and Services &#8594; Credentials &#8594; Create credentials &#8594; OAuth client ID</b>. Type: <b>Web application</b>. Under <b>Authorized redirect URIs</b> add exactly:<br><code class="inline">http://localhost:5001/api/google/callback</code><br>Create, then copy the <b>Client ID</b> and <b>Client secret</b>.</li>
+        <li>Paste both into <b>Settings &#8594; Google sign-in</b> (admin section) and save.</li>
+      </ol>
+      <div class="guide-img"><img src="/static/img/guide/02-settings.png" alt="Settings - Google sign-in"></div>
+    </div>
+  </div>
+
+  <div class="guide-step card" id="step-gmail">
+    <div class="guide-num">3</div>
+    <div class="card-body" style="padding:0 22px 20px">
+      <h3>One-time setup: the Gmail sending client (admin only, ~10 minutes)</h3>
+      <p class="muted">This lets the platform create drafts and send emails from the team's Gmail account. Same Google Cloud project as before.</p>
+      <ol class="steps">
+        <li>In the project, open <b>APIs and Services &#8594; Library</b>, search <b>Gmail API</b> and press <b>Enable</b>.</li>
+        <li>Go to <b>Credentials &#8594; Create credentials &#8594; OAuth client ID</b>. Type: <b>Desktop app</b>. Create.</li>
+        <li>Press <b>Download JSON</b> on the new client. Open the file, select all, copy.</li>
+        <li>In MailForge: <b>Settings &#8594; Gmail API client</b> &#8594; paste the whole JSON &#8594; Save.</li>
+        <li>Then in <b>Settings &#8594; Gmail send-accounts</b> click <b>Connect a Gmail account</b>, sign in with the team's Gmail (e.g. the team account). It now shows in the list for the whole team.</li>
+      </ol>
+      <div class="guide-img"><img src="/static/img/guide/03-accounts.png" alt="Settings - Gmail accounts"></div>
+      <p class="hint">The account is saved on the platform for everybody on the team. You can connect more accounts (e.g. a second team mailbox) - each stays available in the dropdown wherever you choose "send from".</p>
+    </div>
+  </div>
+
+  <div class="guide-step card" id="step4">
+    <div class="guide-num">4</div>
+    <div class="card-body" style="padding:0 22px 20px">
+      <h3>Load the company list (Contacts)</h3>
+      <p class="muted">Go to <b>Contacts</b> and click <b>Import sheet</b>. Upload your CSV or Excel file with columns like <b>Serial No.</b>, <b>Company</b>, <b>HR Name</b>, <b>HR Email</b> (other names work too - the platform guesses). Importing the same sheet again updates rows instead of duplicating them.</p>
+      <div class="guide-img"><img src="/static/img/guide/04-contacts.png" alt="Contacts"></div>
+    </div>
+  </div>
+
+  <div class="guide-step card" id="step5">
+    <div class="guide-num">5</div>
+    <div class="card-body" style="padding:0 22px 20px">
+      <h3>Add your email template</h3>
+      <p class="muted">Go to <b>Templates</b> and click <b>Upload template</b>. A <b>Word (.docx)</b> file works - put replaceable words in curly braces, square brackets or guillemets, e.g. <code class="inline">{recruiter_name}</code>, <code class="inline">[Company]</code>. Images in the Word file come along automatically. You can also let <b>&#10022; AI create a template</b> from a short brief.</p>
+      <div class="guide-img"><img src="/static/img/guide/05-templates.png" alt="Templates"></div>
+    </div>
+  </div>
+
+  <div class="guide-step card" id="step6">
+    <div class="guide-num">6</div>
+    <div class="card-body" style="padding:0 22px 20px">
+      <h3>Run the mail merge</h3>
+      <p class="muted"><b>Mail Merge</b> page, three steps: pick the template &#8594; say which sheet column replaces each field (suggestions are pre-filled, AI can double-check) &#8594; preview real rendered emails &#8594; <b>Generate queue</b>. Choose which Gmail account the batch uses.</p>
+      <div class="guide-img"><img src="/static/img/guide/06-merge.png" alt="Mail merge"></div>
+    </div>
+  </div>
+
+  <div class="guide-step card" id="step7">
+    <div class="guide-num">7</div>
+    <div class="card-body" style="padding:0 22px 20px">
+      <h3>Draft, schedule or send</h3>
+      <p class="muted">On the <b>Queue and Schedule</b> page, select rows (or leave it on "pending") and pick one action:</p>
+      <ul class="steps">
+        <li><b>Create drafts</b> - lands in the account's Gmail Drafts folder. Nothing sends.</li>
+        <li><b>Schedule send</b> - pick date and time (e.g. <code class="inline">2026-11-12 10:30</code>) and an optional stagger. The platform's built-in worker sends them itself at the exact time, and they appear in the account's Sent folder at that moment. You can also tick <b>automatic follow-up reminders</b> in the merge wizard so unanswered recruiters get a polite reminder after a set number of days.</li>
+        <li><b>Send now</b> - only possible when Safe mode is off, and it always asks you to type SEND.</li>
+      </ul>
+      <p class="hint">The platform must be running on a powered-on computer at the send time. If it was off, the next run either sends the due emails (default) or marks them missed - your choice in Settings.</p>
+      <div class="guide-img"><img src="/static/img/guide/07-queue.png" alt="Queue and schedule"></div>
+    </div>
+  </div>
+
+  <div class="guide-step card" id="step8">
+    <div class="guide-num">8</div>
+    <div class="card-body" style="padding:0 22px 20px">
+      <h3>Watch and adjust</h3>
+      <p class="muted"><b>Dashboard</b> shows the pipeline at a glance; <b>Activity</b> records every action with the person who did it; <b>Contacts</b> shows each company's status (new &#8594; drafted &#8594; scheduled &#8594; sent). Admins manage people under <b>Team admin</b>.</p>
+      <div class="guide-img"><img src="/static/img/guide/08-dashboard.png" alt="Dashboard"></div>
+    </div>
+  </div>
+
+  <div class="guide-step card" id="step9">
+    <div class="guide-num">9</div>
+    <div class="card-body" style="padding:0 22px 20px">
+      <h3>Track replies, follow-ups and reports</h3>
+      <p class="muted"><b>Outreach Reports</b> shows everything bucketised: how many went out each day, the pipeline (pending / drafted / scheduled / sent / replied / error), which companies you have reached out to the most, and a table of every single email. Replies are detected automatically (the platform checks the sender's inbox for replies to each sent mail) - you can also mark one manually from the Queue's email preview. Sent emails keep tracking their reminder count.</p>
+      <div class="guide-img"><img src="/static/img/guide/09-reports.png" alt="Outreach Reports"></div>
+      <p class="hint">Other useful places: <b>Settings &#8594; Email signature</b> (saved once, auto-appended to text and AI templates), <b>Mail Merge step 3</b> (attachments + follow-up reminders), <b>Templates</b> (AI can polish a template or write a reminder for you).</p>
+    </div>
+  </div>
+</div>
+{% endblock %}

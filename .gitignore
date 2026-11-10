@@ -1,0 +1,20 @@
+# ---- personal data (never commit) ----
+data/
+seed_template/
+template_images/
+uploads/
+tokens/
+preview/
+client_secret.json
+
+# ---- python ----
+.venv/
+__pycache__/
+*.pyc
+*.log
+
+# ---- os / editor ----
+.DS_Store
+*.swp
+mailforge.db
+static/img/guide/

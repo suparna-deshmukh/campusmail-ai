@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Settings - MailForge{% endblock %}
+{% block page_title %}Settings{% endblock %}
+{% block content %}
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h3>Gmail send-accounts</h3><span class="sub">saved for the whole team</span></div>
+    <div class="card-body">
+      <div id="acct-list" class="muted">Loading...</div>
+      <div class="divider"></div>
+      <p class="hint" style="margin-top:0">New accounts are <b>shared with the whole team</b> by default - anyone on the team can pick the account to draft or send from. Switch one to private in its row if you want it to stay yours alone.</p>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn primary" id="btn-acct-add">Connect a Gmail account</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Sending rules</h3></div>
+    <div class="card-body">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <div class="toggle" id="set-safe"><div class="knob"></div></div>
+        <div><b>Safe mode</b><div id="safe-desc" class="hint"></div></div>
+      </div>
+      <div class="field"><label>Max live sends per day (all accounts)</label><input class="input" id="set-cap" style="max-width:120px" type="number" min="1"></div>
+      <div class="field"><label>Default stagger between emails (minutes)</label><input class="input" id="set-stagger" style="max-width:120px" type="number" min="0"></div>
+      <div class="field"><label>If the platform was off when a send was due</label>
+        <select class="input" id="set-catchup" style="max-width:320px">
+          <option value="send_now">Send it as soon as the worker runs again</option>
+          <option value="mark_missed">Mark as missed (error) instead</option>
+        </select>
+      </div>
+      <button class="btn primary" id="btn-save-settings">Save sending rules</button>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h3>Email signature</h3><span class="sub">added to text/AI templates automatically</span></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">Word/HTML templates already contain their own signature (like the campus invite). For plain-text and AI-generated templates, whatever you save here is appended at the bottom - text, colored text or an image all work. Upload a signature image to get its code, then paste it below.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <button class="btn" id="btn-sig-upload">Upload signature image</button>
+      <input type="file" id="sig-file" accept=".png,.jpg,.jpeg,.gif,.webp" style="display:none">
+      <span class="hint" id="sig-img-note"></span>
+    </div>
+    <div class="field"><textarea class="input" id="sig-html" rows="4" placeholder="e.g. <p><b>Suparna Deshmukh</b> - Outreach Cell</p>"></textarea></div>
+    <div style="max-width:520px;border:1px solid var(--border);border-radius:8px;background:#fff;margin-bottom:10px">
+      <div class="muted" style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11.5px">Live preview</div>
+      <iframe class="email-frame" id="sig-preview" style="height:140px"></iframe>
+    </div>
+    <button class="btn primary" id="btn-sig-save">Save signature</button>
+  </div>
+</div>
+
+{% if me and me.role == 'admin' %}
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h3>Google sign-in (team login)</h3><span class="sub">admin only</span></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">Used on the login page. Step-by-step: <a href="/guide#step-google">Getting started, step 1</a>.</p>
+    <div class="grid cols-3">
+      <div class="field"><label>Client ID</label><input class="input" id="set-gid" placeholder=".apps.googleusercontent.com..."></div>
+      <div class="field" style="grid-column:span 2"><label>Client secret</label><input class="input" id="set-gsec" type="password" placeholder="GOCSPX..."></div>
+    </div>
+    <div class="field"><label>Admin email (this Google account is always the admin)</label><input class="input" id="set-admin-email" style="max-width:340px" placeholder="yourname@your-institution.edu"></div>
+    <button class="btn primary" id="btn-save-google">Save Google sign-in</button>
+  </div>
+</div>
+
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h3>Gmail API client (paste the JSON)</h3><span class="sub">admin only</span></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">The JSON you download from Google Cloud (OAuth client, Desktop type). Step-by-step: <a href="/guide#step-gmail">Getting started, step 2</a>.</p>
+    <div class="field"><textarea class="input" id="set-client-json" rows="6" placeholder='Paste the whole downloaded JSON here, e.g. {"installed":{"client_id":...}'}></textarea></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn primary" id="btn-save-client">Save client JSON</button>
+      <span class="chip" id="client-json-state">checking...</span>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h3>AI assistant</h3><span class="sub">optional - key can stay blank</span></div>
+  <div class="card-body">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+      <div class="toggle" id="set-ai"><div class="knob"></div></div>
+      <div><b>Enable AI features</b> (template writer, subject improver, field-mapping suggester)</div>
+    </div>
+    <div class="grid cols-4">
+      <div class="field"><label>Provider</label>
+        <select class="input" id="set-ai-provider">
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Google Gemini</option>
+          <option value="custom">Other (OpenAI-compatible)</option>
+        </select>
+      </div>
+      <div class="field" style="grid-column:span 2"><label>Base URL (fills itself from provider)</label><input class="input" id="set-base-url"></div>
+      <div class="field"><label>Model</label><input class="input" id="set-model"></div>
+    </div>
+    <div class="field" style="max-width:460px"><label>API key (blank until you have one)</label><input class="input" id="set-key" type="password" autocomplete="off"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" id="btn-ai-test">Test AI connection</button>
+      <button class="btn primary" id="btn-save-ai">Save AI settings</button>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:18px;border-color:#fecaca">
+  <div class="card-head"><h3 style="color:var(--danger)">Danger zone</h3></div>
+  <div class="card-body" style="display:flex;align-items:center;gap:14px">
+    <span class="muted">Empty the entire email queue (generated emails only - drafts already in Gmail are untouched).</span>
+    <button class="btn danger" id="btn-wipe-queue" style="margin-left:auto">Empty queue</button>
+  </div>
+</div>
+{% endblock %}

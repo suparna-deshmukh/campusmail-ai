@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - MailForge{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+{% block content %}
+<div class="card" id="checklist-card" style="margin-bottom:20px;border-left:4px solid var(--primary)">
+  <div class="card-body" style="display:flex;gap:22px;align-items:center;flex-wrap:wrap">
+    <div style="min-width:150px"><b>Setup checklist</b><div class="hint">What's left before your first send</div></div>
+    <div id="checklist" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    <div id="checklist-banner" style="margin-left:auto"></div>
+  </div>
+</div>
+<div class="grid cols-4" id="stat-cards" style="margin-bottom:20px">
+  <div class="stat"><div class="label">Loading...</div></div>
+</div>
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h3>Active template</h3>
+      <div class="actions"><a class="btn sm primary" href="/merge">New mail merge</a><a class="btn sm ghost" href="/templates">Manage</a></div>
+    </div>
+    <div class="card-body" id="active-tpl"><span class="muted">Loading...</span></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Batches</h3><span class="sub" id="batch-count"></span></div>
+    <div class="table-wrap"><table class="tbl">
+      <tr><th>#</th><th>Name</th><th>Created</th><th>Emails</th><th>Status</th></tr>
+      <tbody id="batch-rows"></tbody>
+    </table></div>
+  </div>
+</div>
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h3>Recent activity</h3><div class="actions"><a class="btn sm ghost" href="/activity">View all</a></div></div>
+  <div class="table-wrap"><table class="tbl">
+    <tr><th>When (UTC)</th><th>Action</th><th>Who</th><th>Detail</th></tr>
+    <tbody id="recent-activity"></tbody>
+  </table></div>
+</div>
+{% endblock %}

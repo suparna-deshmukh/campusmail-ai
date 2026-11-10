@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Queue and Schedule - MailForge{% endblock %}
+{% block page_title %}Queue and Schedule{% endblock %}
+{% block content %}
+<div class="card" style="margin-bottom:16px;padding:12px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+  <span id="sch-status" class="logline">Worker: ...</span>
+  <div style="margin-left:auto;display:flex;gap:8px">
+    <button class="btn sm" id="btn-q-trigger">Run worker now</button>
+  </div>
+</div>
+<div class="search-row">
+  <div id="queue-tabs" style="display:flex;gap:6px;flex-wrap:wrap">
+    <button class="btn sm" data-s="" data-label="All">All</button>
+    <button class="btn sm" data-s="pending" data-label="Pending">Pending</button>
+    <button class="btn sm" data-s="drafted" data-label="Drafted">Drafted</button>
+    <button class="btn sm" data-s="scheduled" data-label="Scheduled">Scheduled</button>
+    <button class="btn sm" data-s="sent" data-label="Sent">Sent</button>
+    <button class="btn sm" data-s="replied" data-label="Replied">Replied</button>
+    <button class="btn sm" data-s="error" data-label="Errors">Errors</button>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <span class="chip">selected: <span id="q-sel-count">0</span> (empty = pending rows)</span>
+    <label class="chip" style="cursor:default">Send from
+      <select class="input" id="q-account" style="width:auto;padding:4px 8px;font-size:12.5px;margin-left:4px"></select>
+    </label>
+    <button class="btn" id="btn-q-draft">Create drafts</button>
+    <button class="btn primary" id="btn-q-schedule">Schedule send</button>
+    <button class="btn danger" id="btn-q-send" disabled>Send now</button>
+  </div>
+</div>
+<div class="card">
+  <div class="table-wrap"><table class="tbl">
+    <tr><th><input type="checkbox" id="select-all"></th><th>Serial</th><th>To</th><th>Subject</th><th>Status</th><th>When</th><th></th></tr>
+    <tbody id="queue-rows"></tbody>
+  </table></div>
+</div>
+{% endblock %}

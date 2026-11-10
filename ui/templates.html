@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Templates - MailForge{% endblock %}
+{% block page_title %}Templates{% endblock %}
+{% block content %}
+<div class="search-row">
+  <span class="chip">Upload any .docx / .html / .txt template - replaceable fields are detected automatically</span>
+  <div style="margin-left:auto;display:flex;gap:8px">
+    <button class="btn ai" id="btn-tpl-ai">&#10022; AI: create a template</button>
+    <button class="btn ai" id="btn-tpl-ai-rem">&#10022; AI: write reminder template</button>
+    <button class="btn primary" id="btn-tpl-upload">Upload template</button>
+  </div>
+</div>
+<div class="grid cols-3" id="tpl-grid"><div class="muted" style="grid-column:1/-1">Loading...</div></div>
+{% endblock %}

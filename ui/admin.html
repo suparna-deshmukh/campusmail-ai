@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Team admin - MailForge{% endblock %}
+{% block page_title %}Team admin{% endblock %}
+{% block content %}
+<div class="banner banner-info" style="margin-bottom:16px">
+  Everything a team member does is recorded in <a href="/activity">Activity</a>. Saved Gmail send-accounts stay with the platform for the whole team.
+</div>
+<div class="grid cols-2">
+  <div class="card">
+    <div class="card-head"><h3>Pending access requests</h3></div>
+    <div class="card-body" id="req-body"><span class="muted">Loading...</span></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>Invite a member</h3>
+      <span class="sub">They get in immediately with that Google account</span>
+    </div>
+    <div class="card-body">
+      <div class="field"><label>Email address (their work or Google account)</label><input class="input" id="inv-email" placeholder="name@your-institution.edu"></div>
+      <div class="field"><label>Display name (optional)</label><input class="input" id="inv-name"></div>
+      <button class="btn primary" id="inv-go">Invite to the team</button>
+      <div class="hint" style="margin-top:10px">Invited members sign in from the login page with that Google account - no request needed.</div>
+    </div>
+  </div>
+</div>
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h3>Team members</h3></div>
+  <div class="table-wrap"><table class="tbl">
+    <tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Joined (UTC)</th><th></th></tr>
+    <tbody id="member-rows"></tbody>
+  </table></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async function () {
+  const load = async () => {
+    const d = await api("/api/admin/data");
+    const reqs = $("#req-body");
+    reqs.innerHTML = d.requests.length ? d.requests.map((r) =>
+      "<div style='display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)'>" +
+      "<div style='flex:1'><b>" + esc(r.email) + "</b> <span class='muted'>- " + esc(r.display_name || "") + "</span>" +
+      (r.request_note ? "<div class='hint'>&#8220;" + esc(r.request_note) + "&#8221;</div>" : "") + "</div>" +
+      "<button class='btn sm primary' data-appr='" + r.id + "'>Approve</button>" +
+      "<button class='btn sm' data-deny='" + r.id + "'>Decline</button></div>"
+    ).join("") : "<p class='muted'>No pending requests.</p>";
+    $all("[data-appr]").forEach((b) => b.addEventListener("click", async () => {
+      await api("/api/admin/requests", { body: { user_id: b.dataset.appr, action: "approve" } });
+      toast("Approved", "ok"); load();
+    }));
+    $all("[data-deny]").forEach((b) => b.addEventListener("click", async () => {
+      await api("/api/admin/requests", { body: { user_id: b.dataset.deny, action: "deny" } });
+      toast("Declined", "ok"); load();
+    }));
+    $("#member-rows").innerHTML = d.members.map((m) =>
+      "<tr><td>" + esc(m.email) + "</td><td>" + esc(m.display_name || "") + "</td>" +
+      "<td>" + (m.role === "admin" ? '<span class="pill drafted">admin</span>' : "<span class='pill new'>member</span>") + "</td>" +
+      "<td>" + (m.status === "active" ? "<span class='pill sent'>active</span>" : "<span class='pill " + (m.status === "pending" ? "scheduled" : "error") + "'>" + esc(m.status) + "</span>") + "</td>" +
+      "<td class='muted'>" + esc(m.created_at || "") + "</td>" +
+      "<td style='white-space:nowrap'>" +
+      (m.role === "admin" ? "" : "<button class='btn sm ghost' data-role='" + m.id + "'>Make admin</button>") +
+      (m.role === "admin" ? "<button class='btn sm ghost' data-role='" + m.id + "'>Make member</button>" : "") +
+      "<button class='btn sm ghost' data-rm='" + m.id + "'>Remove</button></td></tr>"
+    ).join("");
+    $all("[data-role]").forEach((b) => b.addEventListener("click", async () => {
+      const m = d.members.find((x) => x.id === +b.dataset.role);
+      const to = m.role === "admin" ? "user" : "admin";
+      try {
+        await api("/api/admin/members", { body: { user_id: m.id, action: "role", role: to } });
+        toast("Role updated", "ok"); load();
+      } catch (e) { toast(e.message, "err"); }
+    }));
+    $all("[data-rm]").forEach((b) => b.addEventListener("click", () => {
+      const m = d.members.find((x) => x.id === +b.dataset.rm);
+      typeToConfirm("Remove member", "Remove <b>" + esc(m.email) + "</b> from the platform? Their personal preferences are removed; team data and saved send-accounts remain.", "REMOVE",
+        async () => {
+          try {
+            await api("/api/admin/members", { body: { user_id: m.id, action: "remove" } });
+            toast("Removed", "ok"); load();
+          } catch (e) { toast(e.message, "err"); }
+        }, "Remove");
+    }));
+  };
+  $("#inv-go").addEventListener("click", async () => {
+    try {
+      const d = await api("/api/admin/invite", { body: { email: $("#inv-email").value, name: $("#inv-name").value } });
+      toast(d.how === "created" ? "Invited - they can sign in now" : "Already a member - access re-enabled", "ok");
+      $("#inv-email").value = ""; $("#inv-name").value = "";
+      load();
+    } catch (e) { toast(e.message, "err"); }
+  });
+  load();
+})();
+</script>
+{% endblock %}
