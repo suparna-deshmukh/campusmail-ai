@@ -25,6 +25,7 @@ from flask import (Flask, Response, jsonify, redirect, render_template, request,
 import ai_client
 import db
 import docx_convert
+import filestore
 import gmail_client
 
 BASE = Path(__file__).resolve().parent
@@ -66,7 +67,9 @@ def _enter_personal_tenant(email, display_name, team_status):
     root.mkdir(parents=True, exist_ok=True)
     for sub in ("uploads", "attachments", "images"):
         (root / sub).mkdir(exist_ok=True)
+    key = workspace_key(email)
     db.set_tenant_db(db_path)
+    filestore.set_tenant(root / "attachments", root / "images", "ws/" + key)
     if not db_path.exists():
         db.init_db(seed=False)
     pu = db.get_user_by_email(email)
@@ -95,8 +98,9 @@ app.secret_key = "boot"
 
 @app.before_request
 def bind_tenant():
-    # every request starts on the team DB; non-team members switch to their own
+    # every request starts on the team DB + team files; non-team members switch to their own
     db.set_tenant_db(db.DB_PATH)
+    filestore.reset_tenant()
     uid = session.get("uid")
     if not uid:
         return
@@ -113,6 +117,7 @@ def bind_tenant():
 @app.teardown_request
 def reset_tenant(exc=None):
     db.reset_tenant_db()
+    filestore.reset_tenant()
 SCHEDULER_STATE = {"running": True, "last_tick": None, "last_error": ""}
 TICK_COUNTER = {"n": 0}
 DEV_LOGIN_EMAIL = os.environ.get("CAMPUSMAIL_AI_DEV_LOGIN", "").strip().lower()
@@ -503,7 +508,10 @@ def page_assistant():
 @login_required
 def local_img(name):
     safe = re.sub(r"[^A-Za-z0-9._\-]", "", name)
-    return send_from_directory(str(images_dir()), safe)
+    data = filestore.get(safe, ns="images")
+    if data is None:
+        return api_err("Not found.", 404)
+    return Response(data, mimetype=mimetypes.guess_type(safe)[0] or "application/octet-stream")
 
 
 # ---------------- state ----------------
@@ -701,10 +709,11 @@ def api_contact_import():
     f.save(str(path))
     c = db.conn()
     if f.filename.lower().endswith(".xlsx"):
-        added, updated, skipped = import_xlsx(c, str(path))
+            added, updated, skipped = import_xlsx(c, str(path))
     else:
         added, updated, skipped = import_csv(c, str(path))
     c.close()
+    path.unlink(missing_ok=True)  # parsed into the DB; the file itself is not needed
     log("import", str(added) + " added, " + str(updated) + " updated, " + str(skipped) + " skipped")
     return jsonify({"ok": True, "added": added, "updated": updated, "skipped": skipped})
 
@@ -849,6 +858,7 @@ def api_template_upload():
             path = upload_dir() / f.filename
             f.save(str(path))
             body = docx_convert.docx_to_html(str(path))
+            path.unlink(missing_ok=True)  # converted into the DB; the file itself is not needed
             ttype = "docx"
         elif fname.endswith(".html"):
             body = docx_convert.html_template_body(f.read().decode("utf-8", errors="replace"))
@@ -2012,10 +2022,14 @@ def scheduler_tick():
 def scheduler_loop():
     while SCHEDULER_STATE["running"]:
         try:
+            filestore.reset_tenant()
             scheduler_tick()
             if WORKSPACES_DIR.exists():
                 for ws_db in sorted(WORKSPACES_DIR.glob("*.db")):
+                    key = ws_db.stem
+                    wdir = WORKSPACES_DIR / key
                     with db.tenant(ws_db):
+                        filestore.set_tenant(wdir / "attachments", wdir / "images", "ws/" + key)
                         scheduler_tick()
         except Exception as e:
             SCHEDULER_STATE["last_error"] = str(e)[:200]
@@ -2040,6 +2054,8 @@ def api_settings_get():
     s = db.all_settings()
     s.pop("ai_api_key", None)
     s.pop("app_secret", None)
+    s.pop("supabase_service_key", None)
+    s["supabase_key_set"] = "1" if db.get_setting("supabase_service_key") else "0"
     s["ai_has_key"] = "1" if db.get_setting("ai_api_key") else "0"
     s["client_secret_set"] = "1" if gmail_client.oauth_ready() else "0"
     s["google_ready"] = "1" if google_login_ready() else "0"
@@ -2089,15 +2105,42 @@ def api_settings_post():
     d = request.get_json(force=True)
     u = request.user
     for k in ("safe_mode", "max_sends_per_day", "default_stagger_min", "catchup_policy",
-              "ai_base_url", "ai_model", "ai_enabled", "cloud_relay_url"):
+              "ai_base_url", "ai_model", "ai_enabled", "cloud_relay_url",
+              "storage_backend", "supabase_url", "supabase_bucket"):
         if k in d:
             db.set_setting(k, d[k])
     for k in ("ai_api_key", "google_client_id", "google_client_secret", "client_secret_json",
-              "admin_email", "cloud_relay_secret", "brand_team_name", "brand_tagline"):
+              "admin_email", "cloud_relay_secret", "brand_team_name", "brand_tagline",
+              "supabase_service_key"):
         if k in d and u["role"] == "admin":
             db.set_setting(k, d[k])
     log("settings", "Settings updated")
     return jsonify({"ok": True})
+
+
+@app.route("/api/storage")
+@login_required
+def api_storage_get():
+    return jsonify({"ok": True, "storage": {
+        "backend": db.get_setting("storage_backend", "local"),
+        "bucket": db.get_setting("supabase_bucket", ""),
+        "url_set": "1" if db.get_setting("supabase_url") else "0",
+        "key_set": "1" if db.get_setting("supabase_service_key") else "0",
+        "local": filestore.local_stats(),
+    }})
+
+
+@app.route("/api/storage/migrate", methods=["POST"])
+@login_required
+def api_storage_migrate():
+    if request.user["role"] != "admin":
+        return api_err("Admin only.", 403)
+    try:
+        ok, fail = filestore.migrate_to_supabase()
+    except Exception as e:
+        return api_err(str(e), 409)
+    log("storage_migrate", "moved " + str(ok) + " file(s) to Supabase, " + str(fail) + " failed")
+    return jsonify({"ok": fail == 0, "moved": ok, "failed": fail})
 
 
 @app.route("/api/ai/test", methods=["POST"])
@@ -2437,8 +2480,7 @@ def api_signature_upload():
     if len(data) > 4 * 1024 * 1024:
         return api_err("Image must be under 4 MB.")
     name = "sig_" + datetime.now().strftime("%Y%m%d%H%M%S") + ext
-    images_dir().mkdir(exist_ok=True)
-    (images_dir() / name).write_bytes(data)
+    filestore.put(name, data, ns="images")
     log("signature_image", name)
     return jsonify({"ok": True, "html": '<img src="local:' + name + '" alt="signature" style="max-width:220px;">'})
 
@@ -2455,10 +2497,10 @@ def _load_attachments(batch):
     out = []
     for name in names:
         safe = re.sub(r"[^A-Za-z0-9._\-]", "_", str(name))
-        f = attach_dir() / safe
-        if f.exists():
+        data = filestore.get(safe)
+        if data is not None:
             ctype = mimetypes.guess_type(safe)[0] or "application/octet-stream"
-            out.append((safe, f.read_bytes(), ctype))
+            out.append((safe, data, ctype))
     return out
 
 
@@ -2480,8 +2522,7 @@ def api_batch_attachments_add(bid):
         return api_err("No files uploaded.")
     if len(names) + len(files) > MAX_ATTACH_PER_BATCH:
         return api_err("Maximum " + str(MAX_ATTACH_PER_BATCH) + " attachments per batch.")
-    attach_dir().mkdir(exist_ok=True)
-    existing = sum((attach_dir() / n).stat().st_size for n in names if (attach_dir() / n).exists())
+    existing = sum(filestore.size(n) for n in names if filestore.exists(n))
     added = 0
     for f in files:
         ext = Path(f.filename).suffix.lower()
@@ -2492,7 +2533,7 @@ def api_batch_attachments_add(bid):
         if existing > MAX_ATTACH_TOTAL:
             return api_err("Total attachments must stay under 15 MB per batch.")
         safe = "b" + str(bid) + "_" + re.sub(r"[^A-Za-z0-9._\-]", "_", Path(f.filename).name)
-        (attach_dir() / safe).write_bytes(data)
+        filestore.put(safe, data)
         names.append(safe)
         added += 1
     c = db.conn()
@@ -2519,9 +2560,7 @@ def api_batch_attachments_remove(bid):
         names = []
     if name in names:
         names.remove(name)
-        f = attach_dir() / name
-        if f.exists():
-            f.unlink()
+        filestore.delete(name)
     c = db.conn()
     c.execute("UPDATE batches SET attachments=? WHERE id=?", (json.dumps(names), bid))
     c.commit()

@@ -1264,6 +1264,39 @@ Pages.settings = async function () {
     } catch (e) { toast(e.message, "err"); }
   });
 
+  // file storage
+  const stChip = $("#storage-state");
+  function storageRender() {
+    const b = s.storage_backend || "local";
+    $("#set-storage-backend").value = b;
+    $("#set-storage-bucket").value = s.supabase_bucket || "";
+    $("#set-supabase-url").value = s.supabase_url || "";
+    if (s.supabase_key_set) $("#set-supabase-key").placeholder = "(key saved - leave blank to keep)";
+    stChip.textContent = b === "supabase" ? "supabase storage" : "local disk";
+    stChip.className = "chip " + (b === "supabase" ? "on" : "");
+    $("#btn-migrate-files").style.display = (isAdmin && b === "supabase") ? "" : "none";
+  }
+  storageRender();
+  $("#btn-save-storage").addEventListener("click", async () => {
+    try {
+      const body = { storage_backend: $("#set-storage-backend").value,
+        supabase_bucket: $("#set-storage-bucket").value.trim(),
+        supabase_url: $("#set-supabase-url").value.trim() };
+      if ($("#set-supabase-key").value.trim()) body.supabase_service_key = $("#set-supabase-key").value.trim();
+      await api("/api/settings", { body });
+      s.storage_backend = body.storage_backend;
+      storageRender();
+      toast("Storage settings saved", "ok");
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $("#btn-migrate-files").addEventListener("click", async () => {
+    if (!confirm("Upload all local attachments & images to Supabase Storage and delete the local copies?")) return;
+    try {
+      const d = await api("/api/storage/migrate", { method: "POST" });
+      toast(d.failed ? d.moved + " moved, " + d.failed + " failed" : d.moved + " file(s) moved to Supabase", d.failed ? "err" : "ok");
+    } catch (e) { toast(e.message, "err"); }
+  });
+
   // relay setup pack (admin)
   if (isAdmin) {
     const rs = $("#relay-acct-select");

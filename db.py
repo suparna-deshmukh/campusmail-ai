@@ -140,6 +140,10 @@ DEFAULT_SETTINGS = {
     "admin_email": "",
     "cloud_relay_url": "",
     "cloud_relay_secret": "",
+    "storage_backend": "local",
+    "supabase_url": "",
+    "supabase_service_key": "",
+    "supabase_bucket": "campusmail-files",
     "brand_team_name": "",
     "brand_tagline": "Local tool - your data stays on this machine.",
 }
@@ -431,6 +435,10 @@ def seed_if_empty(c):
                 target = BASE / "template_images" / "signature.png"
                 target.parent.mkdir(exist_ok=True)
                 target.write_bytes(img_src.read_bytes())
+                import filestore
+                if filestore.configured():
+                    filestore.put("signature.png", target.read_bytes(), ns="images")
+                    target.unlink()
                 body = body.replace('src="image1.png"', 'src="local:signature.png"')
             subject = subj_file.read_text(encoding="utf-8").strip()
             fields = json.dumps(["recruiter_name", "company_name"])

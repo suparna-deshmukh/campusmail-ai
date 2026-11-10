@@ -136,6 +136,31 @@
   </div>
 </div>
 
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><h3>File storage (optional)</h3><span class="sub">keep attachments & images off this machine's disk</span></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">Batch attachments, template images and signature images currently live on this machine's disk (local mode). On a small host, switch to <b>Supabase Storage</b> (~1 GB free): create a <b>private</b> bucket in your Supabase project (Storage &#8594; New bucket, e.g. <code>campusmail-files</code>), paste the project URL + service role key below, then hit <b>Move existing files</b>. New uploads go straight to the bucket. Switching back to local disk does not move files back - they stay in the bucket.</p>
+    <div class="grid cols-2">
+      <div class="field"><label>Backend</label>
+        <select class="input" id="set-storage-backend">
+          <option value="local">local disk</option>
+          <option value="supabase">Supabase Storage</option>
+        </select>
+      </div>
+      <div class="field"><label>Bucket name</label><input class="input" id="set-storage-bucket" placeholder="campusmail-files"></div>
+    </div>
+    <div class="grid cols-2" style="margin-top:8px">
+      <div class="field"><label>Supabase project URL</label><input class="input" id="set-supabase-url" placeholder="https://xxxxxxxx.supabase.co"></div>
+      <div class="field"><label>Service role key</label><input class="input" id="set-supabase-key" type="password" autocomplete="off" placeholder="leave blank to keep current"></div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+      <button class="btn primary" id="btn-save-storage">Save storage settings</button>
+      <button class="btn" id="btn-migrate-files" style="display:none">Move existing files to Supabase</button>
+      <span class="chip" id="storage-state">local disk</span>
+    </div>
+  </div>
+</div>
+
 <div class="card" style="margin-top:18px;border-color:#fecaca">
   <div class="card-head"><h3 style="color:var(--danger)">Danger zone</h3></div>
   <div class="card-body" style="display:flex;align-items:center;gap:14px">

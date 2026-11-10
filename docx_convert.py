@@ -79,10 +79,9 @@ def _inline_image_html(doc, rel_id):
         data = part.blob
         ext = Path(part.partname).suffix or ".png"
         name = "img_" + hashlib.md5(data).hexdigest()[:10] + ext
-        d = img_dir()
-        d.mkdir(exist_ok=True)
-        if not (d / name).exists():
-            (d / name).write_bytes(data)
+        import filestore
+        if not filestore.exists(name, ns="images"):
+            filestore.put(name, data, ns="images")
         return '<img src="local:' + name + '" alt="" style="max-width:100%;">'
     except Exception:
         return ""

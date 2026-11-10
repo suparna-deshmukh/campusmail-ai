@@ -213,6 +213,7 @@ machine — the built-in scheduler does everything locally.
 ```
 app.py            Flask app: pages, APIs, scheduler worker, reports, reminders
 db.py             SQLite schema + helpers (users, accounts, templates, batches, emails, activity)
+filestore.py      file storage backend: local disk or Supabase Storage (toggle in Settings)
 gmail_client.py   Gmail OAuth + drafts/send, attachments, reply detection
 docx_convert.py   Word → email HTML (bold, colour, bullets, links, images), field detection
 ai_client.py      OpenAI-compatible AI calls (writer, polisher, subject improver, mapping)

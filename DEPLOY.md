@@ -44,8 +44,11 @@ signs in gets their own personal, separate workspace (clean slate).
 - Non-team sign-ins land in `data/workspaces/<hash>.db` + a matching folder for their
   files. The team's data lives in `data/campusmail_ai.db` as before.
 - Free tier storage is **512 MB total** (including installed packages). The database
-  itself stays small for years (a rendered email is a few KB); uploaded attachments,
-  templates and images are what consume space - prune old batches' attachments from
-  time to time (or delete the attachment on a batch to free the file immediately).
+  itself stays small for years (a rendered email is a few KB). Uploaded sheets/templates
+  are deleted right after processing; what grows is batch attachments + images, and
+  **that is exactly what can move to Supabase**: Settings -> *File storage* -> switch the
+  backend to Supabase Storage (~1 GB free bucket), then *Move existing files*. With the
+  switch on, PA disk usage stays flat (packages + code + small DBs) and file traffic is
+  effectively uncapped up to the 1 GB bucket. New uploads go straight to the bucket.
 - To back up: zip `data/` from the Bash console and download it.
 - To tear everything down: delete the web app + the folder; nothing leaves PythonAnywhere.
