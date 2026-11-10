@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in - MailForge | outreach team</title>
+<title>Sign in - MailForge | {{ brand_team }}</title>
 <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body class="login-body">
@@ -13,7 +13,7 @@
         <div class="mark">M</div>
         <div>
           <div class="login-name">MailForge</div>
-          <div class="login-sub">the outreach team</div>
+          <div class="login-sub">{{ brand_team }}</div>
         </div>
       </div>
       {% if error %}
@@ -26,7 +26,7 @@
       <div class="login-state">
         <div class="big">&#9203;</div>
         <h2>Request under review</h2>
-        <p class="muted">Signed in as <b>{{ email }}</b>.<br>Your request to join the outreach team is waiting for an admin to approve it. You will get in once the team reviews it.</p>
+        <p class="muted">Signed in as <b>{{ email }}</b>.<br>Your request to join the {{ brand_team }} is waiting for an admin to approve it. You will get in once the team reviews it.</p>
         <div class="field"><label>Add a note for the team (optional)</label><textarea class="input" id="req-note" rows="2" placeholder="e.g. I handle the core committee / company visits..."></textarea></div>
         <div style="display:flex;gap:8px;justify-content:center">
           <button class="btn" id="btn-send-note">Send note</button>
@@ -38,7 +38,7 @@
       <div class="login-state">
         <div class="big">&#10060;</div>
         <h2>Request not approved</h2>
-        <p class="muted">Signed in as <b>{{ email }}</b>. Your earlier request was declined. Please talk to the outreach team lead.</p>
+        <p class="muted">Signed in as <b>{{ email }}</b>. Your earlier request was declined. Please talk to the {{ brand_team }} lead.</p>
         <button class="btn ghost" id="btn-refresh" style="margin-top:10px">Check again</button>
       </div>
       {% elif email %}
@@ -65,7 +65,7 @@
       </div>
       {% endif %}
     </div>
-    <div class="login-foot">Local tool - your data stays on this machine. For the outreach team only.</div>
+    <div class="login-foot">{% if brand_foot %}{{ brand_foot }} {% endif %}For the {{ brand_team }} only.</div>
   </div>
 <script>
 const email = {{ email|tojson if email else 'null' }};

@@ -62,6 +62,14 @@
       <div class="field" style="grid-column:span 2"><label>Client secret</label><input class="input" id="set-gsec" type="password" placeholder="GOCSPX..."></div>
     </div>
     <div class="field"><label>Admin email (this Google account is always the admin)</label><input class="input" id="set-admin-email" style="max-width:340px" placeholder="yourname@your-institution.edu"></div>
+    <div class="field" style="max-width:520px"><label>Team display name (shown on the login page + navigation)</label>
+      <input class="input" id="set-brand-name" placeholder="the exact name you want visitors to see" style="max-width:340px">
+      <span class="hint" style="margin-top:4px">Stored only on this deployment (never in the code or the repo). Blank = the neutral default. An environment variable <code>MAILFORGE_BRAND_TEAM</code> on a hosted deployment overrides this.</span>
+    </div>
+    <div class="field" style="max-width:520px"><label>Login footer line (optional)</label>
+      <input class="input" id="set-brand-foot" placeholder="small line under the sign-in card" style="max-width:340px">
+      <span class="hint" style="margin-top:4px">Override with the <code>MAILFORGE_BRAND_FOOT</code> environment variable on a hosted deployment.</span>
+    </div>
     <button class="btn primary" id="btn-save-google">Save Google sign-in</button>
   </div>
 </div>

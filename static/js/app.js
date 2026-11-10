@@ -1289,6 +1289,8 @@ Pages.settings = async function () {
     set("set-gid", s.google_client_id || "");
     set("set-gsec", s.google_client_secret || "");
     set("set-admin-email", s.admin_email || "");
+    set("set-brand-name", s.brand_team_name || "");
+    set("set-brand-foot", s.brand_tagline || "");
     const cjs = $("#client-json-state");
     if (cjs) {
       cjs.textContent = s.client_secret_set === "1" ? "Gmail client JSON is set" : "Gmail client JSON missing";
@@ -1300,6 +1302,8 @@ Pages.settings = async function () {
           google_client_id: $("#set-gid").value.trim(),
           google_client_secret: $("#set-gsec").value.trim(),
           admin_email: $("#set-admin-email").value.trim().toLowerCase(),
+          brand_team_name: $("#set-brand-name").value.trim(),
+          brand_tagline: $("#set-brand-foot").value.trim(),
         }});
         toast("Google sign-in saved", "ok"); refreshState();
       } catch (e) { toast(e.message, "err"); }

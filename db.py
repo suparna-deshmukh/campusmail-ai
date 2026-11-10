@@ -103,6 +103,8 @@ DEFAULT_SETTINGS = {
     "admin_email": "",
     "cloud_relay_url": "",
     "cloud_relay_secret": "",
+    "brand_team_name": "",
+    "brand_tagline": "Local tool - your data stays on this machine.",
 }
 
 COLUMN_ALIASES = {

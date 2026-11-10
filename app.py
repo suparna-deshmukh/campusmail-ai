@@ -101,6 +101,26 @@ def log(action, detail=""):
     db.log_activity(action, detail, actor)
 
 
+def brand_team():
+    """Team display name: setting -> env var (e.g. Vercel) -> neutral default."""
+    v = (db.get_setting("brand_team_name", "") or "").strip()
+    if not v:
+        v = os.environ.get("MAILFORGE_BRAND_TEAM", "").strip()
+    return v or "outreach team"
+
+
+def brand_foot():
+    v = (db.get_setting("brand_tagline", "") or "").strip()
+    if not v:
+        v = os.environ.get("MAILFORGE_BRAND_FOOT", "").strip()
+    return v
+
+
+@app.context_processor
+def inject_brand():
+    return {"brand_team": brand_team(), "brand_foot": brand_foot()}
+
+
 def last_account_for(uid):
     c = db.conn()
     r = c.execute("SELECT value FROM user_settings WHERE user_id=? AND key='last_account_id'", (uid,)).fetchone()
@@ -1992,7 +2012,7 @@ def api_settings_post():
         if k in d:
             db.set_setting(k, d[k])
     for k in ("ai_api_key", "google_client_id", "google_client_secret", "client_secret_json",
-              "admin_email", "cloud_relay_secret"):
+              "admin_email", "cloud_relay_secret", "brand_team_name", "brand_tagline"):
         if k in d and u["role"] == "admin":
             db.set_setting(k, d[k])
     log("settings", "Settings updated")
