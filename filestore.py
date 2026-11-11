@@ -74,12 +74,15 @@ def local_path(name, ns="attach"):
 
 
 def _http(method, url, data=None, headers=None, timeout=120):
+    """Returns (status, headers, body). 404 is a valid result, not an error."""
     req = urllib.request.Request(url, data=data, headers=dict(headers or {}), method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
-        body = e.read()[:200]
+        body = e.read()[:300]
+        if e.code == 404 or b"NoSuchKey" in body:  # Supabase reports missing objects as 400 + NoSuchKey
+            return 404, {}, body
         raise RuntimeError("Supabase storage %s failed: HTTP %s %s" % (method, e.code, body))
 
 
@@ -102,9 +105,9 @@ def put(name, data, ns="attach"):
 def get(name, ns="attach"):
     if configured():
         url, key, bucket = _sb_cfg()
-        _, _, data = _http("GET", url + "/storage/v1/authenticated/" + bucket + "/" + _full(name),
-                           headers=_sb_headers(key))
-        return data
+        status, _, data = _http("GET", url + "/storage/v1/object/" + bucket + "/" + _full(name),
+                                headers=_sb_headers(key))
+        return data if status == 200 else None
     p = local_path(name, ns)
     return p.read_bytes() if p.exists() else None
 
@@ -112,7 +115,7 @@ def get(name, ns="attach"):
 def exists(name, ns="attach"):
     if configured():
         url, key, bucket = _sb_cfg()
-        status, _, _ = _http("HEAD", url + "/storage/v1/object/" + bucket + "/" + _full(name),
+        status, _, _ = _http("GET", url + "/storage/v1/object/" + bucket + "/" + _full(name),
                              headers=_sb_headers(key))
         return status == 200
     return local_path(name, ns).exists()
@@ -120,20 +123,22 @@ def exists(name, ns="attach"):
 
 def size(name, ns="attach"):
     if configured():
-        url, key, bucket = _sb_cfg()
-        _, headers, _ = _http("HEAD", url + "/storage/v1/object/" + bucket + "/" + _full(name),
-                              headers=_sb_headers(key))
-        return int(headers.get("Content-Length") or 0)
+        data = get(name, ns)
+        return len(data) if data is not None else 0
     p = local_path(name, ns)
     return p.stat().st_size if p.exists() else 0
 
 
 def delete(name, ns="attach"):
     if configured():
+        import time
         url, key, bucket = _sb_cfg()
-        _http("DELETE", url + "/storage/v1/object/" + bucket,
-              data=json.dumps([_full(name)]).encode(),
-              headers={**_sb_headers(key), "Content-Type": "application/json"})
+        _http("DELETE", url + "/storage/v1/object/" + bucket + "/" + _full(name),
+              headers=_sb_headers(key))
+        for _ in range(6):  # deletion propagates with a slight delay; confirm best-effort
+            if not exists(name, ns):
+                return
+            time.sleep(1)
         return
     p = local_path(name, ns)
     if p.exists():
