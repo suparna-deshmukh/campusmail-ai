@@ -11,6 +11,8 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -94,6 +96,7 @@ MAX_ATTACH_TOTAL = 15 * 1024 * 1024
 app = Flask(__name__, template_folder=str(BASE / "ui"), static_folder=str(BASE / "static"))
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 app.secret_key = "boot"
+ON_PA = str(BASE).startswith("/home/")  # PythonAnywhere homes are /home/<user>
 
 
 @app.before_request
@@ -554,6 +557,7 @@ def api_state():
         "gmail": {"connected_count": len(connected),
                   "accounts": [{"id": a["id"], "email": a["email"] or a["label"]} for a in connected],
                   "any_connected": bool(connected)},
+        "hosted": "1" if ON_PA else "0",
         "scheduler": {"running": SCHEDULER_STATE["running"],
                       "last_tick": SCHEDULER_STATE["last_tick"],
                       "last_error": SCHEDULER_STATE["last_error"],
@@ -2141,6 +2145,30 @@ def api_storage_migrate():
         return api_err(str(e), 409)
     log("storage_migrate", "moved " + str(ok) + " file(s) to Supabase, " + str(fail) + " failed")
     return jsonify({"ok": fail == 0, "moved": ok, "failed": fail})
+
+
+@app.route("/api/deploy", methods=["POST"])
+@admin_required
+def api_deploy():
+    if not ON_PA:
+        return api_err("One-click deploy is only available on the hosted PythonAnywhere instance. " "Your local app picks up changes when you run ./run.sh again.", 409)
+    try:
+        r = subprocess.run(["git", "pull", "--ff-only"], cwd=str(BASE),
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            return api_err("git pull failed: " + (r.stderr or r.stdout or "").strip()[:300], 409)
+        subprocess.run([sys.executable, "-m", "pip", "install", "--user", "-q", "-r", "requirements.txt"],
+                       cwd=str(BASE), capture_output=True, timeout=600)
+    except Exception as e:
+        return api_err("Deploy failed: " + str(e)[:200], 500)
+    log("deploy", "git pull OK - worker restarting to load new code")
+
+    def _restart():
+        time.sleep(2)  # let the response flush, then die; PA respawns us with the new code
+        os._exit(1)
+
+    threading.Thread(target=_restart, daemon=True).start()
+    return jsonify({"ok": True, "detail": "New code pulled. Restarting - reload the page in about 10 seconds."})
 
 
 @app.route("/api/ai/test", methods=["POST"])

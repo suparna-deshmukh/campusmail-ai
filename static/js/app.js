@@ -1297,6 +1297,19 @@ Pages.settings = async function () {
     } catch (e) { toast(e.message, "err"); }
   });
 
+  // one-click deploy (admin, hosted only)
+  if (isAdmin && s.hosted === "1") {
+    $("#deploy-card").style.display = "";
+    $("#btn-deploy").addEventListener("click", async () => {
+      if (!confirm("Pull the latest code from GitHub and restart this instance?")) return;
+      try {
+        const d = await api("/api/deploy", { method: "POST" });
+        toast(d.detail || "Deploying...", "ok");
+        setTimeout(() => location.reload(), 12000);
+      } catch (e) { toast(e.message, "err"); }
+    });
+  }
+
   // relay setup pack (admin)
   if (isAdmin) {
     const rs = $("#relay-acct-select");
