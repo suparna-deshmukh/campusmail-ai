@@ -1080,8 +1080,8 @@ def _run_merge(d):
         except ValueError:
             return api_err("Schedule time format must be YYYY-MM-DD HH:MM (local time).")
         now = datetime.now().astimezone()
-        if when < now + timedelta(minutes=30):
-            return api_err("Schedule time must be at least 30 minutes in the future.")
+        if when < now + timedelta(minutes=10):
+            return api_err("Schedule time must be at least 10 minutes in the future.")
         if when > now + timedelta(days=45):
             return api_err("Schedule up to 45 days ahead only.")
     if action in ("draft", "schedule", "send"):
@@ -1523,8 +1523,8 @@ def api_emails_schedule():
     except ValueError:
         return api_err("Time format must be YYYY-MM-DD HH:MM (local time).")
     now = datetime.now().astimezone()
-    if when < now + timedelta(minutes=30):
-        return api_err("Schedule time must be at least 30 minutes in the future.")
+    if when < now + timedelta(minutes=10):
+        return api_err("Schedule time must be at least 10 minutes in the future.")
     if when > now + timedelta(days=45):
         return api_err("Up to 45 days ahead only.")
     save_last_account(request.user["id"], account_id)
@@ -2230,7 +2230,7 @@ AI_TOOLS = [
      "description": "List uploaded data sheets with ids, columns and row counts.",
      "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "queue_batch",
-     "description": "Generate a batch of emails from a template + data (sheet_id, or blank for the main contact list). action: 'queue' (hold), 'draft' (Gmail drafts) or 'schedule' (automatic send at 'at', format YYYY-MM-DD HH:MM local, at least 30 min ahead). Never sends immediately.",
+     "description": "Generate a batch of emails from a template + data (sheet_id, or blank for the main contact list). action: 'queue' (hold), 'draft' (Gmail drafts) or 'schedule' (automatic send at 'at', format YYYY-MM-DD HH:MM local, at least 10 min ahead). Never sends immediately.",
      "parameters": {"type": "object", "properties": {
          "campaign_id": {"type": "integer"}, "template_id": {"type": "integer"},
          "sheet_id": {"type": "integer"}, "serial_from": {"type": "integer"}, "serial_to": {"type": "integer"},
@@ -2248,7 +2248,7 @@ AI_TOOLS = [
      "parameters": {"type": "object", "properties": {
          "ids": {"type": "array", "items": {"type": "integer"}}}, "required": ["ids"]}}},
     {"type": "function", "function": {"name": "reschedule_emails",
-     "description": "Move queue/scheduled emails to a new time (YYYY-MM-DD HH:MM local, at least 30 min ahead).",
+     "description": "Move queue/scheduled emails to a new time (YYYY-MM-DD HH:MM local, at least 10 min ahead).",
      "parameters": {"type": "object", "properties": {
          "ids": {"type": "array", "items": {"type": "integer"}},
          "at": {"type": "string"}, "stagger": {"type": "integer"}},
@@ -2430,8 +2430,8 @@ def _exec_tool(name, a):
             except ValueError:
                 return {"ok": False, "error": "time format must be YYYY-MM-DD HH:MM"}
             now = datetime.now().astimezone()
-            if when < now + timedelta(minutes=30):
-                return {"ok": False, "error": "time must be at least 30 minutes in the future"}
+            if when < now + timedelta(minutes=10):
+                return {"ok": False, "error": "time must be at least 10 minutes in the future"}
             if when > now + timedelta(days=45):
                 return {"ok": False, "error": "up to 45 days ahead only"}
             stagger = int(a.get("stagger") or 0)
