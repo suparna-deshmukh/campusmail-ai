@@ -155,8 +155,11 @@ def current_email(account_id):
 
 
 def inline_local_images(body_html):
-    """Replace src="local:file.png" with base64 data URIs from template_images/."""
+    """Replace src="local:file.png" with base64 data URIs.
+    Resolves the image through filestore (local disk or Supabase Storage),
+    then falls back to the legacy template_images/ directory."""
     from pathlib import Path
+    import filestore
     img_dir = Path(__file__).resolve().parent / "template_images"
 
     def _sub(match):
@@ -164,13 +167,20 @@ def inline_local_images(body_html):
         if not name.startswith("local:"):
             return match.group(0)
         fname = name[len("local:"):]
-        f = (img_dir / fname).resolve()
-        if not str(f).startswith(str(img_dir.resolve())) or not f.exists():
-            return match.group(0)
-        ext = f.suffix.lower()
+        data = None
+        try:
+            data = filestore.get(fname, ns="images")
+        except Exception:
+            data = None
+        if data is None:
+            f = (img_dir / fname).resolve()
+            if not str(f).startswith(str(img_dir.resolve())) or not f.exists():
+                return match.group(0)
+            data = f.read_bytes()
+        ext = Path(fname).suffix.lower()
         mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                 ".gif": "image/gif", ".webp": "image/webp"}.get(ext, "image/png")
-        b64 = base64.b64encode(f.read_bytes()).decode("ascii")
+        b64 = base64.b64encode(data).decode("ascii")
         return "src=" + quote + "data:" + mime + ";base64," + b64 + quote
 
     q1, q2 = chr(39), chr(34)
