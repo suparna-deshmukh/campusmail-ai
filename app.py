@@ -2238,7 +2238,9 @@ AI_TOOLS = [
          "at": {"type": "string"}, "stagger": {"type": "integer"}, "name": {"type": "string"}},
          "required": ["template_id", "action"]}}},
     {"type": "function", "function": {"name": "list_emails",
-     "description": "List recent queue emails with id, to, subject and status.",
+     "description": "List queue emails with id, who (recruiter name), company, subject and status. "
+     "Optional status filter: sent, scheduled, pending, drafted, cancelled, error, or 'replied' "
+     "(emails the recruiter answered).",
      "parameters": {"type": "object", "properties": {
          "status": {"type": "string"}, "limit": {"type": "integer"}}}}},
     {"type": "function", "function": {"name": "cancel_emails",
@@ -2262,17 +2264,35 @@ def _assistant_context():
     all_accts = [dict(r) for r in c.execute("SELECT * FROM gmail_accounts").fetchall()]
     usable = [a for a in all_accts if db.account_for(request.user["id"], a["id"]) and db.account_token_json(a["id"])]
     st = {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM emails GROUP BY status").fetchall()}
+    replied_n = c.execute("SELECT COUNT(*) n FROM emails WHERE replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"]
+    recent_sent = [dict(r) for r in c.execute(
+        "SELECT e.to_addr, e.sent_at, ct.company, ct.hr_name FROM emails e "
+        "LEFT JOIN contacts ct ON ct.id = e.contact_id WHERE e.status='sent' "
+        "ORDER BY e.sent_at DESC, e.id DESC LIMIT 5").fetchall()]
     c.close()
     safe = db.get_setting("safe_mode") == "1"
+    recent = ", ".join(
+        (x["company"] or x["hr_name"] or x["to_addr"]) + (" on " + x["sent_at"][:10] if x["sent_at"] else "")
+        for x in recent_sent) or "none yet"
     return "\n".join([
         "You are the built-in assistant of CampusMail AI, a CRM for the outreach team.",
         "You help by chatting and by doing safe actions directly in the platform: creating campaigns and templates, "
         "planning batches (queue / Gmail drafts / scheduled sends), stopping or rescheduling emails, and reporting status.",
         "Hard rules: you can NEVER send emails immediately and must never claim you sent something. If the user asks to "
         "send now, explain that live sending is a manual step in Queue and Schedule (and needs Safe mode OFF).",
+        "Recruiter replies are tracked automatically in the platform: an email is marked replied (replied_at) when the "
+        "recruiter answers. The context below already gives sent/replied counts, and list_emails with status=\"replied\" "
+        "lists them. Never tell the user you cannot see replies or check their inbox.",
         "If an action is missing a detail (which sheet, which time, which template, how many rows), ask ONE short "
         "question instead of guessing.",
-        "Be concise and friendly. After doing something, state exactly what was done (names, counts, times).",
+        "",
+        "Answer style (the chat box renders PLAIN TEXT - it does not render markdown):",
+        "- Never use markdown: no **bold**, no # headings, no backticks, no '- ' bullet lines, no tables.",
+        "- Start directly with the answer. No preambles like 'Here is what I can see:' and no closing lines like "
+        "'Would you like help with anything else?'.",
+        "- Keep answers to 2-5 short lines. For numbers use simple 'Label: value' lines, one per line.",
+        "- Name people by recruiter name and company, never by full email address.",
+        "- Be concise and friendly. After doing something, state exactly what was done (names, counts, times).",
         "",
         "Current context:",
         "- Signed in: " + request.user["email"] + " (" + (request.user.get("role") or "user") + ")",
@@ -2282,6 +2302,7 @@ def _assistant_context():
         "- Templates: " + (", ".join(str(x["id"]) + " " + x["name"] + " [" + ", ".join(json.loads(x["fields"] or "[]")) + "]" for x in tpls) or "none"),
         "- Data sheets: " + (", ".join(str(x["id"]) + " " + x["name"] + " (" + str(x["n_rows"]) + " rows: " + ", ".join(json.loads(x["headers"] or "[]")) + ")" for x in sheets) or "none"),
         "- Email queue counts: " + (", ".join(k + "=" + str(v) for k, v in sorted(st.items())) or "empty"),
+        "- Sent: " + str(st.get("sent", 0)) + " | Replied: " + str(replied_n) + " | Latest sent: " + recent,
         "- Local date/time: " + datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"),
     ])
 
@@ -2371,9 +2392,19 @@ def _exec_tool(name, a):
             return out
         if name == "list_emails":
             rows = _email_rows({"status": a.get("status") or "", "limit": min(int(a.get("limit") or 20), 50)})
+            cinfo = {}
+            cids = [r["contact_id"] for r in rows if r.get("contact_id")]
+            if cids:
+                ph = ",".join("?" * len(cids))
+                for cr in c.execute("SELECT id, hr_name, company FROM contacts WHERE id IN (" + ph + ")", cids):
+                    cinfo[cr["id"]] = (cr["hr_name"] or "", cr["company"] or "")
             return {"ok": True, "emails": [
-                {"id": r["id"], "serial": r["serial"], "to": r["to_addr"], "subject": r["subject"],
-                 "status": r["status"], "scheduled_at": r["scheduled_at"], "sent_at": r["sent_at"]} for r in rows]}
+                {"id": r["id"], "serial": r["serial"], "to": r["to_addr"],
+                 "who": (cinfo.get(r.get("contact_id"), ("", ""))[0]) or r["to_addr"],
+                 "company": cinfo.get(r.get("contact_id"), ("", ""))[1],
+                 "subject": r["subject"], "status": r["status"],
+                 "scheduled_at": r["scheduled_at"], "sent_at": r["sent_at"],
+                 "replied_at": r.get("replied_at") or ""} for r in rows]}
         if name == "cancel_emails":
             ids = [int(i) for i in (a.get("ids") or [])][:200]
             if not ids:
