@@ -1390,7 +1390,7 @@ def api_batches():
 
 def _email_rows(params):
     c = db.conn()
-    sql = "SELECT * FROM emails WHERE 1=1"
+    sql = "SELECT * FROM emails WHERE 1=1 AND status != 'deleted'"
     args = []
     status = params.get("status")
     if status == "replied":
