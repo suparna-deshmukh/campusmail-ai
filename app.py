@@ -2017,6 +2017,7 @@ def scheduler_tick():
                 bounces_tick()
             except Exception as e:
                 SCHEDULER_STATE["last_error"] = str(e)[:200]
+        TICK_COUNTER["n"] += 1
         return
 
     now = datetime.now().astimezone()
