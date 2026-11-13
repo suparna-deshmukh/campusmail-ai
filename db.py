@@ -357,7 +357,8 @@ def _migrate(c):
             ("bounced_at", "TEXT"),
             ("bounce_reason", "TEXT DEFAULT ''"),
             ("reminder_count", "INTEGER DEFAULT 0"),
-            ("is_reminder", "INTEGER DEFAULT 0")):
+            ("is_reminder", "INTEGER DEFAULT 0"),
+            ("handled_at", "TEXT")):
         if col not in cols:
             c.execute("ALTER TABLE emails ADD COLUMN " + col + " " + decl)
     bcols = {r["name"] for r in c.execute("PRAGMA table_info(batches)").fetchall()}

@@ -1,0 +1,116 @@
+/* CampusMail AI design tokens — the only place raw values live. */
+
+:root {
+  /* Colour (light) */
+  --bg: #F8F9FC;
+  --surface: #FFFFFF;
+  --surface-2: #F2F4F9;
+  --border: #E6E8F0;
+  --border-strong: #D3D8E6;
+  --text: #0F1629;
+  --text-2: #475069;
+  --text-3: #66708C;
+  --primary-50: #F0F2FD;
+  --primary-100: #E1E5FA;
+  --primary-200: #C5CCF3;
+  --primary-500: #5561D6;
+  --primary-600: #4350C4;
+  --primary-700: #3641A3;
+  --primary-contrast: #FFFFFF;
+  --ai: #6D4AE0;
+  --success: #047857;
+  --success-bg: #ECFDF5;
+  --warn: #B45309;
+  --warn-bg: #FFFBEB;
+  --danger: #DC2626;
+  --danger-bg: #FEF2F2;
+  --info: #0369A1;
+  --info-bg: #F0F9FF;
+  --link: var(--primary-600);
+
+  /* Status palette (light) — shared by badges, charts, dots */
+  --st-ready: #475569;        --st-ready-bg: #F1F5F9;
+  --st-drafted: #6D28D9;      --st-drafted-bg: #F5F3FF;
+  --st-scheduled: #B45309;    --st-scheduled-bg: #FFFBEB;
+  --st-sent: #047857;         --st-sent-bg: #ECFDF5;
+  --st-replied: #1D4ED8;      --st-replied-bg: #EFF6FF;
+  --st-bounced: #C2410C;      --st-bounced-bg: #FFF7ED;
+  --st-failed: #B91C1C;       --st-failed-bg: #FEF2F2;
+  --st-stopped: #64748B;      --st-stopped-bg: #F1F5F9;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(15, 22, 41, .05);
+  --shadow-md: 0 4px 12px rgba(15, 22, 41, .08);
+  --shadow-lg: 0 16px 40px rgba(15, 22, 41, .16);
+
+  /* Type */
+  --font-sans: "Inter", -apple-system, "Segoe UI", "Noto Sans Devanagari", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  /* Space (4 px scale) */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px;
+  --sp-6: 24px; --sp-8: 32px; --sp-10: 40px; --sp-14: 56px; --sp-18: 72px;
+
+  /* Radius */
+  --r-chip: 6px;
+  --r-control: 10px;
+  --r-card: 14px;
+  --r-modal: 20px;
+  --r-pill: 999px;
+
+  /* Motion */
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --t-fast: 120ms;
+  --t-base: 180ms;
+  --t-slow: 280ms;
+
+  /* Shell geometry */
+  --sidebar-w: 248px;
+  --rail-w: 72px;
+  --topbar-h: 60px;
+  --content-max: 1200px;
+  --content-pad: 32px;
+
+  /* Sizing */
+  --h-sm: 32px;
+  --h-md: 40px;
+  --h-lg: 48px;
+  --target: 40px;
+}
+
+[data-theme="dark"] {
+  --bg: #0B0F1E;
+  --surface: #121733;
+  --surface-2: #1A2040;
+  --border: #262D52;
+  --border-strong: #343C69;
+  --text: #EEF0FA;
+  --text-2: #A9B0CC;
+  --text-3: #8C95B5;
+  --primary-50: rgba(85, 97, 214, .16);
+  --primary-100: rgba(85, 97, 214, .24);
+  --primary-200: rgba(129, 140, 240, .4);
+  --primary-500: #5561D6;
+  --primary-600: #6873E0;
+  --primary-700: #7D87EA;
+  --primary-contrast: #FFFFFF;
+  --ai: #9B7BFF;
+  --success: #34D399; --success-bg: rgba(4, 120, 87, .14);
+  --warn: #FBBF24;    --warn-bg: rgba(180, 83, 9, .16);
+  --danger: #F87171; --danger-bg: rgba(220, 38, 38, .14);
+  --info: #38BDF8;    --info-bg: rgba(3, 105, 161, .16);
+  --link: #A5B4FC;
+
+  --st-ready: #94A3B8;      --st-ready-bg: rgba(71, 85, 105, .25);
+  --st-drafted: #A78BFA;    --st-drafted-bg: rgba(109, 40, 217, .22);
+  --st-scheduled: #FBBF24;  --st-scheduled-bg: rgba(180, 83, 9, .2);
+  --st-sent: #34D399;       --st-sent-bg: rgba(4, 120, 87, .18);
+  --st-replied: #60A5FA;    --st-replied-bg: rgba(29, 78, 216, .2);
+  --st-bounced: #FB923C;    --st-bounced-bg: rgba(194, 65, 12, .2);
+  --st-failed: #F87171;     --st-failed-bg: rgba(185, 28, 28, .2);
+  --st-stopped: #94A3B8;    --st-stopped-bg: rgba(100, 116, 139, .25);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, .35);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, .5);
+}

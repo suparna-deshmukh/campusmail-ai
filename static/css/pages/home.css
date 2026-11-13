@@ -1,0 +1,52 @@
+/* Home page */
+.home-greet { font-size: 24px; line-height: 32px; font-weight: 650; letter-spacing: -0.015em; }
+.home-greet-sub { color: var(--text-2); margin-top: 3px; }
+.home-greet-sub b { color: var(--text); font-weight: 650; }
+
+.attn-row {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+.attn-row:last-child { border-bottom: none; }
+.attn-ico { width: 32px; height: 32px; flex: none; border-radius: 10px; display: grid; place-items: center; }
+.attn-ico .i { width: 18px; height: 18px; }
+.attn-ico.reply { background: var(--st-replied-bg); color: var(--st-replied); }
+.attn-ico.bounced { background: var(--st-bounced-bg); color: var(--st-bounced); }
+.attn-ico.failed { background: var(--st-failed-bg); color: var(--st-failed); }
+.attn-ico.soon { background: var(--st-scheduled-bg); color: var(--st-scheduled); }
+.attn-ico.drafts { background: var(--st-drafted-bg); color: var(--st-drafted); }
+.attn-ico.gmail { background: var(--st-failed-bg); color: var(--st-failed); }
+.attn-ico.requests { background: var(--primary-50); color: var(--primary-600); }
+.attn-text { font-size: 13.5px; line-height: 19px; min-width: 0; }
+.attn-text b { font-weight: 650; }
+.attn-sub { font-size: 12px; line-height: 16px; color: var(--text-3); font-weight: 500; }
+.attn-row .btn { flex: none; }
+
+.up-row { display: flex; align-items: center; gap: var(--sp-3); padding: 10px 0; border-bottom: 1px solid var(--border); }
+.up-row:last-child { border-bottom: none; }
+.up-when { font-size: 12.5px; font-weight: 650; color: var(--text-2); min-width: 104px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.up-name { font-size: 13.5px; font-weight: 550; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up-count { font-size: 12.5px; font-weight: 600; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+.camp-card { display: flex; flex-direction: column; gap: var(--sp-2); }
+.camp-card .cc-head { display: flex; align-items: center; gap: var(--sp-2); }
+.camp-card .cc-name { font-size: 15px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.camp-card .cc-line { font-size: 12.5px; line-height: 16px; color: var(--text-2); }
+.camp-card .cc-figs { display: flex; gap: var(--sp-4); font-size: 12px; line-height: 16px; color: var(--text-3); font-weight: 500; }
+.camp-card .cc-figs b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.camp-card .progress { margin-top: 2px; }
+.camp-card .cc-foot { display: flex; align-items: center; gap: var(--sp-2); }
+.camp-card .cc-foot .btn { margin-left: auto; }
+
+/* Onboarding card */
+.onboard { display: flex; gap: var(--sp-5); align-items: flex-start; }
+.onboard-ring { flex: none; margin-top: 4px; }
+.onboard-rows { flex: 1; display: flex; flex-direction: column; gap: var(--sp-2); }
+.onboard-row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) 0; }
+.onboard-row .i-check { width: 22px; height: 22px; flex: none; border-radius: 50%; display: grid; place-items: center; border: 1.5px solid var(--border-strong); color: transparent; }
+.onboard-row .i-check .i { width: 13px; height: 13px; }
+.onboard-row.is-done .i-check { background: var(--success-bg); border-color: var(--success); color: var(--success); }
+.onboard-row .or-text { flex: 1; font-size: 13.5px; font-weight: 550; }
+.onboard-row.is-done .or-text { color: var(--text-2); text-decoration: line-through; text-decoration-thickness: 1px; }
+.onboard-row .or-later { font-size: 12px; color: var(--text-3); font-weight: 500; }

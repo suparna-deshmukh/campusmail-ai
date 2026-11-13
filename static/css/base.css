@@ -1,0 +1,121 @@
+/* Reset, typography, global element behaviour. */
+
+@font-face {
+  font-family: "Inter";
+  src: url("/static/fonts/inter-var.woff2") format("woff2-variations");
+  font-weight: 400 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+* { margin: 0; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+img, svg, iframe, canvas { display: block; max-width: 100%; }
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1, h2, h3, h4 { font-weight: 600; }
+p { max-width: 68ch; }
+
+/* Numbers everywhere use tabular figures */
+.num, .stat-value, td.num, .seg-badge, .t-val { font-variant-numeric: tabular-nums; }
+
+/* Focus ring */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--primary-200);
+  border-color: var(--primary-500) !important;
+  border-radius: var(--r-chip);
+}
+
+/* Skip link */
+.skip-link {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--surface); color: var(--text);
+  padding: var(--sp-2) var(--sp-4); border-radius: 0 0 var(--r-control) 0;
+  z-index: 200; box-shadow: var(--shadow-md);
+}
+.skip-link:focus { left: 0; }
+
+/* Icons from the sprite (Lucide is stroke-based: no fill, stroke inherits colour) */
+.i {
+  width: 20px; height: 20px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+  vertical-align: -4px;
+}
+.i-16 { width: 16px; height: 16px; }
+.i-18 { width: 18px; height: 18px; }
+.i-24 { width: 24px; height: 24px; }
+.i-14 { width: 14px; height: 14px; }
+.i-28 { width: 28px; height: 28px; }
+
+/* Typography helpers */
+.t-display { font-size: 32px; line-height: 38px; font-weight: 700; letter-spacing: -0.02em; }
+.t-page { font-size: 24px; line-height: 32px; font-weight: 650; letter-spacing: -0.015em; }
+.t-section { font-size: 18px; line-height: 26px; font-weight: 600; }
+.t-card { font-size: 15px; line-height: 22px; font-weight: 600; }
+.t-strong { font-weight: 600; }
+.t-small { font-size: 13px; line-height: 20px; }
+.t-caption { font-size: 12px; line-height: 16px; font-weight: 500; }
+.t-overline {
+  font-size: 11px; line-height: 16px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+.t-mono { font-family: var(--font-mono); font-size: 12.5px; line-height: 18px; font-weight: 500; }
+.t-muted { color: var(--text-2); }
+.t-faint { color: var(--text-3); }
+.t-danger { color: var(--danger); }
+
+/* Code / field chips */
+.chip-mono {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 12.5px; line-height: 18px; font-weight: 500;
+  background: var(--surface-2);
+  border-radius: var(--r-chip);
+  padding: 0 7px;
+}
+
+/* Utility */
+.row { display: flex; align-items: center; gap: var(--sp-3); }
+.row .push { margin-left: auto; }
+.wrap { flex-wrap: wrap; }
+.gap-2 { gap: var(--sp-2); }
+.mt-2 { margin-top: var(--sp-2); } .mt-3 { margin-top: var(--sp-3); }
+.mt-4 { margin-top: var(--sp-4); } .mt-6 { margin-top: var(--sp-6); }
+.mb-4 { margin-bottom: var(--sp-4); } .mb-6 { margin-bottom: var(--sp-6); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hide { display: none !important; }
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0; clip: rect(0 0 0 0); overflow: hidden;
+}
+
+/* Spinner (loading state for buttons) */
+.spinner {
+  width: 16px; height: 16px; flex: none;
+  border: 2px solid var(--primary-200);
+  border-top-color: var(--primary-500);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

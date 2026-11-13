@@ -1,0 +1,53 @@
+{% extends "base_new.html" %}
+{% block title %}Campaigns - CampusMail AI{% endblock %}
+{% block crumb %}<span>Campaigns</span>{% endblock %}
+{% block content %}
+<div class="page-in">
+  <div class="page-head">
+    <div class="ph-main">
+      <div class="page-title">Campaigns</div>
+      <p class="page-sub">Every outreach effort in one place.</p>
+    </div>
+    <div class="push" style="flex:none"><button class="btn btn-primary" id="btn-new-campaign">New campaign</button></div>
+  </div>
+
+  <div class="camp-toolbar">
+    <div class="search-input" style="max-width:280px">
+      <svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#search"/></svg>
+      <input class="input" id="camp-search" placeholder="Search campaigns" aria-label="Search campaigns">
+    </div>
+    <div class="seg" id="camp-filter" role="group" aria-label="Filter">
+      <button class="seg-item is-active" data-f="all">All <span class="seg-badge" id="cf-all">0</span></button>
+      <button class="seg-item" data-f="active">Active <span class="seg-badge" id="cf-active">0</span></button>
+      <button class="seg-item" data-f="finished">Finished <span class="seg-badge" id="cf-finished">0</span></button>
+    </div>
+    <div class="push">
+      <select class="select" id="camp-sort" style="width:190px" aria-label="Sort by">
+        <option value="recent">Recent activity</option>
+        <option value="name">Name</option>
+        <option value="created">Created</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="table-wrap" id="camp-table-wrap">
+    <table class="table" aria-label="Campaigns">
+      <thead><tr>
+        <th class="sortable" data-sort="name">Campaign</th>
+        <th>Status</th>
+        <th class="num">Contacts</th>
+        <th class="num">Sent</th>
+        <th class="num">Replied</th>
+        <th class="num">Reply rate</th>
+        <th>Last activity</th>
+        <th></th>
+      </tr></thead>
+      <tbody id="camp-rows"></tbody>
+    </table>
+    <div id="camp-empty" style="display:none"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ '/static/js/pages/campaigns.js' ~ sv('js/pages/campaigns.js') }}"></script>
+{% endblock %}

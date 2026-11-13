@@ -1,0 +1,12 @@
+{% extends "base_new.html" %}
+{% block title %}Campaign - CampusMail AI{% endblock %}
+{% block crumb %}<a href="/campaigns">Campaigns</a> <svg class="i i-14" aria-hidden="true"><use href="/static/icons/sprite.svg#chevron-right"/></svg> <span id="crumb-name">…</span>{% endblock %}
+{% block content %}
+<div class="page-in">
+  <div id="hub-root"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.hub_campaign_id = {{ cid }};</script>
+<script type="module" src="{{ '/static/js/pages/hub.js' ~ sv('js/pages/hub.js') }}"></script>
+{% endblock %}

@@ -443,8 +443,40 @@ def admin_invite():
 
 @app.route("/")
 @login_required
-def page_dashboard():
-    return render_template("dashboard.html", page="dashboard")
+def page_home():
+    return render_template("home.html", page="home")
+
+
+@app.route("/replies")
+@login_required
+def page_replies():
+    return render_template("area_soon.html", page="replies", area_title="Replies",
+                           area_sub="Recruiters who wrote back, and emails that need fixing.",
+                           old_href="/queue", old_name="Queue and Schedule")
+
+
+@app.route("/library")
+@login_required
+def page_library():
+    return render_template("area_soon.html", page="library", area_title="Library",
+                           area_sub="Your templates and contact lists, ready to reuse.",
+                           old_href="/contacts", old_name="Contacts")
+
+
+@app.route("/team")
+@login_required
+def page_team():
+    return render_template("area_soon.html", page="team", area_title="Team",
+                           area_sub="People, results and everything that happened.",
+                           old_href="/admin", old_name="Team admin")
+
+
+@app.route("/send")
+@login_required
+def page_send():
+    """Temporary: the 3-step send flow lands in Phase 3. Until then, the
+    mail merge wizard keeps the job done (plan section 13)."""
+    return redirect("/merge")
 
 
 @app.route("/contacts")
@@ -468,7 +500,7 @@ def page_merge():
 @app.route("/queue")
 @login_required
 def page_queue():
-    return render_template("queue.html", page="queue")
+    return redirect("/campaigns")
 
 
 @app.route("/activity")
@@ -492,13 +524,20 @@ def page_guide():
 @app.route("/campaigns")
 @login_required
 def page_campaigns():
-    return render_template("campaigns.html", page="campaigns")
+    return render_template("campaigns_new.html", page="campaigns")
 
 
 @app.route("/campaigns/<int:cid>")
 @login_required
 def page_campaign_detail(cid):
-    return render_template("campaigns.html", page="campaigns")
+    return render_template("campaign_hub.html", page="campaigns", cid=cid)
+
+
+@app.route("/campaigns/<int:cid>/send")
+@login_required
+def page_campaign_send(cid):
+    """Send flow (Phase 3). Until then, the mail merge wizard takes over."""
+    return redirect("/merge")
 
 
 @app.route("/assistant")
@@ -1233,6 +1272,51 @@ def api_campaign_create():
     return jsonify({"ok": True, "id": cid})
 
 
+@app.route("/api/campaigns/<int:cid>", methods=["POST"])
+@login_required
+def api_campaign_update(cid):
+    d = request.get_json(force=True)
+    c = db.conn()
+    cam = c.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not cam:
+        c.close()
+        return api_err("Campaign not found", 404)
+    sets, args = [], []
+    if "name" in d:
+        name = (d.get("name") or "").strip()
+        if not name:
+            c.close()
+            return api_err("Give the campaign a name.")
+        sets.append("name=?"); args.append(name)
+    if "description" in d:
+        sets.append("description=?"); args.append((d.get("description") or "").strip())
+    if sets:
+        args.append(cid)
+        c.execute("UPDATE campaigns SET " + ", ".join(sets) + " WHERE id=?", args)
+        c.commit()
+        log("campaign_update", name if "name" in d else str(cid))
+    c.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/campaigns/<int:cid>/delete", methods=["POST"])
+@login_required
+def api_campaign_delete(cid):
+    c = db.conn()
+    cam = c.execute("SELECT id, name FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not cam:
+        c.close()
+        return api_err("Campaign not found", 404)
+    c.execute("DELETE FROM emails WHERE batch_id IN (SELECT id FROM batches WHERE campaign_id=?)", (cid,))
+    c.execute("DELETE FROM batches WHERE campaign_id=?", (cid,))
+    c.execute("UPDATE sheets SET campaign_id=0 WHERE campaign_id=?", (cid,))
+    c.execute("DELETE FROM campaigns WHERE id=?", (cid,))
+    c.commit()
+    log("campaign_delete", cam["name"])
+    c.close()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/campaigns/<int:cid>")
 @login_required
 def api_campaign_detail(cid):
@@ -1255,9 +1339,42 @@ def api_campaign_detail(cid):
     n_contacts = c.execute(
         "SELECT COUNT(*) n FROM contacts ct JOIN sheets s ON ct.sheet_id=s.id WHERE s.campaign_id=?",
         (cid,)).fetchone()["n"]
+    # UI redesign (hub overview): derived status summary, sends per day,
+    # recent replies. Additive fields only.
+    srow = c.execute("""
+        SELECT COUNT(*) AS n_emails,
+          SUM(CASE WHEN e.status='pending' THEN 1 ELSE 0 END) AS n_ready,
+          SUM(CASE WHEN e.status='drafted' THEN 1 ELSE 0 END) AS n_drafted,
+          SUM(CASE WHEN e.status='scheduled' THEN 1 ELSE 0 END) AS n_scheduled,
+          SUM(CASE WHEN e.status='sent' AND COALESCE(e.bounced_at,'')='' AND COALESCE(e.replied_at,'')='' THEN 1 ELSE 0 END) AS n_sent,
+          SUM(CASE WHEN COALESCE(e.replied_at,'')!='' THEN 1 ELSE 0 END) AS n_replied,
+          SUM(CASE WHEN COALESCE(e.bounced_at,'')!='' THEN 1 ELSE 0 END) AS n_bounced,
+          SUM(CASE WHEN e.status='error' THEN 1 ELSE 0 END) AS n_failed,
+          SUM(CASE WHEN e.status='cancelled' THEN 1 ELSE 0 END) AS n_stopped,
+          SUM(CASE WHEN e.status='sent' AND COALESCE(e.replied_at,'')='' AND COALESCE(e.bounced_at,'')='' THEN 1 ELSE 0 END) AS n_sent_unreplied,
+          MAX(CASE WHEN e.status='sent' AND COALESCE(e.bounced_at,'')='' THEN e.sent_at END) AS last_sent_at,
+          MIN(CASE WHEN e.status='scheduled' THEN e.scheduled_at END) AS next_scheduled_at
+        FROM emails e JOIN batches b ON e.batch_id=b.id
+        WHERE b.campaign_id=? AND e.status != 'deleted'
+    """, (cid,)).fetchone()
+    summary = dict(srow)
+    for k in ("n_emails", "n_ready", "n_drafted", "n_scheduled", "n_sent",
+              "n_replied", "n_bounced", "n_failed", "n_stopped", "n_sent_unreplied"):
+        summary[k] = summary.get(k) or 0
+    per_day = {r["d"]: r["n"] for r in c.execute("""
+        SELECT date(e.sent_at) d, COUNT(*) n
+        FROM emails e JOIN batches b ON e.batch_id=b.id
+        WHERE b.campaign_id=? AND e.status='sent' AND e.sent_at IS NOT NULL AND e.sent_at != ''
+        GROUP BY d""", (cid,)).fetchall()}
+    recent_replies = [dict(r) for r in c.execute("""
+        SELECT e.id, e.to_addr, e.replied_at, co.company, co.hr_name
+        FROM emails e JOIN batches b ON e.batch_id=b.id LEFT JOIN contacts co ON co.id=e.contact_id
+        WHERE b.campaign_id=? AND e.replied_at IS NOT NULL AND e.replied_at != ''
+        ORDER BY e.replied_at DESC LIMIT 5""", (cid,)).fetchall()]
     c.close()
     return jsonify({"ok": True, "campaign": dict(cam), "status_counts": st,
-                    "batches": batches, "sheets": sheets, "n_contacts": n_contacts})
+                    "batches": batches, "sheets": sheets, "n_contacts": n_contacts,
+                    "summary": summary, "per_day": per_day, "recent_replies": recent_replies})
 
 
 # ---------------- sheets ----------------
@@ -1399,19 +1516,48 @@ def api_batches():
 # ---------------- emails (queue) ----------------
 
 def _email_rows(params):
+    """Email list. Additive filters (UI redesign): campaign_id, q, sort, dir,
+    and 'bounced' as a pseudo-status. Defaults preserve the old behaviour."""
     c = db.conn()
-    sql = "SELECT * FROM emails WHERE 1=1 AND status != 'deleted'"
+    sql = "SELECT e.*, co.company, co.hr_name FROM emails e LEFT JOIN contacts co ON co.id = e.contact_id"
+    if params.get("campaign_id"):
+        sql += " JOIN batches b ON b.id = e.batch_id"
+    sql += " WHERE e.status != 'deleted'"
     args = []
     status = params.get("status")
     if status == "replied":
-        sql += " AND replied_at IS NOT NULL AND replied_at != ''"
+        sql += " AND e.replied_at IS NOT NULL AND e.replied_at != ''"
+    elif status == "bounced":
+        sql += " AND e.bounced_at IS NOT NULL AND e.bounced_at != ''"
     elif status:
-        sql += " AND status = ?"
+        sql += " AND e.status = ?"
         args.append(status)
+    if params.get("campaign_id"):
+        sql += " AND b.campaign_id = ?"
+        args.append(params["campaign_id"])
     if params.get("batch_id"):
-        sql += " AND batch_id = ?"
+        sql += " AND e.batch_id = ?"
         args.append(params["batch_id"])
-    sql += " ORDER BY CAST(COALESCE(NULLIF(serial,''),'0') AS INTEGER), id LIMIT 3000"
+    if params.get("by") and params.get("campaign_id"):
+        sql += " AND b.created_by = ?"
+        args.append(params["by"])
+    if params.get("q"):
+        like = "%" + str(params["q"]) + "%"
+        sql += " AND (e.to_addr LIKE ? OR e.subject LIKE ? OR co.company LIKE ? OR co.hr_name LIKE ?)"
+        args += [like, like, like, like]
+    sort = params.get("sort")
+    d = "DESC" if params.get("dir") == "desc" else "ASC"
+    if sort == "status":
+        sql += " ORDER BY e.status " + d + ", e.id ASC"
+    elif sort == "time":
+        sql += " ORDER BY COALESCE(e.sent_at, e.scheduled_at, e.created_at) " + d
+    elif sort == "replied":
+        sql += " ORDER BY e.replied_at " + d
+    elif sort == "company":
+        sql += " ORDER BY co.company " + d + ", e.id ASC"
+    else:
+        sql += " ORDER BY CAST(COALESCE(NULLIF(e.serial,''),'0') AS INTEGER), e.id"
+    sql += " LIMIT 3000"
     rows = [dict(r) for r in c.execute(sql, args).fetchall()]
     c.close()
     return rows
@@ -2763,7 +2909,7 @@ def api_batch_reminders(bid):
 @app.route("/reports")
 @login_required
 def page_reports():
-    return render_template("reports.html", page="reports")
+    return redirect("/campaigns")
 
 
 MEMBER_EXPR = "COALESCE(NULLIF(b.created_by,''), NULLIF(cam.created_by,''), 'team')"
@@ -3007,6 +3153,215 @@ def api_template_ai_reminder():
     log("template_ai_reminder", "AI reminder template " + str(tid))
     return jsonify({"ok": True, "id": tid, "subject": subj, "fields": fields})
 
+
+
+
+# ==================== UI redesign additions (additive only) ====================
+
+def _static_version(path):
+    """Cache-busting query for /static files: ?v=<mtime>."""
+    try:
+        p = BASE / "static" / path.lstrip("/")
+        return "?v=" + str(int(p.stat().st_mtime))
+    except OSError:
+        return ""
+
+app.jinja_env.globals["sv"] = lambda path: _static_version(path)
+
+
+@app.after_request
+def _static_cache(resp):
+    if request.path.startswith("/static/"):
+        qs = (request.query_string or b"").decode()
+        if "v=" in qs:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            # unversioned assets (e.g. @imported CSS): revalidate via ETag
+            resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.route("/_kit")
+def page_kit():
+    """Dev-only component gallery (section 4). No data, no login."""
+    return render_template("kit.html")
+
+
+@app.route("/api/home")
+@login_required
+def api_home():
+    """Attention list + upcoming sends + campaign cards for Home (6.4)."""
+    c = db.conn()
+    now = datetime.now().astimezone().isoformat()
+    out = {}
+
+    # attention: replies waiting, bounced, failed, scheduled within 24h,
+    # stale drafts, gmail problems, join requests
+    rows = []
+    q = c.execute("SELECT COUNT(*) n FROM emails WHERE status='sent' AND replied_at IS NOT NULL "
+                  "AND replied_at != '' AND (handled_at IS NULL OR handled_at = '')").fetchone()["n"]
+    if q:
+        rows.append({"type": "replies", "count": q, "campaign": ""})
+    q = c.execute("SELECT COUNT(*) n FROM emails WHERE status='sent' AND bounced_at IS NOT NULL "
+                  "AND bounced_at != ''").fetchone()["n"]
+    if q:
+        rows.append({"type": "bounced", "count": q, "campaign": ""})
+    q = c.execute("SELECT COUNT(*) n FROM emails WHERE status='error'").fetchone()["n"]
+    if q:
+        rows.append({"type": "failed", "count": q, "campaign": ""})
+    in24 = (datetime.now() + timedelta(hours=24)).astimezone().isoformat()
+    q = c.execute("SELECT COUNT(*) n FROM emails WHERE status='scheduled' AND scheduled_at <= ?",
+                  (in24,)).fetchone()["n"]
+    if q:
+        rows.append({"type": "soon", "count": q, "campaign": ""})
+    # stale drafts (created > 2 days ago, still in drafts, nobody sent)
+    c2 = db.conn()
+    cutoff = (datetime.now() - timedelta(days=2)).astimezone().isoformat()
+    q = c2.execute("SELECT COUNT(*) n FROM emails WHERE status='drafted' AND created_at < ?", (cutoff,)).fetchone()["n"]
+    c2.close()
+    if q:
+        rows.append({"type": "stale_drafts", "count": q, "campaign": ""})
+    # gmail not connected
+    if not any(db.account_token_json(a["id"]) for a in db.list_accounts(request.user["id"], request.user["id"])):
+        rows.append({"type": "gmail", "count": 1, "campaign": ""})
+    # admin: pending join requests
+    if request.user["role"] == "admin":
+        c2 = db.conn()
+        q = c2.execute("SELECT COUNT(*) n FROM users WHERE status='pending'").fetchone()["n"]
+        c2.close()
+        if q:
+            rows.append({"type": "requests", "count": q, "campaign": ""})
+    c.close()
+    out["attention"] = rows
+
+    # upcoming sends: next 3 scheduled groups
+    c = db.conn()
+    up = c.execute("""
+        SELECT e.scheduled_at, c.name AS campaign, c.id AS campaign_id, COUNT(*) n
+        FROM emails e
+        JOIN batches b ON e.batch_id = b.id
+        LEFT JOIN campaigns c ON c.id = b.campaign_id
+        WHERE e.status = 'scheduled'
+        GROUP BY e.scheduled_at, c.id
+        ORDER BY e.scheduled_at
+        LIMIT 3
+    """).fetchall()
+    out["upcoming"] = [{"when": r["scheduled_at"], "campaign": r["campaign"] or "No campaign",
+                        "campaign_id": r["campaign_id"], "count": r["n"]} for r in up]
+
+    # campaign cards (max 4, newest activity first)
+    cams = []
+    for cam in c.execute("SELECT * FROM campaigns ORDER BY updated_at DESC, id DESC").fetchall():
+        st = {r["status"]: r["n"] for r in c.execute(
+            "SELECT e.status, COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
+            "WHERE b.campaign_id=? AND e.status != 'deleted' GROUP BY e.status", (cam["id"],))}
+        replied = c.execute("SELECT COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
+                            "WHERE b.campaign_id=? AND e.status != 'deleted' "
+                            "AND e.replied_at IS NOT NULL AND e.replied_at != ''",
+                            (cam["id"],)).fetchone()["n"]
+        sent = st.get("sent", 0)
+        total = sum(st.values())
+        contacts = c.execute(
+            "SELECT COUNT(*) n FROM contacts ct JOIN sheets s ON ct.sheet_id=s.id WHERE s.campaign_id=?",
+            (cam["id"],)).fetchone()["n"]
+        cams.append({"id": cam["id"], "name": cam["name"], "description": cam["description"],
+                     "n_emails": total, "n_contacts": contacts, "sent": sent,
+                     "replied": replied,
+                     "rate": round(100.0 * replied / sent) if sent else 0,
+                     "status_counts": st,
+                     "last": cam["updated_at"]})
+    c.close()
+    out["campaigns"] = cams[:4]
+
+    # result tiles (30 d default window; period filter is client-side cosmetic only
+    # until the API grows period params — see CHANGELOG-UI.md)
+    c = db.conn()
+    tiles = {
+        "sent": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent'").fetchone()["n"],
+        "replies": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
+                             "AND replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"],
+        "scheduled": c.execute("SELECT COUNT(*) n FROM emails WHERE status='scheduled'").fetchone()["n"],
+        "bounced": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
+                             "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"],
+    }
+    c.close()
+    out["tiles"] = {**tiles, "rate": round(100.0 * tiles["replies"] / tiles["sent"]) if tiles["sent"] else 0}
+
+    # onboarding progress (6.3)
+    c = db.conn()
+    ob = {
+        "gmail": bool([a for a in db.list_accounts(request.user["id"], request.user["id"])
+                       if db.account_token_json(a["id"])]),
+        "contacts": c.execute("SELECT COUNT(*) n FROM contacts").fetchone()["n"] > 0,
+        "templates": c.execute("SELECT COUNT(*) n FROM email_templates").fetchone()["n"] > 0,
+        "first_send": c.execute("SELECT COUNT(*) n FROM emails WHERE status != 'deleted'").fetchone()["n"] > 0,
+    }
+    c.close()
+    out["onboard"] = ob
+    return jsonify({"ok": True, **out})
+
+
+@app.route("/api/sheets/practice", methods=["POST"])
+@login_required
+def api_sheet_practice():
+    """Create the 5-row practice list addressed to the signed-in user (6.3)."""
+    email = request.user["email"]
+    c = db.conn()
+    existing = c.execute("SELECT id FROM sheets WHERE name='Practice list' AND campaign_id=0").fetchone()
+    if existing:
+        sid = existing["id"]
+    else:
+        c.execute("INSERT INTO sheets(name, campaign_id, filename, headers, rows, n_rows, created_by, created_at) "
+                  "VALUES(?,?,?, ?, ?, ?, ?, ?)",
+                  ("Practice list", 0, "practice",
+                   json.dumps(["company", "HR name", "HR email"]),
+                   json.dumps([["Me (practice)", request.user["display_name"] or "Practice", email]] * 5),
+                   5, request.user["email"], db.now_iso()))
+        sid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+    c.commit()
+    log("practice_list", "created practice list")
+    c.close()
+    return jsonify({"ok": True, "id": sid})
+
+
+@app.route("/api/sheets/<int:sid>/campaign", methods=["POST"])
+@login_required
+def api_sheet_set_campaign(sid):
+    """Attach a contact list to a campaign, or remove it (0). Audience tab."""
+    d = request.get_json(force=True)
+    campaign_id = int(d.get("campaign_id") or 0)
+    c = db.conn()
+    if campaign_id and not c.execute("SELECT id FROM campaigns WHERE id=?", (campaign_id,)).fetchone():
+        c.close()
+        return api_err("Campaign not found", 404)
+    c.execute("UPDATE sheets SET campaign_id=? WHERE id=?", (campaign_id, sid))
+    c.commit()
+    c.close()
+    log("sheet_campaign", "Sheet " + str(sid) + " moved to campaign " + str(campaign_id))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/emails/revert", methods=["POST"])
+@login_required
+def api_emails_revert():
+    """Undo helper: put emails back to the status/times the caller passed."""
+    d = request.get_json(force=True)
+    items = d.get("items") or []
+    c = db.conn()
+    n = 0
+    for it in items[:1000]:
+        try:
+            c.execute("UPDATE emails SET status=?, scheduled_at=?, error='' WHERE id=? "
+                      "AND status IN ('pending','scheduled','cancelled')",
+                      (it.get("status"), it.get("scheduled_at"), int(it.get("id") or 0)))
+            n += 1
+        except (TypeError, ValueError):
+            continue
+    c.commit()
+    c.close()
+    log("emails_revert", "Reverted " + str(n) + " email(s)")
+    return jsonify({"ok": True, "reverted": n})
+# ==================== end UI redesign additions ====================
 
 
 def bootstrap():

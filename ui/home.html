@@ -1,0 +1,24 @@
+{% extends "base_new.html" %}
+{% block title %}Home - CampusMail AI{% endblock %}
+{% block content %}
+<div id="home-root" class="page-in">
+  <div class="page-head">
+    <div class="ph-main">
+      <div class="home-greet" id="home-greet">…</div>
+      <p class="home-greet-sub" id="home-greet-sub"></p>
+    </div>
+    <div class="push" style="flex:none"><a class="btn btn-primary" href="/send">Send emails</a></div>
+  </div>
+
+  <div id="home-onboard"></div>
+
+  <div class="stat-row mb-6 hide" id="home-tiles" style="margin-bottom:24px"></div>
+
+  <div class="grid-12 mb-6" id="home-cards" style="margin-bottom:32px"></div>
+
+  <div id="home-campaigns"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ '/static/js/pages/home.js' ~ sv('js/pages/home.js') }}"></script>
+{% endblock %}

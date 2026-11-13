@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kit | CampusMail AI</title>
+<link rel="preload" href="/static/fonts/inter-var.woff2" as="font" type="font/woff2">
+<link rel="stylesheet" href="/static/css/app.css?v={{ sv('css/app.css') }}">
+</head>
+<body data-page="kit">
+<div class="skip-link">Skip to content</div>
+<div class="live-line"></div>
+<main class="content" id="main" style="max-width:1100px">
+  <div class="page-head">
+    <div class="ph-main">
+      <div class="page-title">Component kit</div>
+      <p class="page-sub">Every component in every state. Dev only.</p>
+    </div>
+    <div class="push row" style="flex:none">
+      <div class="seg" id="theme-seg" role="group" aria-label="Theme">
+        <button class="seg-item" data-theme-pick="light">Light</button>
+        <button class="seg-item" data-theme-pick="dark">Dark</button>
+        <button class="seg-item" data-theme-pick="auto">Auto</button>
+      </div>
+      <div class="seg" id="width-seg" role="group" aria-label="Width">
+        <button class="seg-item" data-width="1440">1440</button>
+        <button class="seg-item" data-width="1024">1024</button>
+        <button class="seg-item" data-width="390">390</button>
+      </div>
+    </div>
+  </div>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Buttons</h2></div>
+  <div style="padding:0 20px 20px;display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+    <button class="btn btn-primary" id="kb-primary">Create 120 drafts</button>
+    <button class="btn btn-secondary">Schedule</button>
+    <button class="btn btn-ghost">Ghost</button>
+    <button class="btn btn-danger">Delete template</button>
+    <button class="btn btn-ai"><svg class="i i-16"><use href="/static/icons/sprite.svg#sparkles"/></svg>Write with AI</button>
+    <button class="btn btn-primary" id="kb-loading">With loading</button>
+    <button class="btn btn-primary" disabled title="Turn on live sending first">Send now</button>
+    <button class="btn btn-primary btn-sm">Small</button>
+    <button class="btn btn-primary btn-lg">Large</button>
+    <button class="btn btn-icon" aria-label="More"><svg class="i"><use href="/static/icons/sprite.svg#ellipsis"/></svg></button>
+    <button class="btn btn-danger btn-hold" id="kb-hold"><span class="hold-label">Hold to send 120 emails</span></button>
+  </div></section>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Inputs, chips, chips of time</h2></div>
+  <div style="padding:0 20px 20px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div class="field"><label class="field-label" for="k-in1">Campaign name</label>
+      <input class="input" id="k-in1" placeholder="Summer 2027 recruiter outreach">
+      <div class="field-help">One line is enough.</div></div>
+    <div class="field"><label class="field-label" for="k-in2">Email (invalid state)</label>
+      <input class="input invalid" id="k-in2" value="not-an-email">
+      <div class="field-error"><svg class="i"><use href="/static/icons/sprite.svg#alert-triangle"/></svg>That does not look like an email.</div></div>
+    <div class="field"><label class="field-label" for="k-sel">Template</label>
+      <select class="select" id="k-sel"><option>Diwali outreach</option><option>Winter internships</option><option>Follow-up reminder</option></select></div>
+    <div class="field"><label class="field-label" for="k-ta">Note</label>
+      <textarea class="textarea" id="k-ta" rows="2">Invite recruiters to our campus drive.</textarea></div>
+  </div>
+  <div style="padding:0 20px 20px">
+    <div class="chips"><button class="chip">In 1 hour</button><button class="chip">Today 18:00</button><button class="chip">Tomorrow 10:00</button><button class="chip">Monday 09:00</button><button class="chip">Next week</button></div>
+    <div class="time-zone-line" style="margin-top:8px">India Standard Time (IST) — Tuesday 18 November at 10:00</div>
+  </div></section>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Segmented & tabs</h2></div>
+  <div style="padding:0 20px 20px;display:flex;flex-direction:column;gap:16px">
+    <div class="seg" role="group" aria-label="Status filter">
+      <button class="seg-item is-active">All <span class="seg-badge">1,204</span></button>
+      <button class="seg-item">Ready <span class="seg-badge">312</span></button>
+      <button class="seg-item">In drafts <span class="seg-badge">240</span></button>
+      <button class="seg-item">Scheduled <span class="seg-badge">96</span></button>
+      <button class="seg-item">Sent <span class="seg-badge">480</span></button>
+      <button class="seg-item">Replied <span class="seg-badge">58</span></button>
+      <button class="seg-item">Bounced <span class="seg-badge">7</span></button>
+      <button class="seg-item">Failed <span class="seg-badge">3</span></button>
+      <button class="seg-item">Stopped <span class="seg-badge">8</span></button>
+    </div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true">Overview</button>
+      <button class="tab" role="tab" aria-selected="false">Emails <span class="seg-badge">842</span></button>
+      <button class="tab" role="tab" aria-selected="false">Audience <span class="seg-badge">2</span></button>
+    </div>
+  </div></section>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Status badges — one vocabulary</h2></div>
+  <div style="padding:0 20px 20px;display:flex;flex-wrap:wrap;gap:10px" id="kb-badges"></div></section>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Cards, stat tiles, progress</h2></div>
+  <div style="padding:0 20px 20px;display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+    <button class="stat stat-link"><span class="t-overline">Emails sent</span><span class="stat-value">1,204</span><span class="stat-sub">30 days</span></button>
+    <button class="stat stat-link"><span class="t-overline">Replies</span><span class="stat-value">58</span><span class="stat-sub">4.8% reply rate</span></button>
+    <div class="stat"><span class="t-overline">Reply rate</span><span class="stat-value">4.8%</span>
+      <svg class="stat-spark" width="100%" height="28" viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="0,22 15,18 30,20 45,12 60,14 75,8 90,10 100,6"/></svg></div>
+    <button class="stat stat-link"><span class="t-overline">Scheduled</span><span class="stat-value">96</span><span class="stat-sub">next: Tue 10:30</span></div>
+  </div>
+  <div style="padding:0 0 20px 20px;display:flex;gap:16px;align-items:center">
+    <div style="flex:1"><div class="progress"><span style="width:62%"></span></div></div>
+    <svg class="progress-ring" viewBox="0 0 56 56"><circle class="ring-bg" cx="28" cy="28" r="24"/><circle class="ring-fg" cx="28" cy="28" r="24" stroke-dasharray="150.8" stroke-dashoffset="53" transform="rotate(-90 28 28)"/><text x="28" y="32" text-anchor="middle">2 of 4</text></svg>
+  </div></section>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Table</h2></div>
+  <div style="padding:0 20px 20px">
+    <div class="table-wrap" style="border:none;box-shadow:none">
+      <table class="table">
+        <thead><tr><th style="width:36px"><input type="checkbox" class="row-check" id="kb-checkall" aria-label="Select all"></th>
+        <th class="sortable" data-sort>Recipient</th><th>Subject</th><th>Status</th><th>When</th><th class="num">No.</th><th></th></tr></thead>
+        <tbody id="kb-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="selbar" id="kb-selbar" style="position:static;transform:none">
+    <span class="selbar-count">3 selected</span>
+    <button class="btn btn-sm btn-primary">Create drafts</button>
+    <button class="btn btn-sm btn-secondary">Schedule</button>
+    <button class="btn btn-sm btn-ghost">Stop</button>
+    <a class="selbar-link" href="#">Select all 120 that match</a>
+    <button class="btn btn-icon" style="width:32px;height:32px" aria-label="Clear selection"><svg class="i i-16"><use href="/static/icons/sprite.svg#x"/></svg></button>
+  </div></section>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Banners</h2></div>
+  <div style="padding:0 20px 20px;display:flex;flex-direction:column;gap:10px">
+    <div class="banner banner-info"><svg class="i"><use href="/static/icons/sprite.svg#info"/></svg><div style="color:var(--text)">Drafts only is on. <a href="#">Nothing will be sent</a> until you turn on live sending.</div></div>
+    <div class="banner banner-success"><svg class="i"><use href="/static/icons/sprite.svg#check-circle-2"/></svg><div style="color:var(--text)">120 drafts saved in team@college.edu.</div></div>
+    <div class="banner banner-warn"><svg class="i"><use href="/static/icons/sprite.svg#alert-triangle"/></svg><div style="color:var(--text)">Some scheduled emails are overdue because the sending engine is not running.</div><button class="btn btn-sm btn-secondary push">Run now</button></div>
+    <div class="banner banner-danger"><svg class="i"><use href="/static/icons/sprite.svg#alert-triangle"/></svg><div style="color:var(--text)">Gmail did not accept the login. Reconnect the account.</div><button class="btn btn-sm btn-secondary push">Reconnect</button></div>
+  </div></section>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Empty, error, loading</h2></div>
+  <div style="padding:0 20px 20px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div class="card card-flush" style="box-shadow:none">
+      <div class="empty">
+        <div class="empty-illust" id="kb-empty-ill"></div>
+        <div class="empty-title">No emails in this campaign yet</div>
+        <p class="empty-text">Create a send and the emails you generate will appear here.</p>
+        <button class="btn btn-primary">Send emails</button>
+        <a class="empty-link" href="#">Learn how it works</a>
+      </div></div>
+    <div class="card card-flush" style="box-shadow:none;padding:20px">
+      <div class="banner banner-danger" role="alert"><svg class="i"><use href="/static/icons/sprite.svg#alert-triangle"/></svg><div style="color:var(--text);flex:1">We could not load your dashboard.<details style="margin-top:6px"><summary style="cursor:pointer;font-weight:600">Details</summary><div class="t-mono t-faint" style="margin-top:4px">Error: 500</div></details></div><button class="btn btn-sm">Retry</button></div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
+        <div class="skel" style="height:20px;width:60%"></div>
+        <div class="skel" style="height:14px;width:90%"></div>
+        <div class="skel" style="height:14px;width:75%"></div>
+        <div class="skel-row" style="height:48px"></div>
+        <div class="skel-row" style="height:48px"></div>
+      </div></div>
+  </div></section>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Option cards, stepper, drop zone</h2></div>
+  <div style="padding:0 20px 20px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <button class="opt-card is-selected"><span class="opt-ico"><svg class="i"><use href="/static/icons/sprite.svg#file-pen"/></svg></span>
+        <span style="flex:1"><span class="opt-title">Save as Gmail drafts <span class="tag tag-primary">Recommended</span></span>
+        <span class="opt-desc" style="display:block">The emails wait in your Gmail Drafts folder. You read each one and press send yourself.</span></span>
+        <span class="opt-radio"></span></button>
+      <button class="opt-card"><span class="opt-ico"><svg class="i"><use href="/static/icons/sprite.svg#clock"/></svg></span>
+        <span style="flex:1"><span class="opt-title">Send at a set time</span><span class="opt-desc" style="display:block">They go out on their own at the time you pick.</span></span><span class="opt-radio"></span></button>
+      <button class="opt-card is-disabled"><span class="opt-ico"><svg class="i"><use href="/static/icons/sprite.svg#zap"/></svg></span>
+        <span style="flex:1"><span class="opt-title">Send now</span><span class="opt-desc" style="display:block">Needs live sending <a href="#">Turn on live sending</a></span></span><span class="opt-radio"></span></button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="stepper">
+        <button class="step-item is-done"><span class="step-dot"><svg class="i i-14"><use href="/static/icons/sprite.svg#check"/></svg></span><span class="step-name">What</span></button>
+        <span class="step-line"></span>
+        <button class="step-item is-current"><span class="step-dot">2</span><span class="step-name">Check</span></button>
+        <span class="step-line"></span>
+        <button class="step-item"><span class="step-dot">3</span><span class="step-name">When</span></button>
+      </div>
+      <div class="dropzone" id="kb-dz" tabindex="0" role="button" aria-label="Upload a file">
+        <svg class="i i-24"><use href="/static/icons/sprite.svg#upload"/></svg>
+        <div style="font-weight:600">Drag a file here or browse</div>
+        <div class="t-faint t-small">CSV or Excel, up to 10 MB. First row = column names.</div>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="card card-flush mb-6"><div class="card-head" style="padding:16px 20px 0"><h2 class="t-card">Illustrations</h2></div>
+  <div style="padding:0 20px 20px;display:flex;gap:24px;flex-wrap:wrap" id="kb-illusts"></div></section>
+
+  <section class="card mb-6"><div class="card-head"><h2 class="t-card">Interactions</h2></div>
+  <div class="row wrap">
+    <button class="btn btn-secondary" id="kb-toast">Success toast</button>
+    <button class="btn btn-secondary" id="kb-toast-err">Error toast</button>
+    <button class="btn btn-secondary" id="kb-modal">Open modal</button>
+    <button class="btn btn-secondary" id="kb-drawer">Open drawer</button>
+    <button class="btn btn-secondary" id="kb-menu">Open menu</button>
+    <button class="btn btn-secondary" id="kb-confirm">Confirm (tier 1)</button>
+    <button class="btn btn-secondary" id="kb-typed">Confirm (tier 4)</button>
+    <button class="btn btn-secondary" id="kb-undo">Undoable action</button>
+    <button class="btn btn-secondary" id="kb-palette">Command palette</button>
+  </div></section>
+</main>
+<script type="module">
+  import { toast, modal, drawer, menu, icon, el, badge, statusBadge, confirmSimple, confirmTyped, undoable, holdToConfirm, spotIllust } from "/static/js/core/ui.js";
+  import { openPalette } from "/static/js/core/shell.js";
+  import { statusOf, STATUS } from "/static/js/core/copy.js";
+
+  // theme
+  const themeSeg = document.getElementById("theme-seg");
+  const pick = localStorage.getItem("cm_theme") || "auto";
+  themeSeg.querySelectorAll(".seg-item").forEach(b => b.classList.toggle("is-active", b.dataset.themePick === pick));
+  themeSeg.addEventListener("click", (e) => {
+    const b = e.target.closest(".seg-item"); if (!b) return;
+    localStorage.setItem("cm_theme", b.dataset.themePick);
+    document.documentElement.dataset.theme = b.dataset.themePick === "light" ? "light" : b.dataset.themePick === "dark" ? "dark" : (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    themeSeg.querySelectorAll(".seg-item").forEach(x => x.classList.toggle("is-active", x === b));
+  });
+
+  // width
+  const widthSeg = document.getElementById("width-seg");
+  widthSeg.addEventListener("click", (e) => {
+    const b = e.target.closest(".seg-item"); if (!b) return;
+    widthSeg.querySelectorAll(".seg-item").forEach(x => x.classList.toggle("is-active", x === b));
+    document.querySelector("main.content").style.maxWidth = b.dataset.width === "1440" ? "1100px" : b.dataset.width + "px";
+    document.body.dataset.width = b.dataset.width;
+  });
+  document.querySelector("main.content").style.maxWidth = "1100px";
+
+  // badges
+  const bc = document.getElementById("kb-badges");
+  const samples = [
+    { status: "pending" }, { status: "drafted" }, { status: "scheduled" },
+    { status: "sent" }, { status: "sent", replied_at: "x" }, { status: "sent", bounced_at: "x" },
+    { status: "error" }, { status: "cancelled" },
+  ];
+  for (const s of samples) bc.append(statusBadge(s));
+  bc.append(badge("Not contacted", "neutral", "circle-dashed"));
+  bc.append(badge("Active", "active", "zap"));
+  bc.append(badge("Waiting", "waiting", "clock"));
+  bc.append(badge("Removed", "removed", "x-circle"));
+
+  // table rows
+  const rows = [
+    ["Infosys", "Ananya Rao", "ananya.rao@infosys.com", "sent", "Replied yesterday", 12, "replied_at x"],
+    ["TCS", "Vikram S.", "vikram.s@tcs.com", "scheduled", "Scheduled for Tue 10:30", 45, ""],
+    ["Wipro", "Meera Kulkarni", "meera.k@wipro.com", "sent", "Sent 2 days ago", 77, "bounced x"],
+    ["Zoho", "Rahul P.", "rahul@zoho.com", "pending", "Created today", 102, ""],
+    ["Cognizant", "Priya Sharma", "priya.s@cognizant.com", "error", "The address does not exist.", 133, ""],
+    ["Accenture", "Sneha Patil", "sneha.p@accenture.com", "cancelled", "Stopped by you", 140, ""],
+  ];
+  const tb = document.getElementById("kb-tbody");
+  rows.forEach((r, i) => {
+    const email = { status: r[3], replied_at: r[6].includes("replied") ? "x" : null, bounced_at: r[6].includes("bounced") ? "x" : null };
+    const tr = el("tr", { class: i === 0 ? "is-selected" : "" },
+      el("td", {}, el("input", { type: "checkbox", class: "row-check", "aria-label": "Select row" })),
+      el("td", { dataset: { label: "Recipient" } },
+        el("div", { class: "cell-main" }, r[0]),
+        el("div", { class: "cell-sub" }, r[1] + " · " + r[2])),
+      el("td", { dataset: { label: "Subject" } }, el("span", { class: "truncate", style: "max-width:180px" }, "Hi " + r[1].split(" ")[0] + ", a chance to meet?")),
+      el("td", { dataset: { label: "Status" } }, statusBadge(email)),
+      el("td", { dataset: { label: "When", class: r[3] === "error" ? "t-danger" : "" } }, r[4]),
+      el("td", { class: "num", dataset: { label: "No." } }, String(r[5])),
+      el("td", { class: "row-kebab" }, el("button", { class: "btn btn-icon", style: "width:32px;height:32px", "aria-label": "Row actions" }, icon("ellipsis", "i i-16"))));
+    tb.append(tr);
+  });
+  document.getElementById("kb-checkall").addEventListener("change", (e) => {
+    tb.querySelectorAll("tr").forEach(tr => tr.classList.toggle("is-selected", e.target.checked));
+  });
+
+  // illustrations
+  const ill = document.getElementById("kb-illusts");
+  for (const k of ["replies", "campaigns", "success", "wrong", "contacts", "hourglass"]) {
+    ill.append(el("div", { style: "text-align:center" }, el("div", { style: "margin:0 auto;width:96px;height:96px", html: spotIllust(k) }, null), el("div", { class: "t-caption t-faint" }, k)));
+  }
+  document.getElementById("kb-empty-ill").innerHTML = spotIllust("campaigns");
+
+  // interactions
+  document.getElementById("kb-toast").addEventListener("click", () => toast("120 drafts saved in team@college.edu."));
+  document.getElementById("kb-toast-err").addEventListener("click", () => toast("Could not save. Check your connection and try again.", { type: "error", action: () => {}, actionLabel: "Retry" }));
+  document.getElementById("kb-modal").addEventListener("click", () => {
+    const m = modal({
+      title: "New campaign", sub: "A campaign holds your list, your emails and the replies.",
+      body: el("div", { class: "field" }, el("label", { class: "field-label" }, "Name"),
+        el("input", { class: "input", placeholder: "Summer 2027 recruiter outreach" })),
+      foot: [el("button", { class: "btn btn-ghost" }, "Cancel"), el("button", { class: "btn btn-primary" }, "Create campaign")],
+    });
+    m.foot.querySelector(".btn-primary").addEventListener("click", () => m.close());
+    m.foot.querySelector(".btn-ghost").addEventListener("click", () => m.close());
+  });
+  document.getElementById("kb-drawer").addEventListener("click", () => {
+    drawer({
+      title: "Infosys", sub: "Ananya Rao · ananya.rao@infosys.com",
+      body: el("div", {}, statusBadge({ status: "sent", replied_at: "x" }),
+        el("div", { class: "email-panel", style: "margin-top:14px" }, el("div", { class: "email-subject" }, "Hi Ananya, a chance to meet at BITS?"), el("iframe", { title: "Email preview" }))),
+      foot: [el("button", { class: "btn btn-secondary" }, "Reply"), el("button", { class: "btn btn-primary" }, "Mark as replied")],
+    });
+  });
+  document.getElementById("kb-menu").addEventListener("click", (e) => menu(e.currentTarget, [
+    { icon: "eye", text: "Preview" }, { icon: "copy", text: "Copy address" }, "-",
+    { icon: "sparkles", text: "Polish with AI" }, "-",
+    { icon: "trash-2", text: "Delete", danger: true },
+  ]));
+  document.getElementById("kb-confirm").addEventListener("click", async () => {
+    const ok = await confirmSimple({ title: "Delete this template?", body: "Emails already created keep their own copy.", actionLabel: "Delete template" });
+    toast(ok ? "Template deleted." : "Kept the template.", { type: ok ? "success" : "info" });
+  });
+  document.getElementById("kb-typed").addEventListener("click", async () => {
+    const ok = await confirmTyped({ title: "Empty all emails?", body: "This removes every email from the list. Gmail drafts stay untouched.", expect: 42, actionLabel: "Empty all emails" });
+    toast(ok ? "All emails removed." : "Nothing removed.", { type: ok ? "success" : "info" });
+  });
+  document.getElementById("kb-undo").addEventListener("click", () => {
+    undoable("Stopped 12 emails.", () => console.log("commit"), () => console.log("rollback"));
+  });
+  document.getElementById("kb-palette").addEventListener("click", () => openPalette());
+  holdToConfirm(document.getElementById("kb-hold"), { onConfirm: () => toast("Hold confirmed — 120 emails would send now.", { type: "info" }) });
+  holdToConfirm(document.getElementById("kb-loading"), { onConfirm: () => {} });
+  document.getElementById("kb-loading").addEventListener("click", () => {
+    const b = document.getElementById("kb-loading");
+    b.classList.add("is-loading"); b.disabled = true;
+    setTimeout(() => { b.classList.remove("is-loading"); b.disabled = false; }, 1400);
+  });
+  document.querySelectorAll(".seg-item[data-width]").forEach(b => b.addEventListener("click", () => {
+    widthSeg.querySelectorAll(".seg-item").forEach(x => x.classList.toggle("is-active", x === b));
+    document.querySelector("main.content").style.maxWidth = b.dataset.width === "1440" ? "1100px" : b.dataset.width + "px";
+  }));
+  document.getElementById("kb-dz").addEventListener("click", () => toast("This is a static demo drop zone.", { type: "info" }));
+</script>
+</body>
+</html>

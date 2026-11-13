@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}CampusMail AI{% endblock %}</title>
+<link rel="preload" href="/static/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/css/app.css?v={{ sv('css/app.css') }}">
+<script>
+  (function () {
+    var force = new URLSearchParams(location.search).get("theme");
+    var t = force || localStorage.getItem("cm_theme") || "auto";
+    var dark = t === "dark" || (t === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  })();
+</script>
+</head>
+<body data-page="{{ page }}">
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="live-line" aria-hidden="true"></div>
+
+<div class="app-shell">
+  <aside class="side" id="side" aria-label="Main navigation">
+    <div class="side-brand">
+      <div class="side-mark"><svg class="i" aria-hidden="true"><use href="/static/icons/sprite.svg#send"/></svg></div>
+      <div class="side-brand-text">
+        <div class="side-brand-name">CampusMail AI</div>
+        {% if brand_team %}<div class="side-brand-sub">{{ brand_team }}</div>{% endif %}
+      </div>
+    </div>
+
+    <nav class="side-nav">
+      <a class="nav-item" href="/" aria-current="{{ 'page' if page=='home' }}">
+        <svg class="i" aria-hidden="true"><use href="/static/icons/sprite.svg#house"/></svg><span class="nav-label">Home</span></a>
+      <a class="nav-item" href="/campaigns" aria-current="{{ 'page' if page in ('campaigns','send') }}">
+        <svg class="i" aria-hidden="true"><use href="/static/icons/sprite.svg#send"/></svg><span class="nav-label">Campaigns</span></a>
+      <a class="nav-item" href="/replies" aria-current="{{ 'page' if page=='replies' }}">
+        <svg class="i" aria-hidden="true"><use href="/static/icons/sprite.svg#inbox"/></svg><span class="nav-label">Replies</span>
+        <span class="nav-badge" id="nav-replies-badge" style="display:none"></span></a>
+      <a class="nav-item" href="/library" aria-current="{{ 'page' if page=='library' }}">
+        <svg class="i" aria-hidden="true"><use href="/static/icons/sprite.svg#book-open"/></svg><span class="nav-label">Library</span></a>
+      {% if me and me.role == 'admin' %}
+      <a class="nav-item" href="/team" aria-current="{{ 'page' if page=='team' }}">
+        <svg class="i" aria-hidden="true"><use href="/static/icons/sprite.svg#users"/></svg><span class="nav-label">Team</span></a>
+      {% endif %}
+    </nav>
+
+    <div class="side-foot">
+      <button class="mode-card mode-safe" id="mode-card" aria-label="Sending mode" type="button"></button>
+      <button class="nav-item" id="side-help" type="button">
+        <svg class="i" aria-hidden="true"><use href="/static/icons/sprite.svg#circle-help"/></svg><span class="nav-label">Help</span></button>
+      <a class="nav-item" href="/settings">
+        <svg class="i" aria-hidden="true"><use href="/static/icons/sprite.svg#settings"/></svg><span class="nav-label">Settings</span></a>
+      <div class="side-user" id="side-user" role="button" tabindex="0" aria-label="Account menu">
+        <span class="avatar" id="side-avatar"></span>
+        <span class="side-user-name" id="side-user-name">…</span>
+        <svg class="i i-16 push" style="color:var(--text-3)" aria-hidden="true"><use href="/static/icons/sprite.svg#chevron-down"/></svg>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <button class="btn btn-icon" id="topbar-burger" aria-label="Open menu">
+        <svg class="i"><use href="/static/icons/sprite.svg#list"/></svg></button>
+      <div class="topbar-crumb">{% block crumb %}{% endblock %}</div>
+      <button class="palette-btn" id="topbar-palette" type="button">
+        <svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#search"/></svg>
+        <span>Search or jump to...</span>
+        <span class="kbd push" style="margin-left:auto">⌘K</span>
+      </button>
+      <button class="btn btn-ai btn-sm" id="topbar-ask-ai" type="button">
+        <svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#sparkles"/></svg>Ask AI</button>
+      <button class="btn btn-icon" id="topbar-status" aria-label="System status" type="button" style="position:relative">
+        <svg class="i"><use href="/static/icons/sprite.svg#circle-help"/></svg>
+        <span class="dot" style="position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:var(--danger);display:none"></span>
+      </button>
+      <span class="reconnect-chip">Reconnecting…</span>
+      <div class="topbar-progress" id="topbar-progress"></div>
+    </div>
+
+    <div class="content">
+      {% if in_personal %}
+      <div class="banner banner-info" style="align-items:center" id="personal-banner">
+        <svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#info"/></svg>
+        {% if me.team_status == 'pending' %}
+        <div style="flex:1">You are in your own workspace while your request is reviewed. Your data here is separate from the team's.</div>
+        <button class="btn btn-ghost btn-sm" id="btn-add-note">Add a note for the admins</button>
+        {% else %}
+        <div style="flex:1">Your request was not approved. This is your own workspace, separate from the team's.</div>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+</div>
+
+<nav class="bottom-tabs" aria-label="Primary">
+  <a href="/" aria-current="{{ 'page' if page=='home' }}"><svg class="i"><use href="/static/icons/sprite.svg#house"/></svg>Home</a>
+  <a href="/campaigns"><svg class="i"><use href="/static/icons/sprite.svg#send"/></svg>Campaigns</a>
+  <a href="/replies"><svg class="i"><use href="/static/icons/sprite.svg#inbox"/></svg>Replies</a>
+  <a href="/library"><svg class="i"><use href="/static/icons/sprite.svg#book-open"/></svg>Library</a>
+  <a href="/settings"><svg class="i"><use href="/static/icons/sprite.svg#settings"/></svg>More</a>
+</nav>
+<div class="side-scrim" id="side-scrim"></div>
+
+<script>window.me_email = {{ me_email|tojson }}; window.me_name = {{ (me.display_name if me else "")|tojson }}; window.me_role = {{ (me.role if me else 'none')|tojson }}; window.brand_team = {{ brand_team|tojson }};</script>
+<script type="module" src="{{ '/static/js/shell-init.js' ~ sv('js/shell-init.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

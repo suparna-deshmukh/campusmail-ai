@@ -38,6 +38,28 @@ terminal open** whenever you want scheduled sends to fire.
 > is using 5001, start it with a different port:
 > `CAMPUSMAIL_AI_PORT=8080 ./run.sh` — but then use the matching address for setup steps below.
 
+### The redesigned UI (`redesign` branch)
+
+The new interface (sidebar shell, Home, campaign hub with Overview / Emails /
+Audience) is being rolled out on the **`redesign`** branch. It runs exactly
+like the app above — `./run.sh` — but on a different port so it never touches
+a live instance:
+
+```
+CAMPUSMAIL_AI_PORT=5099 CAMPUSMAIL_AI_DEV_LOGIN=you@example.com ./run.sh
+```
+
+`CAMPUSMAIL_AI_DEV_LOGIN` logs that address in automatically (no Google
+account) — use it only on throwaway instances. To load demo data (campaigns,
+lists, a spread of email statuses) for a scratch instance:
+
+```
+.venv/bin/python scripts/seed_demo.py            # add --fresh --yes to start clean
+```
+
+See `CHANGELOG-UI.md` for what is in, what deviates from the plan, and what
+is still to come.
+
 ---
 
 ## 2. First login & team access
