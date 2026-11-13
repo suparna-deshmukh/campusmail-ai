@@ -542,6 +542,8 @@ def api_state():
     sent_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent'").fetchone()["n"]
     replied_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
                            "AND replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"]
+    bounced_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
+                           "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"]
     reminders_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=1").fetchone()["n"]
     c.close()
     return jsonify({
@@ -563,7 +565,7 @@ def api_state():
                       "last_error": SCHEDULER_STATE["last_error"],
                       "due_now": due,
                       "next_fire": nxt["scheduled_at"] if nxt else None},
-        "reply": {"sent": sent_n, "replied": replied_n,
+        "reply": {"sent": sent_n, "replied": replied_n, "bounced": bounced_n,
                   "rate": round(100.0 * replied_n / sent_n) if sent_n else 0,
                   "reminders": reminders_n},
         "settings": {k: db.get_setting(k) for k in
@@ -1739,6 +1741,53 @@ def replies_tick():
             _cloud_push_email(int(lid))
 
 
+def bounces_tick():
+    """Scan send-account inboxes for delivery failures and mark matching mails as
+    bounced (recipient address wrong or does not exist). State is mirrored to the
+    cloud relay so every instance shows the same analytics."""
+    c = db.conn()
+    accts = [dict(r) for r in c.execute("SELECT id FROM gmail_accounts").fetchall()]
+    c.close()
+    for a in accts:
+        if not db.account_token_json(a["id"]):
+            continue
+        try:
+            notices = gmail_client.list_bounce_notices(a["id"])
+        except Exception as e:
+            db.log_activity("bounce_poll_error", str(e)[:200], "scheduler")
+            continue
+        if not notices:
+            continue
+        c = db.conn()
+        marked = []
+        for n in notices:
+            if c.execute("SELECT 1 FROM processed_dsn WHERE account_id=? AND message_id=?",
+                         (a["id"], n["message_id"])).fetchone():
+                continue
+            for addr, reason in gmail_client.parse_bounce_notice(n["text"], n["subject"]):
+                row = c.execute("SELECT id FROM emails WHERE lower(to_addr)=lower(?) AND status='sent' "
+                                "AND (bounced_at IS NULL OR bounced_at='') ORDER BY id DESC LIMIT 1",
+                                (addr,)).fetchone()
+                if not row:
+                    continue
+                c.execute("UPDATE emails SET bounced_at=?, bounce_reason=? WHERE id=?",
+                          (db.now_iso(), reason, row["id"]))
+                c.execute("UPDATE contacts SET status='bounced' "
+                          "WHERE id=(SELECT contact_id FROM emails WHERE id=?) AND status NOT IN ('replied','bounced')",
+                          (row["id"],))
+                marked.append((row["id"], addr, reason))
+            c.execute("INSERT OR IGNORE INTO processed_dsn(account_id, message_id, processed_at) VALUES(?,?,?)",
+                      (a["id"], n["message_id"], db.now_iso()))
+        c.commit()
+        c.close()
+        for eid, addr, reason in marked:
+            db.log_activity("bounce_detected", str(eid) + " " + addr + " - " + reason[:140], "scheduler")
+            try:
+                _cloud_push_email(eid)
+            except Exception:
+                pass
+
+
 def reminders_tick():
     """Send follow-up reminders for batches configured with reminder rules."""
     if db.get_setting("safe_mode") == "1":
@@ -1889,6 +1938,7 @@ def _cloud_push_email(email_id, status=None):
         "reminder_days": rem_days, "reminder_max": rem_max,
         "reminder_subject": rem_subj, "reminder_body": rem_body,
         "replied_at": r["replied_at"],
+        "bounced_at": r["bounced_at"] or "", "bounce_reason": (r["bounce_reason"] or ""),
     }]}
     try:
         req = urllib.request.Request(url + "/api/emails",
@@ -1942,7 +1992,14 @@ def relay_status_pull():
                 c.execute("UPDATE emails SET sent_at=COALESCE(?, sent_at), message_id=? WHERE id=?", (sent_at, mid, lid))
             elif sent_at:
                 c.execute("UPDATE emails SET sent_at=COALESCE(?, sent_at) WHERE id=?", (sent_at, lid))
-            c.execute("UPDATE contacts SET status='sent' WHERE id=(SELECT contact_id FROM emails WHERE id=?)", (lid,))
+            c.execute("UPDATE contacts SET status='sent' "
+                      "WHERE id=(SELECT contact_id FROM emails WHERE id=?) AND status NOT IN ('replied','bounced')", (lid,))
+        if st == "sent" and e.get("bounced_at"):
+            c.execute("UPDATE emails SET bounced_at=?, bounce_reason=COALESCE(NULLIF(?,''), bounce_reason) "
+                      "WHERE id=? AND (bounced_at IS NULL OR bounced_at='')",
+                      (e["bounced_at"], e.get("bounce_reason") or "", lid))
+            c.execute("UPDATE contacts SET status='bounced' "
+                      "WHERE id=(SELECT contact_id FROM emails WHERE id=?) AND status NOT IN ('replied','bounced')", (lid,))
     c.commit()
     c.close()
     for detail in pending_logs:
@@ -1955,6 +2012,11 @@ def scheduler_tick():
         return
     if _relay_enabled():
         relay_status_pull()
+        if TICK_COUNTER["n"] % 15 == 0:
+            try:
+                bounces_tick()
+            except Exception as e:
+                SCHEDULER_STATE["last_error"] = str(e)[:200]
         return
 
     now = datetime.now().astimezone()
@@ -2019,6 +2081,11 @@ def scheduler_tick():
     if TICK_COUNTER["n"] % 5 == 0:
         try:
             replies_tick()
+        except Exception as e:
+            SCHEDULER_STATE["last_error"] = str(e)[:200]
+    if TICK_COUNTER["n"] % 15 == 0:
+        try:
+            bounces_tick()
         except Exception as e:
             SCHEDULER_STATE["last_error"] = str(e)[:200]
 
@@ -2239,8 +2306,8 @@ AI_TOOLS = [
          "required": ["template_id", "action"]}}},
     {"type": "function", "function": {"name": "list_emails",
      "description": "List queue emails with id, who (recruiter name), company, subject and status. "
-     "Optional status filter: sent, scheduled, pending, drafted, cancelled, error, or 'replied' "
-     "(emails the recruiter answered).",
+     "Optional status filter: sent, scheduled, pending, drafted, cancelled, error, 'replied' "
+     "(emails the recruiter answered) or 'bounced' (delivery failed - address wrong or does not exist).",
      "parameters": {"type": "object", "properties": {
          "status": {"type": "string"}, "limit": {"type": "integer"}}}}},
     {"type": "function", "function": {"name": "cancel_emails",
@@ -2265,6 +2332,8 @@ def _assistant_context():
     usable = [a for a in all_accts if db.account_for(request.user["id"], a["id"]) and db.account_token_json(a["id"])]
     st = {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM emails GROUP BY status").fetchall()}
     replied_n = c.execute("SELECT COUNT(*) n FROM emails WHERE replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"]
+    bounced_n_ctx = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
+                               "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"]
     recent_sent = [dict(r) for r in c.execute(
         "SELECT e.to_addr, e.sent_at, ct.company, ct.hr_name FROM emails e "
         "LEFT JOIN contacts ct ON ct.id = e.contact_id WHERE e.status='sent' "
@@ -2302,7 +2371,7 @@ def _assistant_context():
         "- Templates: " + (", ".join(str(x["id"]) + " " + x["name"] + " [" + ", ".join(json.loads(x["fields"] or "[]")) + "]" for x in tpls) or "none"),
         "- Data sheets: " + (", ".join(str(x["id"]) + " " + x["name"] + " (" + str(x["n_rows"]) + " rows: " + ", ".join(json.loads(x["headers"] or "[]")) + ")" for x in sheets) or "none"),
         "- Email queue counts: " + (", ".join(k + "=" + str(v) for k, v in sorted(st.items())) or "empty"),
-        "- Sent: " + str(st.get("sent", 0)) + " | Replied: " + str(replied_n) + " | Latest sent: " + recent,
+        "- Sent: " + str(st.get("sent", 0)) + " | Replied: " + str(replied_n) + " | Bounced: " + str(bounced_n_ctx) + " | Latest sent: " + recent,
         "- Local date/time: " + datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"),
     ])
 
@@ -2686,12 +2755,14 @@ def page_reports():
 def _reports_rows(status="", q=""):
     c = db.conn()
     sql = ("SELECT e.id, e.serial, e.to_addr, e.subject, e.status, e.sent_at, e.scheduled_at, "
-           "e.replied_at, e.reminder_count, e.is_reminder, e.error, e.batch_id, "
+           "e.replied_at, e.bounced_at, e.bounce_reason, e.reminder_count, e.is_reminder, e.error, e.batch_id, "
            "co.company, co.hr_name FROM emails e LEFT JOIN contacts co ON co.id=e.contact_id "
            "WHERE e.status != 'deleted'")
     args = []
     if status == "replied":
         sql += " AND e.replied_at IS NOT NULL AND e.replied_at != ''"
+    elif status == "bounced":
+        sql += " AND e.bounced_at IS NOT NULL AND e.bounced_at != ''"
     elif status:
         sql += " AND e.status = ?"
         args.append(status)
@@ -2719,11 +2790,12 @@ def api_reports_csv():
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["ID", "Serial", "Company", "HR Name", "To", "Subject", "Status",
-                "Scheduled", "Sent", "Replied", "Reminders", "Is Reminder", "Error"])
+                "Scheduled", "Sent", "Replied", "Bounced", "Bounce reason", "Reminders", "Is Reminder", "Error"])
     for r in rows:
         w.writerow([r["id"], r["serial"], r["company"] or "", r["hr_name"] or "", r["to_addr"],
                     r["subject"], r["status"], r["scheduled_at"] or "", r["sent_at"] or "",
-                    r["replied_at"] or "", r["reminder_count"], "yes" if r["is_reminder"] else "", r["error"]])
+                    r["replied_at"] or "", r["bounced_at"] or "", r["bounce_reason"] or "",
+                    r["reminder_count"], "yes" if r["is_reminder"] else "", r["error"]])
     return Response(buf.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=campusmail_ai_outreach.csv"})
 
@@ -2738,6 +2810,8 @@ def api_reports_summary():
     sent_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent'").fetchone()["n"]
     replied_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
                           "AND replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"]
+    bounced_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
+                          "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"]
     days = []
     for i in range(13, -1, -1):
         d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
@@ -2747,13 +2821,14 @@ def api_reports_summary():
     companies = [dict(r) for r in c.execute(
         "SELECT co.company, COUNT(*) total, "
         "SUM(CASE WHEN e.status='sent' THEN 1 ELSE 0 END) sent, "
-        "SUM(CASE WHEN e.replied_at IS NOT NULL AND e.replied_at != '' THEN 1 ELSE 0 END) replied "
+        "SUM(CASE WHEN e.replied_at IS NOT NULL AND e.replied_at != '' THEN 1 ELSE 0 END) replied, "
+        "SUM(CASE WHEN e.bounced_at IS NOT NULL AND e.bounced_at != '' THEN 1 ELSE 0 END) bounced "
         "FROM emails e JOIN contacts co ON co.id = e.contact_id "
         "WHERE e.is_reminder=0 GROUP BY co.company ORDER BY total DESC LIMIT 12").fetchall()]
     c.close()
     reply_rate = round(100.0 * replied_n / sent_n) if sent_n else 0
     return jsonify({"ok": True, "contacts": contacts, "emails": emails, "reminders": reminders,
-                    "sent": sent_n, "replied": replied_n, "reply_rate": reply_rate,
+                    "sent": sent_n, "replied": replied_n, "bounced": bounced_n, "reply_rate": reply_rate,
                     "days": days, "companies": companies})
 
 

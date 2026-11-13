@@ -14,6 +14,15 @@ const PUMP_LIMIT = 6; // sends per minute (function 60s limit)
 
 const sql = postgres(DB_URL, { max: 4, idle_timeout: 15 });
 
+let schemaReady = false;
+async function ensureSchema() {
+  await sql`ALTER TABLE relay_emails ADD COLUMN IF NOT EXISTS bounced_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE relay_emails ADD COLUMN IF NOT EXISTS bounce_reason TEXT DEFAULT ''`;
+  await sql`CREATE TABLE IF NOT EXISTS relay_processed_dsn (
+    message_id   TEXT PRIMARY KEY,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now())`;
+}
+
 function json(obj: unknown, code = 200): Response {
   return new Response(JSON.stringify(obj), {
     status: code,
@@ -52,14 +61,16 @@ async function upsertEmails(req: Request): Promise<Response> {
     await sql`
       INSERT INTO relay_emails(local_id, account_id, to_addr, cc, subject, body_text,
         attachments, status, scheduled_at, batch_name, campaign_name, is_reminder, serial,
-        error, reminder_days, reminder_max, reminder_subject, reminder_body, replied_at, updated_at)
+        error, reminder_days, reminder_max, reminder_subject, reminder_body, replied_at,
+        bounced_at, bounce_reason, updated_at)
       VALUES (${e.local_id}, ${e.account_id || 0}, ${e.to_addr || ""}, ${e.cc || ""}, ${e.subject || ""},
         ${e.body_html || ""}, ${JSON.stringify(e.attachments || [])}, ${e.status || "scheduled"},
         ${e.scheduled_at ? new Date(e.scheduled_at) : null}, ${e.batch_name || ""},
         ${e.campaign_name || ""}, ${e.is_reminder ? 1 : 0}, ${String(e.serial || "")},
         ${e.error || ""}, ${e.reminder_days || 0}, ${e.reminder_max || 0},
         ${e.reminder_subject || ""}, ${e.reminder_body || ""},
-        ${e.replied_at ? new Date(e.replied_at) : null}, now())
+        ${e.replied_at ? new Date(e.replied_at) : null},
+        ${e.bounced_at ? new Date(e.bounced_at) : null}, ${e.bounce_reason || ""}, now())
       ON CONFLICT (local_id) DO UPDATE SET
         account_id = excluded.account_id, to_addr = excluded.to_addr, cc = excluded.cc,
         subject = excluded.subject, body_text = excluded.body_text,
@@ -70,6 +81,10 @@ async function upsertEmails(req: Request): Promise<Response> {
         reminder_days = excluded.reminder_days, reminder_max = excluded.reminder_max,
         reminder_subject = excluded.reminder_subject, reminder_body = excluded.reminder_body,
         replied_at = excluded.replied_at,
+        bounced_at = CASE WHEN excluded.bounced_at IS NOT NULL THEN excluded.bounced_at
+                   ELSE relay_emails.bounced_at END,
+        bounce_reason = CASE WHEN excluded.bounce_reason IS NOT NULL AND excluded.bounce_reason != ''
+                   THEN excluded.bounce_reason ELSE relay_emails.bounce_reason END,
         sent_at = CASE WHEN excluded.status = 'sent' THEN now() ELSE relay_emails.sent_at END,
         message_id = CASE WHEN excluded.status = 'sent' AND excluded.message_id IS NOT NULL
                    AND excluded.message_id != '' THEN excluded.message_id ELSE relay_emails.message_id END,
@@ -83,7 +98,8 @@ async function upsertEmails(req: Request): Promise<Response> {
 async function statusPull(): Promise<Response> {
   const rows: any[] = await sql`
     SELECT local_id, status, sent_at, message_id, error, updated_at,
-           is_reminder, parent_local_id, to_addr, subject, reminder_count, body_text
+           is_reminder, parent_local_id, to_addr, subject, reminder_count, body_text,
+           bounced_at, bounce_reason
     FROM relay_emails
     WHERE updated_at >= now() - interval '10 days'
     ORDER BY updated_at DESC LIMIT 500`;
@@ -95,6 +111,8 @@ async function statusPull(): Promise<Response> {
     is_reminder: !!r.is_reminder, parent_local_id: r.parent_local_id || 0,
     to_addr: r.to_addr || "", subject: r.subject || "",
     reminder_count: r.reminder_count || 0,
+    bounced_at: r.bounced_at ? new Date(r.bounced_at).toISOString() : null,
+    bounce_reason: r.bounce_reason || "",
     body_html: r.is_reminder ? (r.body_text || "") : undefined,
   })) });
 }
@@ -102,6 +120,9 @@ async function statusPull(): Promise<Response> {
 // ---------------- sending ----------------
 
 async function pump(): Promise<Response> {
+  if (!schemaReady) {
+    try { await ensureSchema(); schemaReady = true; } catch (e) { /* non-fatal */ }
+  }
   // reaper: a function killed mid-pump leaves rows stuck in 'sending'
   await sql`
     UPDATE relay_emails SET status = 'scheduled', updated_at = now()
@@ -170,8 +191,98 @@ async function pump(): Promise<Response> {
           updated_at = now() WHERE local_id = ${p.local_id}`;
     }
   }
-  return json({ ok: true, due: due.length, sent, failed, reminders_sent: remSent, reminders_failed: remFailed });
+  // 3) detect bounces: delivery failures where the recipient address is wrong
+  //    or the mailbox does not exist (hard bounces only)
+  let bounces = 0;
+  try { bounces = await scanBounces(); } catch (e) { /* non-fatal */ }
+  return json({ ok: true, due: due.length, sent, failed, reminders_sent: remSent,
+    reminders_failed: remFailed, bounces });
 }
+
+// ---------------- bounce detection ----------------
+
+const BOUNCE_Q = '(in:inbox OR in:spam) newer_than:30d (subject:"Undelivered Mail Returned to Sender" OR ' +
+  'subject:"Mail Delivery Subsystem" OR subject:"Delivery Status Notification (Failure)" OR ' +
+  'subject:"Delivery Failure")';
+const HARD_BOUNCE_RE = /does not exist|no such user|unknown user|user unknown|mailbox (not found|unavailable|unknown|does not exist)|address (rejected|does not exist|unrecognized)|not a (valid )?(deliverable )?(mailbox|recipient)|recipient (unknown|rejected|refused|not found)|no such (mailbox|host)/i;
+
+function extractText(payload: any): string {
+  const plain: string[] = [], html: string[] = [];
+  const walk = (node: any) => {
+    const mime: string = (node?.mimeType || "").toLowerCase();
+    const data: string = (node?.body && node.body.data) || "";
+    if (data && mime.startsWith("text/")) {
+      try {
+        const fixed = data.replace(/=+$/, "").replace(/-/g, "+").replace(/_/g, "/");
+        (mime.includes("html") ? html : plain).push(Buffer.from(fixed, "base64").toString("utf-8"));
+      } catch (e) { /* skip part */ }
+    }
+    for (const part of node?.parts || []) walk(part);
+  };
+  walk(payload);
+  return plain.join("\n") || html.join("\n");
+}
+
+function parseDsn(text: string): [string, string][] {
+  const recips = new Set<string>();
+  const reFin = /Final-Recipient:\s*[^;\n]+;\s*<?([^<>\s;]+@[^<>\s;]+)>?/gi;
+  let m: RegExpExecArray | null;
+  while ((m = reFin.exec(text))) recips.add(m[1].replace(/['"]/g, "").toLowerCase());
+  if (!recips.size) {
+    const m2 = text.match(/(?:failed|couldn'?t deliver|unable to deliver|not delivered)[^\n:]*:\s*<?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+)>?/i);
+    if (m2) recips.add(m2[1].toLowerCase());
+  }
+  if (!recips.size) return [];
+  const st = text.match(/Status:\s*([0-9]\.[0-9](?:\.[0-9])?)/i);
+  const code = st ? st[1] : "";
+  const dm = text.match(/Diagnostic-Code:[^\n]*(?:\n[^\n]*)?/i);
+  let diag = dm ? dm[0].replace(/Diagnostic-Code:\s*/i, "").replace(/\s+/g, " ").trim() : "";
+  diag = diag.replace(/^(SMTP|SMTPError)\s*;\s*/, "").slice(0, 240);
+  const hard = code.startsWith("5.1") ||
+    ((code.startsWith("5.7") || !code) && HARD_BOUNCE_RE.test(text + " " + diag));
+  if (!hard) return [];
+  const reason = ([code, diag].filter(Boolean).join(" - ").slice(0, 300)) || "Delivery failed";
+  return Array.from(recips).sort().map((a): [string, string] => [a, reason]);
+}
+
+async function scanBounces(): Promise<number> {
+  if (!SENDER) return 0;
+  const token = await accessToken();
+  const list = await fetch(
+    GMAIL_API + "/users/" + encodeURIComponent(SENDER) + "/messages?maxResults=15&q=" + encodeURIComponent(BOUNCE_Q),
+    { headers: { Authorization: "Bearer " + token } });
+  if (!list.ok) return 0;
+  const d: any = await list.json();
+  let marked = 0;
+  for (const m of (d.messages || []).slice(0, 10)) {
+    const seen: any[] = await sql`SELECT 1 FROM relay_processed_dsn WHERE message_id = ${m.id}`;
+    if (seen.length) continue;
+    const r = await fetch(
+      GMAIL_API + "/users/" + encodeURIComponent(SENDER) + "/messages/" + m.id + "?format=full",
+      { headers: { Authorization: "Bearer " + token } });
+    if (!r.ok) continue;
+    const msg: any = await r.json();
+    const hdrs: Record<string, string> = {};
+    for (const h of (msg.payload && msg.payload.headers) || []) hdrs[(h.name || "").toLowerCase()] = h.value || "";
+    const mid = (hdrs["message-id"] || m.id).replace(/[<>]/g, "");
+    const text = extractText(msg.payload || {});
+    for (const [addr, reason] of parseDsn(text)) {
+      const upd: any[] = await sql`
+        UPDATE relay_emails SET bounced_at = now(), bounce_reason = ${reason}, updated_at = now()
+        WHERE local_id IN (
+          SELECT local_id FROM relay_emails
+          WHERE lower(to_addr) = lower(${addr}) AND status = 'sent' AND bounced_at IS NULL
+            AND is_reminder = 0
+          ORDER BY local_id DESC LIMIT 1)
+        RETURNING local_id`;
+      marked += upd.length;
+    }
+    await sql`INSERT INTO relay_processed_dsn(message_id) VALUES (${mid})
+      ON CONFLICT (message_id) DO NOTHING`;
+  }
+  return marked;
+}
+
 
 function parseAtts(s: string | null): any[] {
   try { return JSON.parse(s || "[]"); } catch { return []; }

@@ -18,7 +18,7 @@
 <div class="card" style="margin-top:18px">
   <div class="card-head"><h3>Top companies by outreach volume</h3></div>
   <div class="table-wrap"><table class="tbl">
-    <tr><th>Company</th><th class="num">Total</th><th class="num">Sent</th><th class="num">Replied</th><th class="num">Reply rate</th></tr>
+    <tr><th>Company</th><th class="num">Total</th><th class="num">Sent</th><th class="num">Replied</th><th class="num">Bounced</th><th class="num">Reply rate</th></tr>
     <tbody id="rep-companies"></tbody>
   </table></div>
 </div>
@@ -29,13 +29,13 @@
       <select class="input" id="rep-status" style="max-width:150px">
         <option value="">All statuses</option>
         <option>pending</option><option>drafted</option><option>scheduled</option>
-        <option>sent</option><option>replied</option><option>error</option>
+        <option>sent</option><option>replied</option><option>bounced</option><option>error</option>
       </select>
       <a class="btn sm" href="/api/reports/emails.csv">Export CSV</a>
     </div>
   </div>
   <div class="table-wrap"><table class="tbl">
-    <tr><th>Serial</th><th>Company</th><th>To</th><th>Subject</th><th>Status</th><th>Sent</th><th>Replied</th><th class="num">Rem.</th></tr>
+    <tr><th>Serial</th><th>Company</th><th>To</th><th>Subject</th><th>Status</th><th>Sent</th><th>Replied</th><th>Bounced</th><th class="num">Rem.</th></tr>
     <tbody id="rep-rows"></tbody>
   </table></div>
 </div>

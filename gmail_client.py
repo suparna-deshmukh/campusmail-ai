@@ -289,3 +289,102 @@ def check_replies(account_id, pairs):
             found[str(local_id)] = True
         time.sleep(0.15)
     return found
+
+
+# ---------------- bounce (delivery failure) detection ----------------
+
+BOUNCE_QUERY = ('(in:inbox OR in:spam) newer_than:30d '
+                '(subject:"Undelivered Mail Returned to Sender" '
+                'OR subject:"Mail Delivery Subsystem" '
+                'OR subject:"Delivery Status Notification (Failure)" '
+                'OR subject:"Delivery Failure" '
+                'OR header:Auto-Submitted:auto-replied)')
+
+# phrases that mean the recipient address itself is wrong / does not exist
+HARD_BOUNCE_RE = re.compile(
+    r"does not exist|no such user|unknown user|user unknown|user unknown here|"
+    r"mailbox (not found|unavailable|unknown|does not exist)|"
+    r"address (rejected|does not exist|unrecognized)|"
+    r"not a (valid )?(deliverable )?(mailbox|recipient)|"
+    r"recipient (unknown|rejected|refused|not found)|"
+    r"no such (mailbox|host)",
+    re.I)
+
+
+def _dsn_text(msg):
+    """Plain text (html fallback) of a Gmail API message payload."""
+    import base64 as _b64
+
+    def dec(node):
+        data = (node.get("body") or {}).get("data") or ""
+        if not data:
+            return ""
+        pad = data + "=" * (-len(data) % 4)
+        try:
+            return _b64.urlsafe_b64decode(pad).decode("utf-8", "replace")
+        except Exception:
+            return ""
+
+    plain, html = [], []
+
+    def walk(node):
+        mime = (node.get("mimeType") or "").lower()
+        if (node.get("body") or {}).get("data") and mime.startswith("text/"):
+            (html if "html" in mime else plain).append(dec(node))
+        for part in node.get("parts", []):
+            walk(part)
+
+    walk(msg.get("payload") or {})
+    return "\n".join(plain) or "\n".join(html)
+
+
+def list_bounce_notices(account_id, limit=30):
+    """Fetch delivery-failure notifications from this account's inbox.
+    Returns a list of {message_id, subject, text}."""
+    import time
+    svc = get_service(account_id)
+    r = svc.users().messages().list(userId="me", q=BOUNCE_QUERY, maxResults=limit).execute()
+    out = []
+    for m in r.get("messages", []):
+        try:
+            msg = svc.users().messages().get(userId="me", id=m["id"], format="full").execute()
+        except Exception:
+            continue
+        headers = {h.get("name", "").lower(): h.get("value", "")
+                   for h in (msg.get("payload") or {}).get("headers", [])}
+        out.append({"message_id": (headers.get("message-id") or m["id"]).strip("<>"),
+                    "subject": headers.get("subject", ""),
+                    "text": _dsn_text(msg)})
+        time.sleep(0.1)
+    return out
+
+
+def parse_bounce_notice(text, subject=""):
+    """Parse a delivery-failure notice. Returns [(failed_addr, reason)] for HARD
+    bounces only (address wrong or mailbox does not exist). Soft failures
+    (mailbox full, temporarily rejected) are ignored."""
+    recips = set()
+    for m in re.finditer(r"Final-Recipient:\s*[^;\n]+;\s*<?([^<>\s;]+@[^<>\s;]+)>?", text, re.I):
+        recips.add(m.group(1).strip().strip("'\"").lower())
+    if not recips:
+        m = re.search(r"(?:failed|couldn'?t deliver|unable to deliver|not delivered)[^\n:]*:\s*<?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+)>?", text, re.I)
+        if m:
+            recips.add(m.group(1).strip().lower())
+    if not recips:
+        return []
+    status_m = re.search(r"Status:\s*([0-9]\.[0-9](?:\.[0-9])?)", text, re.I)
+    code = status_m.group(1) if status_m else ""
+    diag = ""
+    d = re.search(r"Diagnostic-Code:.*", text, re.I | re.S)
+    if d:
+        diag = re.sub(r"\s+", " ", d.group(0)).replace("Diagnostic-Code:", "", 1).strip()
+        diag = re.sub(r"^(SMTP|SMTPError)\s*;\s*", "", diag)[:240]
+    # 5.1.x = invalid recipient (unknown user / no such user / bad address)
+    # 5.7.x = count as hard only when the text says the address itself is bad
+    # 5.2/5.3/5.4 (quota, policy, "access denied") and 4.x are NOT wrong addresses
+    hard = code.startswith("5.1") or (
+        (code.startswith("5.7") or not code) and HARD_BOUNCE_RE.search(text + " " + diag))
+    if not hard:
+        return []
+    reason = (" - ".join(x for x in (code, diag) if x))[:300] or "Delivery failed"
+    return [(a, reason) for a in sorted(recips)]

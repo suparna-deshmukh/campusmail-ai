@@ -84,9 +84,17 @@ CREATE TABLE IF NOT EXISTS emails(
   account_id INTEGER DEFAULT 0,
   message_id TEXT DEFAULT '',
   replied_at TEXT,
+  bounced_at TEXT,
+  bounce_reason TEXT DEFAULT '',
   reminder_count INTEGER DEFAULT 0,
   is_reminder INTEGER DEFAULT 0,
   created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS processed_dsn(
+  account_id INTEGER NOT NULL,
+  message_id TEXT NOT NULL,
+  processed_at TEXT,
+  PRIMARY KEY (account_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS user_settings(
   user_id INTEGER, key TEXT, value TEXT,
@@ -333,6 +341,8 @@ def _migrate(c):
     for col, decl in (
             ("message_id", "TEXT DEFAULT ''"),
             ("replied_at", "TEXT"),
+            ("bounced_at", "TEXT"),
+            ("bounce_reason", "TEXT DEFAULT ''"),
             ("reminder_count", "INTEGER DEFAULT 0"),
             ("is_reminder", "INTEGER DEFAULT 0")):
         if col not in cols:

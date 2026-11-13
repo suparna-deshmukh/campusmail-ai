@@ -135,6 +135,7 @@ Pages.dashboard = async function () {
     ["Scheduled", c.scheduled || 0, "waiting for worker", "amber"],
     ["Sent", c.sent || 0, "delivered", "green"],
     ["Replied", c.replied || 0, "recruiters responded", "accent"],
+    ["Bounced", c.bounced || 0, "address wrong / not exist", (c.bounced || 0) > 0 ? "red" : ""],
     ["Queue (pending)", e.pending || 0, "generated, not sent", ""],
     ["Scheduled emails", e.scheduled || 0, "in send queue", "amber"],
     ["Sent emails", e.sent || 0, "total sent so far", "green"],
@@ -1433,6 +1434,7 @@ Pages.reports = async function () {
     const cards = [
       ["Sent emails", s.sent, "outreach delivered", "green"],
       ["Replied", s.replied, "recruiters responded", "accent"],
+      ["Bounced", s.bounced || 0, "address wrong / not exist", (s.bounced || 0) > 0 ? "red" : ""],
       ["Reply rate", s.reply_rate + "%", "of sent emails", ""],
       ["Reminders sent", s.reminders, "automatic follow-ups", "amber"],
     ];
@@ -1458,8 +1460,9 @@ Pages.reports = async function () {
     $("#rep-companies").innerHTML = s.companies.length ? s.companies.map((c) => {
       const rate = c.sent ? Math.round(100 * (c.replied || 0) / c.sent) + "%" : "-";
       return "<tr><td>" + esc(c.company) + "</td><td class='num'>" + c.total + "</td><td class='num'>" + (c.sent || 0) +
-        "</td><td class='num'>" + (c.replied || 0) + "</td><td class='num'>" + rate + "</td></tr>";
-    }).join("") : "<tr><td colspan='5' class='muted'>Nothing here yet.</td></tr>";
+        "</td><td class='num'>" + (c.replied || 0) + "</td><td class='num" + ((c.bounced || 0) ? "' style='color:var(--danger,#ef4444);font-weight:600" : "") + ">" + (c.bounced || 0) +
+        "</td><td class='num'>" + rate + "</td></tr>";
+    }).join("") : "<tr><td colspan='6' class='muted'>Nothing here yet.</td></tr>";
     loadRows();
   };
   const state = { q: "", status: "" };
@@ -1475,8 +1478,9 @@ Pages.reports = async function () {
       "<td>" + pill(r.status) + (r.is_reminder ? " <span class='pill' style='background:#e0e7ff;color:#3730a3'>reminder</span>" : "") + "</td>" +
       "<td class='muted'>" + (r.sent_at ? esc(fmtTime(r.sent_at)) : "-") + "</td>" +
       "<td class='muted'>" + (r.replied_at ? "<span style='color:var(--success)'>" + esc(fmtTime(r.replied_at)) + "</span>" : "-") + "</td>" +
+      "<td>" + (r.bounced_at ? "<span title='" + esc(r.bounce_reason || "") + "' style='color:var(--danger,#ef4444);cursor:help'>" + esc(fmtTime(r.bounced_at)) + " &#9888;</span>" : "<span class='muted'>-</span>") + "</td>" +
       "<td class='num'>" + (r.reminder_count || "") + "</td></tr>"
-    ).join("") : "<tr><td colspan='8' class='muted'>No emails match.</td></tr>";
+    ).join("") : "<tr><td colspan='9' class='muted'>No emails match.</td></tr>";
   }
   $("#rep-q").addEventListener("input", (e) => { clearTimeout(deb); deb = setTimeout(() => { state.q = e.target.value.trim(); loadRows(); }, 300); });
   $("#rep-status").addEventListener("change", (e) => { state.status = e.target.value; loadRows(); });
