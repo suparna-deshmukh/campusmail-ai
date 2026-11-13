@@ -37,6 +37,35 @@ SYNC_COLUMNS = {
 SYNC_STATE = {"last_run": 0}
 
 
+def _split_cursor(cur):
+    """Parse a 'ts|id' cursor into (ts, id); bare timestamps become (ts, -1)."""
+    cur = (cur or "").strip()
+    if "|" in cur:
+        ts, _, rid = cur.rpartition("|")
+        try:
+            return ts, int(rid)
+        except ValueError:
+            pass
+    return cur, -1
+
+
+def _norm_ts(s):
+    """Normalize relay ISO and SQLite timestamps to 'YYYY-MM-DD HH:MM:SS' UTC."""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    if "T" not in s and not s.endswith("Z"):
+        return s
+    import datetime
+    t = s[:-1] if s.endswith("Z") else s
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(t, fmt).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+    return s
+
+
 def _cfg():
     url = (db.get_setting("cloud_relay_url", "") or "").strip().rstrip("/")
     secret = (db.get_setting("cloud_relay_secret", "") or "").strip()
@@ -76,8 +105,8 @@ def _apply_rows(table, rows):
         except Exception:
             continue
         local = c.execute("SELECT updated_at FROM %s WHERE id=?" % table, (rid,)).fetchone()
-        inc_ts = data.get("updated_at") or ""
-        if local and (local["updated_at"] or "") > inc_ts:
+        inc_ts = _norm_ts(data.get("updated_at"))
+        if local and _norm_ts(local["updated_at"]) > inc_ts:
             continue  # local copy is newer
         if local:
             sets = ", ".join("%s=?" % col for col in cols if col != "id")
@@ -137,7 +166,7 @@ def _apply_deletes(table, dels):
         except Exception:
             continue
         local = c.execute("SELECT updated_at FROM %s WHERE id=?" % table, (rid,)).fetchone()
-        if local and (local["updated_at"] or "") >= ts:
+        if local and _norm_ts(local["updated_at"]) >= _norm_ts(ts):
             continue  # local copy was modified after the remote delete - keep it
         if local:
             c.execute("DELETE FROM %s WHERE id=?" % table, (rid,))
@@ -173,27 +202,29 @@ def sync_tick(force=False):
             dels = _fetch_remote_deletes(table, db.get_setting("sync_pull_del_" + table, "")).get("deletes", [])
             if dels:
                 _apply_deletes(table, dels)
-            cursor = max([r.get("updated_at") or "" for r in rows] +
-                         [db.get_setting("sync_pull_" + table, "")])
-            if cursor:
-                db.set_setting("sync_pull_" + table, cursor)
-            dcur = max([d.get("deleted_at") or "" for d in dels] +
-                       [db.get_setting("sync_pull_del_" + table, "")])
-            if dcur:
-                db.set_setting("sync_pull_del_" + table, dcur)
+            if rows:
+                best = max((_norm_ts(r.get("updated_at")), int(r.get("id") or 0)) for r in rows)
+                if best > _split_cursor(db.get_setting("sync_pull_" + table, "")):
+                    db.set_setting("sync_pull_" + table, best[0] + "|" + str(best[1]))
+            if dels:
+                dbest = max((_norm_ts(d.get("deleted_at")), int(d.get("id") or 0)) for d in dels)
+                if dbest > _split_cursor(db.get_setting("sync_pull_del_" + table, "")):
+                    db.set_setting("sync_pull_del_" + table, dbest[0] + "|" + str(dbest[1]))
         except Exception as e:
             db.log_activity("sync_pull_error", table + " " + str(e)[:120], "sync")
             continue
         try:
-            pcur = db.get_setting("sync_push_" + table, "")
+            p_ts, p_id = _split_cursor(db.get_setting("sync_push_" + table, ""))
             c = db.conn()
             local = [dict(r) for r in c.execute(
-                "SELECT %s FROM %s WHERE COALESCE(updated_at,'') > ? ORDER BY updated_at LIMIT 500"
-                % (",".join(cols), table), (pcur,)).fetchall()]
-            dcursel = db.get_setting("sync_push_del_" + table, "")
+                "SELECT %s FROM %s WHERE (COALESCE(updated_at,''), id) > (?, ?) "
+                "ORDER BY COALESCE(updated_at,''), id LIMIT 500"
+                % (",".join(cols), table), (p_ts, p_id)).fetchall()]
+            d_ts, d_id = _split_cursor(db.get_setting("sync_push_del_" + table, ""))
             dels_local = [dict(r) for r in c.execute(
-                "SELECT row_id, deleted_at FROM sync_deletes WHERE table_name=? AND deleted_at > ? "
-                "ORDER BY deleted_at LIMIT 500", (table, dcursel)).fetchall()]
+                "SELECT row_id, deleted_at FROM sync_deletes WHERE table_name=? "
+                "AND (COALESCE(deleted_at,''), row_id) > (?, ?) "
+                "ORDER BY COALESCE(deleted_at,''), row_id LIMIT 500", (table, d_ts, d_id)).fetchall()]
             c.close()
             batch = []
             for r in local:
@@ -206,10 +237,12 @@ def sync_tick(force=False):
                 _push_remote(table, batch, [{"id": d["row_id"], "deleted_at": d["deleted_at"]}
                                             for d in dels_local])
             if local:
-                new_cur = max([r.get("updated_at") or "" for r in local] + [pcur])
-                db.set_setting("sync_push_" + table, new_cur)
+                last = local[-1]
+                db.set_setting("sync_push_" + table,
+                               (last.get("updated_at") or "") + "|" + str(last["id"]))
             if dels_local:
+                last = dels_local[-1]
                 db.set_setting("sync_push_del_" + table,
-                               max([d["deleted_at"] for d in dels_local] + [dcursel]))
+                               (last["deleted_at"] or "") + "|" + str(last["row_id"]))
         except Exception as e:
             db.log_activity("sync_push_error", table + " " + str(e)[:120], "sync")

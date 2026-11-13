@@ -312,6 +312,16 @@ async function scanBounces(): Promise<number> {
 
 const SYNC_TABLES = ["contacts", "emails", "batches", "campaigns", "email_templates", "sheets"];
 
+function parseSinceTs(since: string): Date {
+  const ts = since.split("|")[0].trim();
+  return new Date(ts + (ts.endsWith("Z") ? "" : "Z"));
+}
+function parseSinceId(since: string): number {
+  const idPart = since.split("|")[1];
+  const n = parseInt(idPart || "-1", 10);
+  return Number.isFinite(n) ? n : -1;
+}
+
 async function syncPush(req: Request): Promise<Response> {
   const d = (await req.json()) as any;
   const table: string = d.table || "";
@@ -352,11 +362,13 @@ async function syncPullDeletes(url: URL): Promise<Response> {
   const since: string | null = url.searchParams.get("since");
   const rows: any[] = since
     ? await sql`SELECT row_id, deleted_at, instance FROM sync_deletes
-      WHERE table_name = ${table} AND deleted_at > ${new Date(since + (since.endsWith("Z") ? "" : "Z"))}
-      ORDER BY deleted_at LIMIT 2000`
+      WHERE table_name = ${table}
+        AND (deleted_at > ${parseSinceTs(since)}
+          OR (deleted_at = ${parseSinceTs(since)} AND row_id > ${parseSinceId(since)}))
+      ORDER BY deleted_at, row_id LIMIT 2000`
     : await sql`SELECT row_id, deleted_at, instance FROM sync_deletes
       WHERE table_name = ${table}
-      ORDER BY deleted_at LIMIT 2000`;
+      ORDER BY deleted_at, row_id LIMIT 2000`;
   return json({ ok: true, deletes: rows.map((r) => ({
     id: r.row_id, deleted_at: new Date(r.deleted_at).toISOString(), instance: r.instance || "",
   })) });
@@ -368,11 +380,13 @@ async function syncPull(url: URL): Promise<Response> {
   const since: string | null = url.searchParams.get("since");
   const rows: any[] = since
     ? await sql`SELECT row_id, data, updated_at, instance FROM sync_rows
-      WHERE table_name = ${table} AND updated_at > ${new Date(since + (since.endsWith("Z") ? "" : "Z"))}
-      ORDER BY updated_at LIMIT 2000`
+      WHERE table_name = ${table}
+        AND (updated_at > ${parseSinceTs(since)}
+          OR (updated_at = ${parseSinceTs(since)} AND row_id > ${parseSinceId(since)}))
+      ORDER BY updated_at, row_id LIMIT 2000`
     : await sql`SELECT row_id, data, updated_at, instance FROM sync_rows
       WHERE table_name = ${table}
-      ORDER BY updated_at LIMIT 2000`;
+      ORDER BY updated_at, row_id LIMIT 2000`;
   return json({ ok: true, rows: rows.map((r) => ({
     id: r.row_id, data: r.data,
     updated_at: new Date(r.updated_at).toISOString(), instance: r.instance || "",
