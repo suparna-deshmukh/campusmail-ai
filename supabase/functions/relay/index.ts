@@ -28,6 +28,12 @@ async function ensureSchema() {
     updated_at TIMESTAMPTZ NOT NULL,
     instance   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (table_name, row_id))`;
+  await sql`CREATE TABLE IF NOT EXISTS sync_deletes (
+    table_name TEXT NOT NULL,
+    row_id     INTEGER NOT NULL,
+    deleted_at TIMESTAMPTZ NOT NULL,
+    instance   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (table_name, row_id))`;
 }
 
 function json(obj: unknown, code = 200): Response {
@@ -52,6 +58,11 @@ Deno.serve(async (req: Request) => {
     if (req.method === "GET" && p === "/api/status") return await statusPull();
     if (req.method === "POST" && p === "/api/pump") return await pump();
     if (req.method === "POST" && p === "/api/sync/push") return await syncPush(req);
+    if (req.method === "GET" && p === "/api/sync/pull/deletes") {
+      if (schemaReady) return await syncPullDeletes(new URL(req.url));
+      try { await ensureSchema(); schemaReady = true; } catch (e) { /* retry next call */ }
+      return json({ ok: false, error: "schema not ready" }, 503);
+    }
     if (req.method === "GET" && p === "/api/sync/pull") {
       if (schemaReady) return await syncPull(new URL(req.url));
       try { await ensureSchema(); schemaReady = true; } catch (e) { /* retry next call */ }
@@ -306,7 +317,8 @@ async function syncPush(req: Request): Promise<Response> {
   const table: string = d.table || "";
   if (!SYNC_TABLES.includes(table)) return json({ ok: false, error: "unknown table" }, 400);
   const rows: any[] = Array.isArray(d.rows) ? d.rows : [];
-  if (rows.length > 2000) return json({ ok: false, error: "too many rows" }, 413);
+  const dels: any[] = Array.isArray(d.deletes) ? d.deletes : [];
+  if (rows.length + dels.length > 2000) return json({ ok: false, error: "too many rows" }, 413);
   let n = 0;
   for (const r of rows) {
     if (!r || r.id == null) continue;
@@ -319,7 +331,35 @@ async function syncPush(req: Request): Promise<Response> {
         WHERE excluded.updated_at >= sync_rows.updated_at`;
     n++;
   }
-  return json({ ok: true, upserted: n });
+  let dn = 0;
+  for (const dl of dels) {
+    if (!dl || dl.id == null) continue;
+    const ts: Date = dl.deleted_at ? new Date(dl.deleted_at + (String(dl.deleted_at).endsWith("Z") ? "" : "Z")) : new Date();
+    await sql`
+      INSERT INTO sync_deletes(table_name, row_id, deleted_at, instance)
+      VALUES (${table}, ${parseInt(String(dl.id))}, ${ts}, ${d.instance || ""})
+      ON CONFLICT (table_name, row_id) DO UPDATE
+        SET deleted_at = excluded.deleted_at, instance = excluded.instance
+        WHERE excluded.deleted_at >= sync_deletes.deleted_at`;
+    dn++;
+  }
+  return json({ ok: true, upserted: n, deletes: dn });
+}
+
+async function syncPullDeletes(url: URL): Promise<Response> {
+  const table: string = url.searchParams.get("table") || "";
+  if (!SYNC_TABLES.includes(table)) return json({ ok: false, error: "unknown table" }, 400);
+  const since: string | null = url.searchParams.get("since");
+  const rows: any[] = since
+    ? await sql`SELECT row_id, deleted_at, instance FROM sync_deletes
+      WHERE table_name = ${table} AND deleted_at > ${new Date(since + (since.endsWith("Z") ? "" : "Z"))}
+      ORDER BY deleted_at LIMIT 2000`
+    : await sql`SELECT row_id, deleted_at, instance FROM sync_deletes
+      WHERE table_name = ${table}
+      ORDER BY deleted_at LIMIT 2000`;
+  return json({ ok: true, deletes: rows.map((r) => ({
+    id: r.row_id, deleted_at: new Date(r.deleted_at).toISOString(), instance: r.instance || "",
+  })) });
 }
 
 async function syncPull(url: URL): Promise<Response> {

@@ -139,6 +139,12 @@ CREATE TABLE IF NOT EXISTS sheets(
 );
 CREATE INDEX IF NOT EXISTS idx_emails_status ON emails(status);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
+CREATE TABLE IF NOT EXISTS sync_deletes(
+  table_name TEXT NOT NULL,
+  row_id INTEGER NOT NULL,
+  deleted_at TEXT NOT NULL,
+  PRIMARY KEY (table_name, row_id)
+);
 """
 
 DEFAULT_SETTINGS = {

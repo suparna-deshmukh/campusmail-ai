@@ -94,6 +94,22 @@ def _apply_rows(table, rows):
     return applied
 
 
+def record_delete(table, row_id):
+    """Remember a local hard delete so it propagates to every other instance."""
+    if table not in SYNC_COLUMNS:
+        return
+    c = db.conn()
+    c.execute("INSERT OR REPLACE INTO sync_deletes(table_name, row_id, deleted_at) VALUES(?,?,?)",
+              (table, int(row_id), _now()))
+    c.commit()
+    c.close()
+
+
+def _now():
+    import datetime
+    return datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _fetch_remote(table, since):
     url, _ = _cfg()
     path = "/api/sync/pull?table=" + table
@@ -102,10 +118,40 @@ def _fetch_remote(table, since):
     return _http("GET", url + path)
 
 
-def _push_remote(table, rows):
+def _fetch_remote_deletes(table, since):
+    url, _ = _cfg()
+    path = "/api/sync/pull/deletes?table=" + table
+    if since:
+        path += "&since=" + urllib.parse.quote(since)
+    return _http("GET", url + path)
+
+
+def _apply_deletes(table, dels):
+    c = db.conn()
+    for d in dels:
+        rid, ts = d.get("id"), d.get("deleted_at") or ""
+        if not rid:
+            continue
+        try:
+            rid = int(rid)
+        except Exception:
+            continue
+        local = c.execute("SELECT updated_at FROM %s WHERE id=?" % table, (rid,)).fetchone()
+        if local and (local["updated_at"] or "") >= ts:
+            continue  # local copy was modified after the remote delete - keep it
+        if local:
+            c.execute("DELETE FROM %s WHERE id=?" % table, (rid,))
+        c.execute("INSERT OR IGNORE INTO sync_deletes(table_name, row_id, deleted_at) VALUES(?,?,?)",
+                  (table, rid, ts))
+    c.commit()
+    c.close()
+
+
+def _push_remote(table, rows, deletes=None):
     url, _ = _cfg()
     return _http("POST", url + "/api/sync/push",
-                 {"table": table, "instance": _instance_id(), "rows": rows})
+                 {"table": table, "instance": _instance_id(), "rows": rows,
+                  "deletes": deletes or []})
 
 
 def sync_tick(force=False):
@@ -124,10 +170,17 @@ def sync_tick(force=False):
             rows = remote.get("rows", [])
             if rows:
                 _apply_rows(table, rows)
+            dels = _fetch_remote_deletes(table, db.get_setting("sync_pull_del_" + table, "")).get("deletes", [])
+            if dels:
+                _apply_deletes(table, dels)
             cursor = max([r.get("updated_at") or "" for r in rows] +
                          [db.get_setting("sync_pull_" + table, "")])
             if cursor:
                 db.set_setting("sync_pull_" + table, cursor)
+            dcur = max([d.get("deleted_at") or "" for d in dels] +
+                       [db.get_setting("sync_pull_del_" + table, "")])
+            if dcur:
+                db.set_setting("sync_pull_del_" + table, dcur)
         except Exception as e:
             db.log_activity("sync_pull_error", table + " " + str(e)[:120], "sync")
             continue
@@ -137,18 +190,26 @@ def sync_tick(force=False):
             local = [dict(r) for r in c.execute(
                 "SELECT %s FROM %s WHERE COALESCE(updated_at,'') > ? ORDER BY updated_at LIMIT 500"
                 % (",".join(cols), table), (pcur,)).fetchall()]
+            dcursel = db.get_setting("sync_push_del_" + table, "")
+            dels_local = [dict(r) for r in c.execute(
+                "SELECT row_id, deleted_at FROM sync_deletes WHERE table_name=? AND deleted_at > ? "
+                "ORDER BY deleted_at LIMIT 500", (table, dcursel)).fetchall()]
             c.close()
             batch = []
             for r in local:
                 batch.append({"id": r["id"], "data": {k: (r.get(k) or "") for k in cols if k != "id"},
                               "updated_at": r.get("updated_at") or ""})
                 if len(batch) >= 500:
-                    _push_remote(table, batch)
+                    _push_remote(table, batch, [])
                     batch = []
-            if batch:
-                _push_remote(table, batch)
+            if batch or dels_local:
+                _push_remote(table, batch, [{"id": d["row_id"], "deleted_at": d["deleted_at"]}
+                                            for d in dels_local])
             if local:
                 new_cur = max([r.get("updated_at") or "" for r in local] + [pcur])
                 db.set_setting("sync_push_" + table, new_cur)
+            if dels_local:
+                db.set_setting("sync_push_del_" + table,
+                               max([d["deleted_at"] for d in dels_local] + [dcursel]))
         except Exception as e:
             db.log_activity("sync_push_error", table + " " + str(e)[:120], "sync")

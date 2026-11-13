@@ -811,6 +811,9 @@ def api_contact_delete():
     ids = d.get("ids") or []
     c = db.conn()
     c.executemany("DELETE FROM contacts WHERE id=?", [(i,) for i in ids])
+    import sync_relay
+    for i in ids:
+        sync_relay.record_delete("contacts", i)
     c.commit()
     log("contact_delete", "Deleted " + str(len(ids)) + " contact(s)")
     c.close()
@@ -964,6 +967,8 @@ def api_template_activate(tid):
 def api_template_delete(tid):
     c = db.conn()
     c.execute("DELETE FROM email_templates WHERE id=?", (tid,))
+    import sync_relay
+    sync_relay.record_delete("email_templates", tid)
     c.commit()
     log("template_delete", "Template " + str(tid) + " deleted")
     c.close()
@@ -1368,6 +1373,8 @@ def api_sheet_delete(sid):
         c.close()
         return api_err("This sheet is used by " + str(n) + " batch(es), so it cannot be deleted.")
     c.execute("DELETE FROM sheets WHERE id=?", (sid,))
+    import sync_relay
+    sync_relay.record_delete("sheets", sid)
     c.commit()
     log("sheet_delete", "Sheet " + str(sid) + " deleted")
     c.close()

@@ -17,3 +17,12 @@ CREATE TABLE IF NOT EXISTS sync_rows (
   instance   TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (table_name, row_id)
 );
+
+-- delete propagation (tombstones) for the two-way sync
+CREATE TABLE IF NOT EXISTS sync_deletes (
+  table_name TEXT NOT NULL,
+  row_id     INTEGER NOT NULL,
+  deleted_at TIMESTAMPTZ NOT NULL,
+  instance   TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (table_name, row_id)
+);
