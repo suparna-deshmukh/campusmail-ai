@@ -71,6 +71,7 @@
 /* Emails tab */
 .emails-toolbar { display: flex; flex-direction: column; gap: var(--sp-3); margin-bottom: var(--sp-4); }
 .emails-toolbar .row { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.emails-toolbar select.select { flex: none; }
 .next-send-note { font-size: 12.5px; font-weight: 550; color: var(--text-3); }
 .show-more-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: var(--sp-4); }
 
@@ -113,3 +114,10 @@
 .ema-frame { display: block; width: 100%; height: 300px; border: none; background: #fff; }
 
 .truncate-cell { display: block; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Mobile: keep the campaign table readable */
+@media (max-width: 767px) {
+  .camp-hide-m { display: none; }
+  .camp-row-send { display: none; }
+  .table .cell-main, .table .cell-sub { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}

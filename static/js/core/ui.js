@@ -185,12 +185,11 @@ export function menu(anchor, items, { align = "end" } = {}) {
   const m = el("div", { class: "menu", role: "menu" });
   for (const it of items) {
     if (it === "-") { m.append(el("div", { class: "menu-sep" })); continue; }
-    if (it.label === "label") { m.append(el("div", { class: "menu-label" }, it.text)); continue; }
     m.append(el("button", {
       class: "menu-item" + (it.danger ? " danger" : ""),
       role: "menuitem",
       onclick: () => { m.remove(); it.action && it.action(); },
-    }, it.icon ? icon(it.icon, "i i-16") : null, it.text));
+    }, it.icon ? icon(it.icon, "i i-16") : null, it.label ?? it.text));
   }
   document.body.append(m);
   const r = anchor.getBoundingClientRect();

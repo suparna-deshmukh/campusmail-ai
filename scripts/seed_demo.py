@@ -71,7 +71,7 @@ def seed(c):
     # templates
     c.execute("INSERT INTO email_templates(name, type, subject, body_html, fields, is_active, created_at, updated_at) "
               "VALUES(?,?,?,?,1,1,?,?)",
-              ("Diwali outreach", "outreach",
+              ("Sem 2 placement outreach", "outreach",
                "Recruiters from BITS Pilani Goa — campus drive in January",
                '<p>Hi {HR Name},</p><p>We would love to invite {Company} to our campus recruitment drive at '
                'BITS Pilani, Goa in January. 464 final-year students across CSE, ECE and ME.</p>'
@@ -96,7 +96,7 @@ def seed(c):
 
     # campaigns
     c.execute("INSERT INTO campaigns(name, description, created_by, created_at, updated_at) VALUES(?,?,?,?,?)",
-              ("Summer 2027 outreach", "Placement Cell recruiters, core drive", "demo@campus.edu", add(-40), add(-1)))
+              ("Sem 2 Placement Campaign", "Placement Cell recruiters, core drive", "demo@campus.edu", add(-40), add(-1)))
     c1 = c.execute("SELECT last_insert_rowid() id").fetchone()[0]
     c.execute("INSERT INTO campaigns(name, description, created_by, created_at, updated_at) VALUES(?,?,?,?,?)",
               ("Winter internships", "Internship drives, 6 weeks", "demo@campus.edu", add(-20), add(-3)))
@@ -134,8 +134,8 @@ def seed(c):
                    1, kw.get("created", add(-14)), "demo@campus.edu", now))
         return c.execute("SELECT last_insert_rowid() id").fetchone()[0]
 
-    b1 = batch("Diwali outreach wave 1", c1, t1, created=add(-25), sheet=1, reminder_days=3, reminder_tpl=t2, reminder_max=2)
-    b2 = batch("Diwali outreach wave 2", c1, t1, created=add(-10), sheet=1)
+    b1 = batch("Sem 2 placement wave 1", c1, t1, created=add(-25), sheet=1, reminder_days=3, reminder_tpl=t2, reminder_max=2)
+    b2 = batch("Sem 2 placement wave 2", c1, t1, created=add(-10), sheet=1)
     b3 = batch("Winter interns batch 1", c2, t1, created=add(-5), sheet=2)
     batch_contacts = {b1: contact_ids1, b2: contact_ids1, b3: contact_ids2}
 
@@ -151,7 +151,7 @@ def seed(c):
                   "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (batch_id, kw.get("contact", batch_contacts[batch_id][i - 1]), str(i), em,
                    "Recruiters from BITS Pilani Goa — campus drive in January",
-                   "<p>Hi " + nm.split()[0] + ",</p><p>We are reaching out about the Data Science Internship opening at our Bengaluru office. Your profile stood out to us, and we would love to learn more about your experience.</p><p>Would you be open to a short call next week? Happy to share more details about the role in the meantime.</p><p>Warm regards,<br>Campus Recruiting Team</p>", status,
+                   "<p>Hi " + nm.split()[0] + ",</p><p>We are writing to invite " + co + " to our Sem 2 placement drive. 464 final-year students across CSE, ECE and ME will be available for pre-placement talks starting this week.</p><p>Would you be open to a short call to schedule a slot? We would be glad to share student profiles in the meantime.</p><p>Warm regards,<br>Placement Cell</p>", status,
                    kw.get("sched", None), kw.get("sent", None), kw.get("error", ""),
                    1, kw.get("replied", None), kw.get("bounced", None), kw.get("bounce_reason", ""),
                    kw.get("reminder_count", 0), 0, kw.get("created", add(-25)), now))

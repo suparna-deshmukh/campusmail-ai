@@ -6,6 +6,57 @@ the campaign hub (Overview / Emails / Audience), the email drawer, and the
 shared time picker. All backend changes are additive (plan §1): no old
 endpoint, column or template was renamed or removed.
 
+## Second pass, 2026-11-14 (demo retheme, black dark mode, UI/UX audit)
+
+Full screenshot pass over every screen (desktop light/dark, 390 px phones,
+menus, drawers, pickers, popovers, empty and error states), with DOM
+cross-checks for each capture.
+
+- **Demo data is the Sem 2 Placement Campaign.** The seeded main campaign is
+  now "Sem 2 Placement Campaign" (template "Sem 2 placement outreach",
+  batches "Sem 2 placement wave 1/2"), and every seeded email body is a
+  realistic 3-paragraph Sem 2 placement-drive mail. The other two campaigns
+  (Winter internships, Alumni network) are unchanged.
+- **Dark mode is neutral black, not purple.** The previous dark tokens had a
+  purple tint; the palette is now a professional near-black
+  (`#0A0B0E` background, `#141519` / `#1C1E24` surfaces, `#272A31` borders,
+  `#F4F5F7` / `#A8ACB5` / `#7E838E` text) with the indigo accent kept for
+  primary actions and focus, Linear-style. All new pages are token-driven,
+  so the change lands in `static/css/tokens.css` alone; the legacy pages
+  keep `legacy.css` until Phase 8.
+- **Bug fixes found in the audit**
+  - `static/js/pages/emails.js` `targetRows` read `s.state` before the
+    state argument existed on every checkbox click ("Cannot read
+    properties of null (reading 'state')"); it now takes the state from
+    the caller.
+  - `static/js/core/ui.js` `menu()` read `it.text`, but most call sites
+    pass `it.label` - every kebab menu (hub header, row kebab, drawer
+    kebab, audience kebab, add-list) rendered icons with no labels. The
+    reader now accepts both.
+  - At 390 px the emails toolbar selects (`#em-batch`, `#em-by`,
+    `#em-sort`) shrank below their widths instead of wrapping - one
+    rendered as a bare dropdown arrow. `flex: none` on the toolbar
+    selects; they now wrap onto their own lines.
+  - At 390 px the campaigns table compressed eight columns into 356 px:
+    the status badge clipped and the numeric columns were unusable.
+    Contacts / Sent / Replied / Reply rate / Last activity are hidden at
+    <=767 px (`camp-hide-m`, matching the app's existing stacked-card
+    mobile pattern), the row "Send emails" button hides with the kebab
+    (the card is still tappable to open), and campaign name + note get a
+    single-line ellipsis.
+  - The drawer timeline showed "just now" for *future* scheduled times
+    (`relTime` clamps negative deltas). The "Scheduled for" node and the
+    table's When column now use `upcomingWhen` ("Today 14:12" /
+    "Tomorrow 14:12" / "Tue 14:12"), and the duplicated caption under the
+    node is gone.
+  - Every page load logged a `/favicon.ico` 404. Added
+    `static/favicon.svg` (the M mark) and `link rel=icon` in
+    `base.html`, `base_new.html` and `kit.html`; the full-page sweep is
+    now zero-error on all 14 routes.
+- **Screenshots** in `docs/screenshots/` re-captured at the current state
+  (19 files; campaign ids re-fetched after the reseed).
+
+
 ## What is in
 
 - **Shell (Phase 1).** New template `ui/base_new.html`: 248 px sidebar (5 main
@@ -106,10 +157,11 @@ endpoint, column or template was renamed or removed.
   table never disagree.
 - **CSV export** is generated client-side from the loaded rows (no new
   backend endpoint).
-- **Phone tables stay tables** (plan §12: tables become stacked cards on
-  phones). At 390 px the emails table compresses to Recipient + Status +
-  kebab and is usable, but the stacked-card treatment is deferred with the
-  Phase 3 polish.
+- **Phone tables use the stacked-card pattern** (plan §12): `components.css`
+  stacks rows into tappable cards at <=767 px (thead hidden, row kebab and
+  checkbox hidden, row tap opens the drawer). The campaigns table additionally
+  hides its secondary numeric columns at that width (second pass, above) so
+  each card stays one compact unit.
 
 ## Decisions where the plan was silent
 

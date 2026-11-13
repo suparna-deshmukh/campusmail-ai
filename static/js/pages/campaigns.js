@@ -67,13 +67,13 @@ function render() {
         el("a", { class: "cell-main", href: "/campaigns/" + cm.id, style: "color:inherit" }, cm.name),
         el("div", { class: "cell-sub" }, cm.description || "No note")),
       el("td", {}, badge(CAMPAIGN_STATUS[statusOf(cm)].label, CAMPAIGN_STATUS[statusOf(cm)].cls, CAMPAIGN_STATUS[statusOf(cm)].icon)),
-      el("td", { class: "num" }, fmtInt(cm.n_contacts)),
-      el("td", { class: "num" }, fmtInt(sent)),
-      el("td", { class: "num" }, fmtInt(replied)),
-      el("td", { class: "num" }, fmtPct(sent ? 100 * replied / sent : 0)),
-      el("td", { class: "cell-sub" }, cm.last ? relTime(cm.last) : "—"),
+      el("td", { class: "num camp-hide-m" }, fmtInt(cm.n_contacts)),
+      el("td", { class: "num camp-hide-m" }, fmtInt(sent)),
+      el("td", { class: "num camp-hide-m" }, fmtInt(replied)),
+      el("td", { class: "num camp-hide-m" }, fmtPct(sent ? 100 * replied / sent : 0)),
+      el("td", { class: "cell-sub camp-hide-m" }, cm.last ? relTime(cm.last) : "—"),
       el("td", { class: "row-kebab", style: "white-space:nowrap" },
-        el("a", { class: "btn btn-sm btn-ghost row-action", href: "/campaigns/" + cm.id + "/send" }, "Send emails"),
+        el("a", { class: "btn btn-sm btn-ghost row-action camp-row-send", href: "/campaigns/" + cm.id + "/send" }, "Send emails"),
         kebab(cm)));
     $rows.append(tr);
   }

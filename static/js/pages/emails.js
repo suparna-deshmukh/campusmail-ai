@@ -49,12 +49,12 @@ function defaultStagger() {
 }
 
 /* ================= selection helpers ================= */
-function targetRows(tab) {
-  if (tab.state.allMatches) return tab.state.rows;
-  return [...tab.state.selected.values()].filter((r) => tab.state.rows.some((x) => x.id === r.id));
+function targetRows(st) {
+  if (st.allMatches) return st.rows;
+  return [...st.selected.values()].filter((r) => st.rows.some((x) => x.id === r.id));
 }
-function allMatch(action) {
-  const rows = targetRows(null);
+function allMatch(st, action) {
+  const rows = targetRows(st);
   if (!rows.length) return false;
   return rows.every((r) => ACTIONS[statusOf(r)].includes(action));
 }
@@ -322,7 +322,7 @@ export function initEmailsTab(host, ctx) {
     tr.append(stTd);
 
     const when = el("td", { class: "cell-sub", style: "max-width:220px" });
-    if (st === "scheduled") when.append("Scheduled for " + fmtDayTime(r.scheduled_at));
+    if (st === "scheduled") when.append("Scheduled for " + upcomingWhen(r.scheduled_at));
     else if (st === "replied") when.append("Replied " + relTime(r.replied_at));
     else if (st === "bounced") when.append("Bounced " + relTime(r.bounced_at));
     else if (st === "failed") when.append(el("span", { class: "t-danger truncate-cell", title: r.error || "" }, (r.error || "A problem with sending").slice(0, 60)));
@@ -362,7 +362,7 @@ export function initEmailsTab(host, ctx) {
     box.innerHTML = "";
     const n = s.allMatches ? s.rows.length : s.selected.size;
     if (!n) return;
-    const rows = targetRows(null);
+    const rows = targetRows(s);
     const validForAll = (a) => rows.length && rows.every((r) => ACTIONS[statusOf(r)].includes(a));
     const btn = (a, label, cls = "btn-secondary") => el("button", { class: "btn btn-sm " + cls, "data-a": a }, label);
     const items = [];
@@ -395,7 +395,7 @@ export function initEmailsTab(host, ctx) {
     }
     for (const b of items) {
       b.addEventListener("click", () => {
-        const rowsNow = targetRows(null);
+        const rowsNow = targetRows(s);
         if (!rowsNow.length) return;
         const a = b.dataset.a;
         if (a === "create-draft") doDrafts(tab, rowsNow);
@@ -725,13 +725,13 @@ export async function openEmailDrawer(seedRow, ctx) {
 
   // timeline
   const tl = el("div", { class: "timeline" });
-  const node = (label, when, sub) => el("div", { class: "tl-node" },
+  const node = (label, when, sub, timeText) => el("div", { class: "tl-node" },
     el("span", {}, label),
-    when ? el("span", { class: "tl-time", title: when }, relTime(when)) : null,
+    when ? el("span", { class: "tl-time", title: when }, timeText || relTime(when)) : null,
     sub ? el("div", { class: "t-caption t-faint" }, sub) : null);
   tl.append(node("Created", full.created_at));
   if (full.status === "drafted" || full.sent_at || full.scheduled_at) tl.append(node("Saved as draft", full.updated_at || full.created_at));
-  if (full.status === "scheduled" && full.scheduled_at) tl.append(node("Scheduled for", full.scheduled_at, fmtDayTime(full.scheduled_at)));
+  if (full.status === "scheduled" && full.scheduled_at) tl.append(node("Scheduled for", full.scheduled_at, null, upcomingWhen(full.scheduled_at)));
   if (full.sent_at) tl.append(node(full.is_reminder ? "Follow-up " + (full.reminder_count || 1) + " sent" : "Sent", full.sent_at));
   if (full.bounced_at) tl.append(node("Bounced", full.bounced_at, bounceReason(full.bounce_reason)));
   else if (full.replied_at) tl.append(node("Replied", full.replied_at));
