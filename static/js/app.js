@@ -1429,8 +1429,21 @@ Pages.settings = async function () {
 };
 
 Pages.reports = async function () {
+  const state = { q: "", status: "", member: "" };
+  let memberNames = {};
+  const mparam = () => state.member ? "?member=" + encodeURIComponent(state.member) : "";
+  const mName = (m) => (m && mNames[m]) || (m ? m.split("@")[0] : "team");
   const load = async () => {
-    const s = await api("/api/reports/summary");
+    try {
+      const md = await api("/api/reports/members");
+      (md.members || []).forEach((m) => { memberNames[m.email] = m.name; });
+      const sel = $("#rep-member");
+      const cur = state.member;
+      sel.innerHTML = "<option value=''>All team members</option>" +
+        (md.members || []).map((m) => "<option value='" + esc(m.email) + "'>" + esc(m.name) + "</option>").join("");
+      if (cur && md.members.some((m) => m.email === cur)) sel.value = cur;
+    } catch (e) { /* member list is optional */ }
+    const s = await api("/api/reports/summary" + mparam());
     const cards = [
       ["Sent emails", s.sent, "outreach delivered", "green"],
       ["Replied", s.replied, "recruiters responded", "accent"],
@@ -1438,6 +1451,13 @@ Pages.reports = async function () {
       ["Reply rate", s.reply_rate + "%", "of sent emails", ""],
       ["Reminders sent", s.reminders, "automatic follow-ups", "amber"],
     ];
+    $("#rep-members").innerHTML = (s.members || []).length ? (s.members).map((m) => {
+        const rate = m.sent ? Math.round(100 * (m.replied || 0) / m.sent) + "%" : "-";
+        return "<tr><td><b>" + esc(mName(m.member)) + "</b> " + (m.member === "team" ? "<span class='muted'>(team)</span>" : "<span class='muted'>" + esc(m.member) + "</span>") +
+          "</td><td class='num'>" + m.total + "</td><td class='num'>" + (m.sent || 0) +
+          "</td><td class='num'>" + (m.replied || 0) + "</td><td class='num" + ((m.bounced || 0) ? "' style='color:var(--danger,#ef4444);font-weight:600" : "") + ">" + (m.bounced || 0) +
+          "</td><td class='num'>" + rate + "</td></tr>";
+      }).join("") : "<tr><td colspan='6' class='muted'>Nothing here yet.</td></tr>";
     $("#rep-cards").innerHTML = cards.map((x) =>
       "<div class='stat " + x[3] + "'><div class='label'>" + esc(x[0]) + "</div><div class='value'>" + x[1] + "</div><div class='hint'>" + esc(x[2]) + "</div></div>"
     ).join("");
@@ -1465,12 +1485,12 @@ Pages.reports = async function () {
     }).join("") : "<tr><td colspan='6' class='muted'>Nothing here yet.</td></tr>";
     loadRows();
   };
-  const state = { q: "", status: "" };
   let deb;
   async function loadRows() {
     const u = new URL("/api/reports/emails", location.origin);
     if (state.q) u.searchParams.set("q", state.q);
     if (state.status) u.searchParams.set("status", state.status);
+    if (state.member) u.searchParams.set("member", state.member);
     const d = await api(u.pathname + u.search);
     $("#rep-rows").innerHTML = d.rows.length ? d.rows.map((r) =>
       "<tr><td class='num'>" + esc(r.serial || "-") + "</td><td>" + esc(r.company || "-") + "</td><td>" + esc(r.to_addr) +
@@ -1484,6 +1504,7 @@ Pages.reports = async function () {
   }
   $("#rep-q").addEventListener("input", (e) => { clearTimeout(deb); deb = setTimeout(() => { state.q = e.target.value.trim(); loadRows(); }, 300); });
   $("#rep-status").addEventListener("change", (e) => { state.status = e.target.value; loadRows(); });
+  $("#rep-member").addEventListener("change", (e) => { state.member = e.target.value; load(); loadRows(); });
   load();
 };
 

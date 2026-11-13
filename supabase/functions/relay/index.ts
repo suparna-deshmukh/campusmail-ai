@@ -21,6 +21,13 @@ async function ensureSchema() {
   await sql`CREATE TABLE IF NOT EXISTS relay_processed_dsn (
     message_id   TEXT PRIMARY KEY,
     processed_at TIMESTAMPTZ NOT NULL DEFAULT now())`;
+  await sql`CREATE TABLE IF NOT EXISTS sync_rows (
+    table_name TEXT NOT NULL,
+    row_id     INTEGER NOT NULL,
+    data       JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    instance   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (table_name, row_id))`;
 }
 
 function json(obj: unknown, code = 200): Response {
@@ -44,6 +51,12 @@ Deno.serve(async (req: Request) => {
     if (req.method === "POST" && p === "/api/emails") return await upsertEmails(req);
     if (req.method === "GET" && p === "/api/status") return await statusPull();
     if (req.method === "POST" && p === "/api/pump") return await pump();
+    if (req.method === "POST" && p === "/api/sync/push") return await syncPush(req);
+    if (req.method === "GET" && p === "/api/sync/pull") {
+      if (schemaReady) return await syncPull(new URL(req.url));
+      try { await ensureSchema(); schemaReady = true; } catch (e) { /* retry next call */ }
+      return json({ ok: false, error: "schema not ready" }, 503);
+    }
     return json({ ok: false, error: "not found" }, 404);
   } catch (e) {
     return json({ ok: false, error: String((e as Error).message || e) }, 500);
@@ -283,6 +296,48 @@ async function scanBounces(): Promise<number> {
   return marked;
 }
 
+
+// ---------------- two-way team DB sync ----------------
+
+const SYNC_TABLES = ["contacts", "emails", "batches", "campaigns", "email_templates", "sheets"];
+
+async function syncPush(req: Request): Promise<Response> {
+  const d = (await req.json()) as any;
+  const table: string = d.table || "";
+  if (!SYNC_TABLES.includes(table)) return json({ ok: false, error: "unknown table" }, 400);
+  const rows: any[] = Array.isArray(d.rows) ? d.rows : [];
+  if (rows.length > 2000) return json({ ok: false, error: "too many rows" }, 413);
+  let n = 0;
+  for (const r of rows) {
+    if (!r || r.id == null) continue;
+    const ts: Date = r.updated_at ? new Date(r.updated_at) : new Date();
+    await sql`
+      INSERT INTO sync_rows(table_name, row_id, data, updated_at, instance)
+      VALUES (${table}, ${parseInt(String(r.id))}, ${JSON.stringify(r.data || {})}::jsonb, ${ts}, ${d.instance || ""})
+      ON CONFLICT (table_name, row_id) DO UPDATE
+        SET data = excluded.data, updated_at = excluded.updated_at, instance = excluded.instance
+        WHERE excluded.updated_at >= sync_rows.updated_at`;
+    n++;
+  }
+  return json({ ok: true, upserted: n });
+}
+
+async function syncPull(url: URL): Promise<Response> {
+  const table: string = url.searchParams.get("table") || "";
+  if (!SYNC_TABLES.includes(table)) return json({ ok: false, error: "unknown table" }, 400);
+  const since: string | null = url.searchParams.get("since");
+  const rows: any[] = since
+    ? await sql`SELECT row_id, data, updated_at, instance FROM sync_rows
+      WHERE table_name = ${table} AND updated_at > ${new Date(since + (since.endsWith("Z") ? "" : "Z"))}
+      ORDER BY updated_at LIMIT 2000`
+    : await sql`SELECT row_id, data, updated_at, instance FROM sync_rows
+      WHERE table_name = ${table}
+      ORDER BY updated_at LIMIT 2000`;
+  return json({ ok: true, rows: rows.map((r) => ({
+    id: r.row_id, data: r.data,
+    updated_at: new Date(r.updated_at).toISOString(), instance: r.instance || "",
+  })) });
+}
 
 function parseAtts(s: string | null): any[] {
   try { return JSON.parse(s || "[]"); } catch { return []; }

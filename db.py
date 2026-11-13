@@ -56,13 +56,15 @@ CREATE TABLE IF NOT EXISTS contacts(
   error TEXT DEFAULT '',
   extra TEXT DEFAULT '{}',
   notes TEXT DEFAULT '',
-  created_at TEXT
+  created_at TEXT,
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS email_templates(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT, type TEXT, subject TEXT, body_html TEXT, fields TEXT,
   is_active INTEGER DEFAULT 0,
-  created_at TEXT
+  created_at TEXT,
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS batches(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +75,9 @@ CREATE TABLE IF NOT EXISTS batches(
   reminder_max INTEGER DEFAULT 1,
   append_signature INTEGER DEFAULT 0,
   cc TEXT DEFAULT '',
-  created_at TEXT
+  created_at TEXT,
+  created_by TEXT DEFAULT '',
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS emails(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,7 +92,8 @@ CREATE TABLE IF NOT EXISTS emails(
   bounce_reason TEXT DEFAULT '',
   reminder_count INTEGER DEFAULT 0,
   is_reminder INTEGER DEFAULT 0,
-  created_at TEXT
+  created_at TEXT,
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS processed_dsn(
   account_id INTEGER NOT NULL,
@@ -122,13 +127,15 @@ CREATE TABLE IF NOT EXISTS gmail_accounts(
 CREATE TABLE IF NOT EXISTS campaigns(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT, description TEXT DEFAULT '',
-  created_by TEXT, created_at TEXT
+  created_by TEXT, created_at TEXT,
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS sheets(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT, campaign_id INTEGER DEFAULT 0, filename TEXT DEFAULT '',
   headers TEXT DEFAULT '[]', rows TEXT DEFAULT '[]', n_rows INTEGER DEFAULT 0,
-  created_by TEXT, created_at TEXT
+  created_by TEXT, created_at TEXT,
+  updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_emails_status ON emails(status);
 CREATE INDEX IF NOT EXISTS idx_contacts_status ON contacts(status);
@@ -360,9 +367,30 @@ def _migrate(c):
         if col not in bcols:
             c.execute("ALTER TABLE batches ADD COLUMN " + col + " " + decl)
     kcols = {r["name"] for r in c.execute("PRAGMA table_info(contacts)").fetchall()}
-    for col, decl in (("sheet_id", "INTEGER DEFAULT 0"),):
+    for col, decl in (("sheet_id", "INTEGER DEFAULT 0"), ("updated_at", "TEXT")):
         if col not in kcols:
             c.execute("ALTER TABLE contacts ADD COLUMN " + col + " " + decl)
+    for tbl, cols in (
+            ("emails", (("updated_at", "TEXT"),)),
+            ("batches", (("created_by", "TEXT DEFAULT ''"), ("updated_at", "TEXT"))),
+            ("campaigns", (("updated_at", "TEXT"),)),
+            ("sheets", (("updated_at", "TEXT"),)),
+            ("email_templates", (("updated_at", "TEXT"),))):
+        tcols = {r["name"] for r in c.execute("PRAGMA table_info(%s)" % tbl).fetchall()}
+        for col, decl in cols:
+            if col not in tcols:
+                c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tbl, col, decl))
+    # auto-stamp updated_at on every insert/update of synced tables
+    for tbl in ("contacts", "emails", "batches", "campaigns", "email_templates", "sheets"):
+        c.execute("CREATE TRIGGER IF NOT EXISTS trg_%s_ins AFTER INSERT ON %s BEGIN "
+                  "UPDATE %s SET updated_at=datetime('now') WHERE id=NEW.id "
+                  "AND (updated_at IS NULL OR updated_at=''); END" % (tbl, tbl, tbl))
+        c.execute("CREATE TRIGGER IF NOT EXISTS trg_%s_upd AFTER UPDATE ON %s "
+                  "BEGIN UPDATE %s SET updated_at=datetime('now') WHERE id=NEW.id; END"
+                  % (tbl, tbl, tbl))
+    # backfill updated_at for existing rows (so first sync has sane versions)
+    for tbl in ("contacts", "emails", "batches", "campaigns", "email_templates", "sheets"):
+        c.execute("UPDATE %s SET updated_at=datetime('now') WHERE updated_at IS NULL OR updated_at=''" % tbl)
     c.commit()
 
 

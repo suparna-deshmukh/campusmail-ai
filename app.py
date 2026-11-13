@@ -1114,9 +1114,10 @@ def _run_merge(d):
     append_sig = 1 if d.get("append_signature") else 0
     sig = db.get_setting("signature_html", "") if append_sig else ""
     cc_str = ", ".join(cc_list)
-    c.execute("INSERT INTO batches(name, template_id, mapping, account_id, created_at, append_signature, cc, campaign_id, sheet_id) "
-              "VALUES(?,?,?,?,?,?,?,?,?)",
-              (name, tid, json.dumps(mapping), account_id, db.now_iso(), append_sig, cc_str, campaign_id, sheet_id))
+    c.execute("INSERT INTO batches(name, template_id, mapping, account_id, created_at, append_signature, cc, campaign_id, sheet_id, created_by) "
+              "VALUES(?,?,?,?,?,?,?,?,?,?)",
+              (name, tid, json.dumps(mapping), account_id, db.now_iso(), append_sig, cc_str, campaign_id, sheet_id,
+               request.user["email"]))
     bid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
     eids = []
     for r in rows:
@@ -2092,6 +2093,7 @@ def scheduler_tick():
 
 
 def scheduler_loop():
+    import sync_relay
     while SCHEDULER_STATE["running"]:
         try:
             filestore.reset_tenant()
@@ -2103,6 +2105,10 @@ def scheduler_loop():
                     with db.tenant(ws_db):
                         filestore.set_tenant(wdir / "attachments", wdir / "images", "ws/" + key)
                         scheduler_tick()
+        except Exception as e:
+            SCHEDULER_STATE["last_error"] = str(e)[:200]
+        try:
+            sync_relay.sync_tick()
         except Exception as e:
             SCHEDULER_STATE["last_error"] = str(e)[:200]
         time.sleep(8)
@@ -2753,13 +2759,23 @@ def page_reports():
     return render_template("reports.html", page="reports")
 
 
-def _reports_rows(status="", q=""):
+MEMBER_EXPR = "COALESCE(NULLIF(b.created_by,''), NULLIF(cam.created_by,''), 'team')"
+
+
+def _reports_rows(status="", q="", member=""):
     c = db.conn()
     sql = ("SELECT e.id, e.serial, e.to_addr, e.subject, e.status, e.sent_at, e.scheduled_at, "
            "e.replied_at, e.bounced_at, e.bounce_reason, e.reminder_count, e.is_reminder, e.error, e.batch_id, "
            "co.company, co.hr_name FROM emails e LEFT JOIN contacts co ON co.id=e.contact_id "
+           "LEFT JOIN batches b ON b.id=e.batch_id LEFT JOIN campaigns cam ON cam.id=b.campaign_id "
            "WHERE e.status != 'deleted'")
     args = []
+    if member:
+        if member == "team":
+            sql += " AND " + MEMBER_EXPR + " = 'team'"
+        else:
+            sql += " AND " + MEMBER_EXPR + " = ?"
+            args.append(member)
     if status == "replied":
         sql += " AND e.replied_at IS NOT NULL AND e.replied_at != ''"
     elif status == "bounced":
@@ -2776,10 +2792,31 @@ def _reports_rows(status="", q=""):
     return rows
 
 
+@app.route("/api/reports/members")
+@login_required
+def api_reports_members():
+    c = db.conn()
+    users = [dict(r) for r in c.execute(
+        "SELECT email, display_name FROM users WHERE status='active' ORDER BY display_name, email").fetchall()]
+    creators = [r["member"] for r in c.execute(
+        "SELECT DISTINCT " + MEMBER_EXPR + " AS member FROM batches b "
+        "LEFT JOIN campaigns cam ON cam.id=b.campaign_id "
+        "WHERE COALESCE(NULLIF(b.created_by,''), NULLIF(cam.created_by,'')) IS NOT NULL").fetchall()]
+    c.close()
+    out = []
+    for u in users:
+        out.append({"email": u["email"], "name": (u["display_name"] or u["email"]).split("@")[0]})
+    for m in sorted(set(creators)):
+        if not any(x["email"] == m for x in out):
+            out.append({"email": m, "name": m.split("@")[0]})
+    return jsonify({"ok": True, "members": out})
+
+
 @app.route("/api/reports/emails")
 @login_required
 def api_reports_emails():
-    rows = _reports_rows(request.args.get("status") or "", (request.args.get("q") or "").strip())
+    rows = _reports_rows(request.args.get("status") or "", (request.args.get("q") or "").strip(),
+                         (request.args.get("member") or "").strip())
     return jsonify({"ok": True, "rows": rows})
 
 
@@ -2787,7 +2824,8 @@ def api_reports_emails():
 @login_required
 def api_reports_csv():
     import io
-    rows = _reports_rows(request.args.get("status") or "", (request.args.get("q") or "").strip())
+    rows = _reports_rows(request.args.get("status") or "", (request.args.get("q") or "").strip(),
+                         (request.args.get("member") or "").strip())
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["ID", "Serial", "Company", "HR Name", "To", "Subject", "Status",
@@ -2804,33 +2842,53 @@ def api_reports_csv():
 @app.route("/api/reports/summary")
 @login_required
 def api_reports_summary():
+    member = (request.args.get("member") or "").strip()
+    msql, margs = "", []
+    if member:
+        msql = " AND " + MEMBER_EXPR + (" = 'team'" if member == "team" else " = ?")
+        if member != "team":
+            margs.append(member)
+    mj = ("LEFT JOIN batches b ON b.id=e.batch_id LEFT JOIN campaigns cam ON cam.id=b.campaign_id")
     c = db.conn()
-    contacts = {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM contacts GROUP BY status").fetchall()}
-    emails = {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM emails WHERE is_reminder=0 GROUP BY status").fetchall()}
+    emails = {r["status"]: r["n"] for r in c.execute(
+        "SELECT status, COUNT(*) n FROM emails e " + mj + " WHERE is_reminder=0 AND e.status != 'deleted'" + msql,
+        margs).fetchall()}
     reminders = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=1").fetchone()["n"]
-    sent_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent'").fetchone()["n"]
-    replied_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
-                          "AND replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"]
-    bounced_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
-                          "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"]
+    sent_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj + " WHERE is_reminder=0 AND status='sent'" + msql,
+                       margs).fetchone()["n"]
+    replied_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj +
+                          " WHERE is_reminder=0 AND status='sent' AND replied_at IS NOT NULL AND replied_at != ''" + msql,
+                          margs).fetchone()["n"]
+    bounced_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj +
+                          " WHERE is_reminder=0 AND status='sent' AND bounced_at IS NOT NULL AND bounced_at != ''" + msql,
+                          margs).fetchone()["n"]
     days = []
     for i in range(13, -1, -1):
         d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-        n = c.execute("SELECT COUNT(*) n FROM emails WHERE status='sent' AND sent_at >= ? AND sent_at < ?",
-                      (d + " 00:00:00", d + " 23:59:59")).fetchone()["n"]
+        n = c.execute("SELECT COUNT(*) n FROM emails e " + mj +
+                      " WHERE status='sent' AND sent_at >= ? AND sent_at < ?" + msql,
+                      margs + [d + " 00:00:00", d + " 23:59:59"]).fetchone()["n"]
         days.append({"date": d[5:], "n": n})
     companies = [dict(r) for r in c.execute(
         "SELECT co.company, COUNT(*) total, "
         "SUM(CASE WHEN e.status='sent' THEN 1 ELSE 0 END) sent, "
         "SUM(CASE WHEN e.replied_at IS NOT NULL AND e.replied_at != '' THEN 1 ELSE 0 END) replied, "
         "SUM(CASE WHEN e.bounced_at IS NOT NULL AND e.bounced_at != '' THEN 1 ELSE 0 END) bounced "
-        "FROM emails e JOIN contacts co ON co.id = e.contact_id "
-        "WHERE e.is_reminder=0 GROUP BY co.company ORDER BY total DESC LIMIT 12").fetchall()]
+        "FROM emails e JOIN contacts co ON co.id = e.contact_id " + mj +
+        " WHERE e.is_reminder=0 AND e.status != 'deleted'" + msql +
+        " GROUP BY co.company ORDER BY total DESC LIMIT 12", margs).fetchall()]
+    members = [dict(r) for r in c.execute(
+        "SELECT " + MEMBER_EXPR + " AS member, COUNT(*) total, "
+        "SUM(CASE WHEN e.status='sent' THEN 1 ELSE 0 END) sent, "
+        "SUM(CASE WHEN e.replied_at IS NOT NULL AND e.replied_at != '' THEN 1 ELSE 0 END) replied, "
+        "SUM(CASE WHEN e.bounced_at IS NOT NULL AND e.bounced_at != '' THEN 1 ELSE 0 END) bounced "
+        "FROM emails e " + mj + " WHERE e.is_reminder=0 AND e.status != 'deleted' "
+        "GROUP BY member ORDER BY sent DESC, total DESC").fetchall()]
     c.close()
     reply_rate = round(100.0 * replied_n / sent_n) if sent_n else 0
-    return jsonify({"ok": True, "contacts": contacts, "emails": emails, "reminders": reminders,
+    return jsonify({"ok": True, "emails": emails, "reminders": reminders,
                     "sent": sent_n, "replied": replied_n, "bounced": bounced_n, "reply_rate": reply_rate,
-                    "days": days, "companies": companies})
+                    "days": days, "companies": companies, "members": members})
 
 
 # ---------------- email updates: polish / mark replied ----------------
