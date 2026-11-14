@@ -63,16 +63,10 @@ Deno.serve(async (req: Request) => {
     if (req.method === "GET" && p === "/api/status") return await statusPull();
     if (req.method === "POST" && p === "/api/pump") return await pump();
     if (req.method === "POST" && p === "/api/sync/push") return await syncPush(req);
-    if (req.method === "GET" && p === "/api/sync/pull/deletes") {
-      if (schemaReady) return await syncPullDeletes(new URL(req.url));
-      try { await ensureSchema(); schemaReady = true; } catch (e) { /* retry next call */ }
-      return json({ ok: false, error: "schema not ready" }, 503);
-    }
-    if (req.method === "GET" && p === "/api/sync/pull") {
-      if (schemaReady) return await syncPull(new URL(req.url));
-      try { await ensureSchema(); schemaReady = true; } catch (e) { /* retry next call */ }
-      return json({ ok: false, error: "schema not ready" }, 503);
-    }
+    if (req.method === "GET" && p === "/api/sync/changes") return await syncChanges(new URL(req.url));
+    if (req.method === "GET" && p === "/api/sync/bootstrap") return await syncBootstrap(new URL(req.url));
+    if (req.method === "GET" && p === "/api/sync/status") return await syncStatus();
+    if (p === "/api/sync/pull" || p === "/api/sync/pull/deletes") return await syncLegacyRejected();
     return json({ ok: false, error: "not found" }, 404);
   } catch (e) {
     return json({ ok: false, error: String((e as Error).message || e) }, 500);
@@ -313,199 +307,344 @@ async function scanBounces(): Promise<number> {
 }
 
 
-// ---------------- two-way team DB sync ----------------
+// ---------------- two-way team DB sync (v2: outbox/rev, budgets, caps) ----------------
+// Protocol: docs/SYNC_V2.md
+// - Push: client sends local mutations -> relay assigns a monotonic rev per mutation,
+//   upserts current state (LWW guard on updated_at_ms), records tombstones, and
+//   appends each mutation to the outbox. Old instances cannot downgrade state.
+// - Pull: client asks for outbox changes it has not acked (since_rev). Empty queue is
+//   a ~100-byte response. Exactly-once delivery via the client's local rev watermark.
+// - Guardrails (enforced HERE, not client-side): version handshake (426), kill switch
+//   (503), per-instance rolling-24h row/byte budgets (429), per-table row caps (507),
+//   project rolling-24h egress budget (503), per-pull row/byte caps (truncated flag).
 
 const SYNC_TABLES = ["contacts", "emails", "batches", "campaigns", "email_templates", "sheets"];
+const RELAY_VERSION = 2;
 
-function parseSinceTs(since: string): Date {
-  const ts = since.split("|")[0].trim();
-  return new Date(ts + (ts.endsWith("Z") ? "" : "Z"));
+async function cfgVal(key: string, dflt: string): Promise<string> {
+  try {
+    const rows: any[] = await sql`SELECT value FROM sync_config WHERE key = ${key}`;
+    if (rows.length) return String(rows[0].value);
+  } catch (e) { /* table may not exist until migration 0004 */ }
+  return dflt;
 }
-function parseSinceId(since: string): number {
-  const idPart = since.split("|")[1];
-  const n = parseInt(idPart || "-1", 10);
-  return Number.isFinite(n) ? n : -1;
+async function cfgInt(key: string, dflt: number): Promise<number> {
+  const v = await cfgVal(key, String(dflt));
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : dflt;
 }
+
+async function syncEnabled(): Promise<boolean> {
+  return (await cfgVal("sync_enabled", "1")) === "1";
+}
+
+function nowMs(): number {
+  return Date.now();
+}
+
+// rolling 24h window: reset counters when the window rolls
+async function windowRoll(instanceId: string): Promise<any> {
+  const rows: any[] = await sql`SELECT window_start FROM sync_metrics WHERE instance_id = ${instanceId}`;
+  if (!rows.length) {
+    await sql`INSERT INTO sync_metrics(instance_id) VALUES (${instanceId})`;
+    return { rows_pushed_24h: 0, bytes_pushed_24h: 0, rows_pulled_24h: 0, bytes_pulled_24h: 0, window_start: null };
+  }
+  const ws = rows[0].window_start;
+  if (ws && (Date.now() - new Date(ws).getTime()) > 24 * 3600 * 1000) {
+    await sql`UPDATE sync_metrics SET rows_pushed_24h = 0, bytes_pushed_24h = 0,
+      rows_pulled_24h = 0, bytes_pulled_24h = 0, window_start = now(), updated_at = now()
+      WHERE instance_id = ${instanceId}`;
+    return { rows_pushed_24h: 0, bytes_pushed_24h: 0, rows_pulled_24h: 0, bytes_pulled_24h: 0, window_start: null };
+  }
+  const m: any[] = await sql`SELECT rows_pushed_24h, bytes_pushed_24h, rows_pulled_24h, bytes_pulled_24h FROM sync_metrics WHERE instance_id = ${instanceId}`;
+  return m[0] || { rows_pushed_24h: 0, bytes_pushed_24h: 0, rows_pulled_24h: 0, bytes_pulled_24h: 0 };
+}
+
+async function noteError(instanceId: string, msg: string): Promise<void> {
+  try {
+    await sql`INSERT INTO sync_metrics(instance_id, last_error, last_error_at, updated_at)
+      VALUES (${instanceId}, ${msg.slice(0, 300)}, now(), now())
+      ON CONFLICT (instance_id) DO UPDATE SET last_error = excluded.last_error,
+      last_error_at = now(), updated_at = now()`;
+  } catch (e) { /* non-fatal */ }
+}
+
+async function projectEgressUsed(): Promise<number> {
+  const m: any[] = await sql`SELECT bytes_pushed_24h, bytes_pulled_24h FROM sync_metrics WHERE instance_id = 'project'`;
+  if (m.length && m[0].window_start && (Date.now() - new Date(m[0].window_start).getTime()) <= 24 * 3600 * 1000) {
+    return Number(m[0].bytes_pushed_24h || 0) + Number(m[0].bytes_pulled_24h || 0);
+  }
+  return 0;
+}
+async function addProjectEgress(bytes: number): Promise<void> {
+  try {
+    await sql`INSERT INTO sync_metrics(instance_id, bytes_pulled_24h, window_start)
+      VALUES ('project', ${bytes}, now())
+      ON CONFLICT (instance_id) DO UPDATE SET
+        window_start = CASE WHEN sync_metrics.window_start IS NULL
+                             OR (now() - sync_metrics.window_start) > interval '24 hours'
+                            THEN now() ELSE sync_metrics.window_start END,
+        bytes_pulled_24h = CASE WHEN sync_metrics.window_start IS NULL
+                                 OR (now() - sync_metrics.window_start) > interval '24 hours'
+                                THEN ${bytes} ELSE sync_metrics.bytes_pulled_24h + ${bytes} END,
+        updated_at = now()`;
+  } catch (e) { /* non-fatal */ }
+}
+
+interface SyncRowIn { table: string; id: number; data: any; updated_at_ms: number; }
+interface SyncDelIn { table: string; row_id: number; deleted_at_ms: number; }
 
 async function syncPush(req: Request): Promise<Response> {
-  const d = (await req.json()) as any;
-  const table: string = d.table || "";
-  if (!SYNC_TABLES.includes(table)) return json({ ok: false, error: "unknown table" }, 400);
-  const rows: any[] = Array.isArray(d.rows) ? d.rows : [];
-  const dels: any[] = Array.isArray(d.deletes) ? d.deletes : [];
-  if (rows.length + dels.length > 2000) return json({ ok: false, error: "too many rows" }, 413);
-  let n = 0;
-  for (const r of rows) {
-    if (!r || r.id == null) continue;
-    const ts: Date = r.updated_at ? new Date(r.updated_at) : new Date();
-    await sql`
-      INSERT INTO sync_rows(table_name, row_id, data, updated_at, instance)
-      VALUES (${table}, ${parseInt(String(r.id))}, ${JSON.stringify(r.data || {})}::jsonb, ${ts}, ${d.instance || ""})
-      ON CONFLICT (table_name, row_id) DO UPDATE
-        SET data = excluded.data, updated_at = excluded.updated_at, instance = excluded.instance
-        WHERE excluded.updated_at >= sync_rows.updated_at`;
-    n++;
+  if (!(await syncEnabled())) return json({ ok: false, error: "sync disabled (kill switch)" }, 503);
+  const d: any = await req.json();
+  const version: number = parseInt(String(d.version || "0"), 10);
+  const minV: number = await cfgInt("min_client_version", 2);
+  if (!Number.isFinite(version) || version < minV) {
+    return json({ ok: false, error: "client version too old; upgrade required" }, 426);
   }
-  let dn = 0;
-  for (const dl of dels) {
-    if (!dl || dl.id == null) continue;
-    const ts: Date = dl.deleted_at ? new Date(dl.deleted_at + (String(dl.deleted_at).endsWith("Z") ? "" : "Z")) : new Date();
-    await sql`
-      INSERT INTO sync_deletes(table_name, row_id, deleted_at, instance)
-      VALUES (${table}, ${parseInt(String(dl.id))}, ${ts}, ${d.instance || ""})
-      ON CONFLICT (table_name, row_id) DO UPDATE
-        SET deleted_at = excluded.deleted_at, instance = excluded.instance
-        WHERE excluded.deleted_at >= sync_deletes.deleted_at`;
-    dn++;
+  const instance: string = String(d.instance || "").slice(0, 64);
+  if (!instance) return json({ ok: false, error: "missing instance" }, 400);
+  const rowsIn: any[] = Array.isArray(d.rows) ? d.rows : [];
+  const delsIn: any[] = Array.isArray(d.deletes) ? d.deletes : [];
+
+  // validate the whole batch up front (atomic accept/reject)
+  for (const r of rowsIn) {
+    if (!SYNC_TABLES.includes(r && r.table)) return json({ ok: false, error: "unknown table" }, 400);
+    const id = Number(r && r.id);
+    if (!Number.isInteger(id) || id <= 0) return json({ ok: false, error: "row id must be a positive integer" }, 400);
+    if (typeof (r.data && r.data.updated_at_ms) === "undefined") r.data = { ...(r.data || {}), updated_at_ms: nowMs() };
   }
-  return json({ ok: true, upserted: n, deletes: dn });
-}
-
-async function syncPullDeletes(url: URL): Promise<Response> {
-  const table: string = url.searchParams.get("table") || "";
-  if (!SYNC_TABLES.includes(table)) return json({ ok: false, error: "unknown table" }, 400);
-  const since: string | null = url.searchParams.get("since");
-  const rows: any[] = since
-    ? await sql`SELECT row_id, deleted_at, instance FROM sync_deletes
-      WHERE table_name = ${table}
-        AND (deleted_at > ${parseSinceTs(since)}
-          OR (deleted_at = ${parseSinceTs(since)} AND row_id > ${parseSinceId(since)}))
-      ORDER BY deleted_at, row_id LIMIT 2000`
-    : await sql`SELECT row_id, deleted_at, instance FROM sync_deletes
-      WHERE table_name = ${table}
-      ORDER BY deleted_at, row_id LIMIT 2000`;
-  return json({ ok: true, deletes: rows.map((r) => ({
-    id: r.row_id, deleted_at: new Date(r.deleted_at).toISOString(), instance: r.instance || "",
-  })) });
-}
-
-async function syncPull(url: URL): Promise<Response> {
-  const table: string = url.searchParams.get("table") || "";
-  if (!SYNC_TABLES.includes(table)) return json({ ok: false, error: "unknown table" }, 400);
-  const since: string | null = url.searchParams.get("since");
-  const rows: any[] = since
-    ? await sql`SELECT row_id, data, updated_at, instance FROM sync_rows
-      WHERE table_name = ${table}
-        AND (updated_at > ${parseSinceTs(since)}
-          OR (updated_at = ${parseSinceTs(since)} AND row_id > ${parseSinceId(since)}))
-      ORDER BY updated_at, row_id LIMIT 2000`
-    : await sql`SELECT row_id, data, updated_at, instance FROM sync_rows
-      WHERE table_name = ${table}
-      ORDER BY updated_at, row_id LIMIT 2000`;
-  return json({ ok: true, rows: rows.map((r) => ({
-    id: r.row_id, data: typeof r.data === "string" ? JSON.parse(r.data) : r.data,
-    updated_at: new Date(r.updated_at).toISOString(), instance: r.instance || "",
-  })) });
-}
-
-function parseAtts(s: string | null): any[] {
-  try { return JSON.parse(s || "[]"); } catch { return []; }
-}
-function parseCc(s: string | null): string[] {
-  return (s || "").split(",").map((x) => x.trim()).filter(Boolean);
-}
-
-// ---------------- MIME ----------------
-
-function b64url(bytes: Uint8Array): string {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-function enc(s: string): Uint8Array {
-  return new TextEncoder().encode(s);
-}
-
-function buildRaw(to: string, subject: string, bodyHtml: string, atts: any[], cc: string[]): string {
-  if (!atts.length) {
-    const ccLine = cc.length ? "Cc: " + cc.join(", ") + "\r\n" : "";
-    const raw =
-      "To: " + to + "\r\nSubject: " + subject + "\r\n" + ccLine +
-      "MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + bodyHtml;
-    return b64url(enc(raw));
+  for (const dl of delsIn) {
+    if (!SYNC_TABLES.includes(dl && dl.table)) return json({ ok: false, error: "unknown table (delete)" }, 400);
+    const id = Number(dl && dl.row_id);
+    if (!Number.isInteger(id) || id <= 0) return json({ ok: false, error: "delete row id must be a positive integer" }, 400);
   }
-  const boundary = "mf-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-  const chunks: string[] = [];
-  chunks.push("--" + boundary + "\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + bodyHtml);
-  for (const a of atts) {
-    chunks.push("--" + boundary +
-      "\r\nContent-Type: " + (a.mime || "application/octet-stream") +
-      "\r\nContent-Transfer-Encoding: base64" +
-      "\r\nContent-Disposition: attachment; filename=\"" + a.name + "\"" +
-      "\r\n\r\n" + (a.b64 || ""));
+  const nMut = rowsIn.length + delsIn.length;
+  if (nMut > 2000) return json({ ok: false, error: "too many mutations" }, 413);
+
+  // project egress kill switch
+  const projBudgetBytes: number = (await cfgInt("project_egress_mb_24h", 100)) * 1024 * 1024;
+  const projUsed = await projectEgressUsed();
+  if (projUsed >= projBudgetBytes) {
+    await noteError(instance, "project egress budget exhausted");
+    return json({ ok: false, error: "project 24h egress budget exhausted; sync halted" }, 503);
   }
-  chunks.push("--" + boundary + "--");
-  const head = "To: " + to + "\r\nSubject: " + subject +
-    (cc.length ? "\r\nCc: " + cc.join(", ") + "\r\n" : "") +
-    "\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"" + boundary + "\"\r\n\r\n";
-  return b64url(enc(head + chunks.join("\r\n")));
-}
 
-// ---------------- Gmail (fetch, no SDK) ----------------
-
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
-const GMAIL_API = "https://gmail.googleapis.com/gmail/v1";
-
-async function accessToken(): Promise<string> {
-  const cached: any[] = await sql`
-    SELECT access_token, expiry_epoch FROM relay_token_cache WHERE account_id = 0 LIMIT 1`;
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (cached.length && cached[0].access_token && (cached[0].expiry_epoch || 0) > nowSec + 60) {
-    return cached[0].access_token as string;
+  // per-instance rolling-24h budgets
+  const w = await windowRoll(instance);
+  const rowBudget: number = await cfgInt("instance_rows_24h", 5000);
+  const pushByteBudget: number = await cfgInt("instance_bytes_push_24h", 20971520);
+  // conservative per-mutation estimate (payload already consumed by req.json())
+  const estBytes = Math.max(rowsIn.length + delsIn.length, 0) * 320 + 64;
+  if (Number(w.rows_pushed_24h || 0) + nMut > rowBudget) {
+    await noteError(instance, "instance 24h row budget exhausted");
+    return json({ ok: false, error: "instance 24h row budget exhausted", retry_after_s: 60 }, 429);
   }
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    client_id: CLIENT_ID,
-    client_secret: CLIENT_SECRET,
-    refresh_token: REFRESH_TOKEN,
-  });
-  const r = await fetch(TOKEN_URL, {
-    method: "POST",
-    body,
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-  });
-  if (!r.ok) throw new Error("token refresh failed: " + (await r.text()).slice(0, 200));
-  const d: any = await r.json();
-  const expiry = nowSec + (d.expires_in || 3600);
-  await sql`
-    INSERT INTO relay_token_cache(account_id, access_token, expiry_epoch) VALUES (0, ${d.access_token}, ${expiry})
-    ON CONFLICT (account_id) DO UPDATE SET access_token = excluded.access_token, expiry_epoch = excluded.expiry_epoch`;
-  return d.access_token;
-}
+  if (Number(w.bytes_pushed_24h || 0) + estBytes > pushByteBudget) {
+    await noteError(instance, "instance 24h push byte budget exhausted");
+    return json({ ok: false, error: "instance 24h push byte budget exhausted", retry_after_s: 60 }, 429);
+  }
 
-async function gmailSend(raw: string): Promise<any> {
-  const doSend = async (token: string) => {
-    const r = await fetch(GMAIL_API + "/users/" + encodeURIComponent(SENDER) + "/messages/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-      body: JSON.stringify({ raw }),
-    });
-    if (!r.ok) throw new Error("gmail send failed: " + (await r.text()).slice(0, 300) + " [" + r.status + "]");
-    return await r.json();
-  };
-  try {
-    return await doSend(await accessToken());
-  } catch (e) {
-    if (String(e).includes("[401]")) {
-      await sql`DELETE FROM relay_token_cache WHERE account_id = 0`;
-      return await doSend(await accessToken());
+  // per-table caps
+  const cap: number = await cfgInt("rows_per_table_cap", 10000);
+  const tables = Array.from(new Set([...rowsIn.map((r) => r.table), ...delsIn.map((d2) => d2.table)]));
+  for (const t of tables) {
+    const c: any[] = await sql`SELECT COUNT(*)::int AS n FROM sync_rows WHERE table_name = ${t}`;
+    const incoming = rowsIn.filter((r) => r.table === t).length;
+    if (Number(c[0] && c[0].n || 0) + incoming > cap) {
+      await noteError(instance, "table cap exceeded: " + t);
+      return json({ ok: false, error: "table row cap exceeded for " + t }, 507);
     }
-    throw e;
   }
+
+  // accept: upserts
+  let accepted = 0;
+  let lastRev = 0;
+  const ts = nowMs();
+  for (const r of rowsIn) {
+    const id = Number(r.id);
+    const ms = Number(r.data.updated_at_ms) || ts;
+    const tomb: any[] = await sql`SELECT deleted_at_ms FROM sync_deletes
+      WHERE table_name = ${r.table} AND row_id = ${id}`;
+    if (tomb.length && Number(tomb[0].deleted_at_ms || 0) >= ms) {
+      continue; // newer tombstone wins: do not resurrect
+    }
+    await sql`
+      INSERT INTO sync_rows(table_name, row_id, data, updated_at, updated_at_ms, instance)
+      VALUES (${r.table}, ${id}, ${JSON.stringify(r.data)}, to_timestamp(${ms / 1000}), ${ms}, ${instance})
+      ON CONFLICT (table_name, row_id) DO UPDATE SET
+        data = excluded.data,
+        updated_at = excluded.updated_at,
+        updated_at_ms = excluded.updated_at_ms,
+        instance = excluded.instance
+      WHERE sync_rows.updated_at_ms < excluded.updated_at_ms`;
+    const out: any[] = await sql`INSERT INTO sync_outbox(instance_id, table_name, row_id, op, payload)
+      VALUES (${instance}, ${r.table}, ${id}, 'upsert', ${JSON.stringify({ data: r.data })})
+      RETURNING rev`;
+    lastRev = Number(out[0] && out[0].rev || 0);
+    accepted++;
+  }
+  // accept: deletes
+  for (const dl of delsIn) {
+    const id = Number(dl.row_id);
+    const ms = Number(dl.deleted_at_ms) || ts;
+    const revOut: any[] = await sql`INSERT INTO sync_outbox(instance_id, table_name, row_id, op, payload)
+      VALUES (${instance}, ${dl.table}, ${id}, 'delete', ${JSON.stringify({ deleted_at_ms: ms })})
+      RETURNING rev`;
+    const rev = Number(revOut[0] && revOut[0].rev || 0);
+    await sql`
+      INSERT INTO sync_deletes(table_name, row_id, deleted_at, deleted_at_ms, del_rev, instance)
+      VALUES (${dl.table}, ${id}, to_timestamp(${ms / 1000}), ${ms}, ${rev}, ${instance})
+      ON CONFLICT (table_name, row_id) DO UPDATE SET
+        deleted_at = excluded.deleted_at,
+        deleted_at_ms = excluded.deleted_at_ms,
+        del_rev = excluded.del_rev,
+        instance = excluded.instance
+      WHERE excluded.deleted_at_ms >= sync_deletes.deleted_at_ms`;
+    await sql`DELETE FROM sync_rows WHERE table_name = ${dl.table} AND row_id = ${id} AND updated_at_ms <= ${ms}`;
+    lastRev = Math.max(lastRev, rev);
+    accepted++;
+  }
+
+  // metrics
+  await sql`INSERT INTO sync_metrics(instance_id, rows_pushed_24h, bytes_pushed_24h, window_start, updated_at)
+    VALUES (${instance}, ${accepted}, ${estBytes}, now(), now())
+    ON CONFLICT (instance_id) DO UPDATE SET
+      window_start = CASE WHEN sync_metrics.window_start IS NULL
+                           OR (now() - sync_metrics.window_start) > interval '24 hours'
+                          THEN now() ELSE sync_metrics.window_start END,
+      rows_pushed_24h = CASE WHEN sync_metrics.window_start IS NULL
+                              OR (now() - sync_metrics.window_start) > interval '24 hours'
+                             THEN ${accepted} ELSE sync_metrics.rows_pushed_24h + ${accepted} END,
+      bytes_pushed_24h = CASE WHEN sync_metrics.window_start IS NULL
+                               OR (now() - sync_metrics.window_start) > interval '24 hours'
+                              THEN ${estBytes} ELSE sync_metrics.bytes_pushed_24h + ${estBytes} END,
+      last_error = '', last_error_at = NULL, updated_at = now()`;
+  await addProjectEgress(estBytes);
+  return json({ ok: true, accepted, rev: lastRev, relay_version: RELAY_VERSION });
 }
 
-async function gmailMessageId(messageId: string): Promise<string> {
-  if (!messageId) return "";
-  const token = await accessToken();
-  const r = await fetch(
-    GMAIL_API + "/users/" + encodeURIComponent(SENDER) + "/messages/" + messageId +
-    "?format=metadata&metadataHeaders=Message-Id",
-    { headers: { Authorization: "Bearer " + token } },
-  );
-  if (!r.ok) return "";
-  const d: any = await r.json();
-  for (const h of (d.payload && d.payload.headers) || []) {
-    if ((h.name || "").toLowerCase() === "message-id") return (h.value || "").replace(/[<>]/g, "");
+async function syncChanges(url: URL): Promise<Response> {
+  if (!(await syncEnabled())) return json({ ok: false, error: "sync disabled (kill switch)" }, 503);
+  const version: number = parseInt(url.searchParams.get("version") || "0", 10);
+  const minV: number = await cfgInt("min_client_version", 2);
+  if (!Number.isFinite(version) || version < minV) {
+    return json({ ok: false, error: "client version too old; upgrade required" }, 426);
   }
-  return "";
+  const instance: string = (url.searchParams.get("instance") || "").slice(0, 64);
+  const sinceRev = parseInt(url.searchParams.get("since_rev") || "0", 10);
+  if (!instance || !Number.isFinite(sinceRev) || sinceRev < 0) {
+    return json({ ok: false, error: "instance and since_rev required" }, 400);
+  }
+  const projBudgetBytes: number = (await cfgInt("project_egress_mb_24h", 100)) * 1024 * 1024;
+  const projUsed = await projectEgressUsed();
+  if (projUsed >= projBudgetBytes) {
+    await noteError(instance, "project egress budget exhausted");
+    return json({ ok: false, error: "project 24h egress budget exhausted; sync halted" }, 503);
+  }
+  const w = await windowRoll(instance);
+  const pullByteBudget: number = await cfgInt("instance_bytes_pull_24h", 20971520);
+  if (Number(w.bytes_pulled_24h || 0) >= pullByteBudget) {
+    await noteError(instance, "instance 24h pull byte budget exhausted");
+    return json({ ok: false, error: "instance 24h pull byte budget exhausted", retry_after_s: 60 }, 429);
+  }
+  const maxRows: number = await cfgInt("pull_max_rows", 500);
+  const maxBytes: number = await cfgInt("pull_max_bytes", 262144);
+  const rows: any[] = await sql`SELECT rev, table_name, row_id, op, payload
+    FROM sync_outbox WHERE rev > ${sinceRev} AND instance_id <> ${instance}
+    ORDER BY rev ASC LIMIT ${maxRows}`;
+  const changes = rows.map((r) => ({
+    rev: Number(r.rev), table: r.table_name, row_id: Number(r.row_id), op: r.op, payload: r.payload,
+  }));
+  let size = JSON.stringify({ changes }).length;
+  let truncated = false;
+  while (size > maxBytes && changes.length > 1) {
+    changes.pop();
+    size = JSON.stringify({ changes }).length;
+    truncated = true;
+  }
+  const body = { ok: true, changes, next_rev: changes.length ? Number(changes[changes.length - 1].rev) : sinceRev, truncated, relay_version: RELAY_VERSION };
+  const respBytes = JSON.stringify(body).length;
+  await sql`INSERT INTO sync_metrics(instance_id, rows_pulled_24h, bytes_pulled_24h, window_start, updated_at)
+    VALUES (${instance}, ${changes.length}, ${respBytes}, now(), now())
+    ON CONFLICT (instance_id) DO UPDATE SET
+      window_start = CASE WHEN sync_metrics.window_start IS NULL
+                           OR (now() - sync_metrics.window_start) > interval '24 hours'
+                          THEN now() ELSE sync_metrics.window_start END,
+      rows_pulled_24h = CASE WHEN sync_metrics.window_start IS NULL
+                              OR (now() - sync_metrics.window_start) > interval '24 hours'
+                             THEN ${changes.length} ELSE sync_metrics.rows_pulled_24h + ${changes.length} END,
+      bytes_pulled_24h = CASE WHEN sync_metrics.window_start IS NULL
+                               OR (now() - sync_metrics.window_start) > interval '24 hours'
+                              THEN ${respBytes} ELSE sync_metrics.bytes_pulled_24h + ${respBytes} END,
+      updated_at = now()`;
+  await sql`INSERT INTO sync_acked(instance_id, last_rev, updated_at) VALUES (${instance}, ${body.next_rev}, now())
+    ON CONFLICT (instance_id) DO UPDATE SET last_rev = GREATEST(sync_acked.last_rev, excluded.last_rev), updated_at = now()`;
+  await addProjectEgress(respBytes);
+  return json(body);
+}
+
+// one-time full snapshot for bootstrap/resync (logged, outside the daily egress budget)
+async function syncBootstrap(url: URL): Promise<Response> {
+  if (!(await syncEnabled())) return json({ ok: false, error: "sync disabled (kill switch)" }, 503);
+  const instance: string = (url.searchParams.get("instance") || "").slice(0, 64);
+  const table: string = url.searchParams.get("table") || "";
+  if (!instance || !SYNC_TABLES.includes(table)) return json({ ok: false, error: "instance and table required" }, 400);
+  const rows: any[] = await sql`
+    SELECT row_id, data FROM sync_rows WHERE table_name = ${table}
+    AND NOT EXISTS (SELECT 1 FROM sync_deletes d
+                    WHERE d.table_name = sync_rows.table_name AND d.row_id = sync_rows.row_id
+                      AND sync_rows.updated_at_ms <= d.deleted_at_ms)
+    ORDER BY row_id LIMIT 10000`;
+  const out = rows.map((r) => ({ id: Number(r.row_id), data: r.data }));
+  const body = { ok: true, table, rows: out, relay_version: RELAY_VERSION };
+  const bytes = JSON.stringify(body).length;
+  await sql`INSERT INTO sync_metrics(instance_id, bootstrap_bytes, updated_at) VALUES (${instance}, ${bytes}, now())
+    ON CONFLICT (instance_id) DO UPDATE SET bootstrap_bytes = bootstrap_bytes + ${bytes}, updated_at = now()`;
+  return json(body);
+}
+
+async function syncStatus(): Promise<Response> {
+  const enabled = await syncEnabled();
+  const minV = await cfgInt("min_client_version", 2);
+  const insts: any[] = await sql`SELECT m.instance_id, m.rows_pushed_24h, m.bytes_pushed_24h,
+      m.rows_pulled_24h, m.bytes_pulled_24h, m.bootstrap_bytes, m.last_error, m.last_error_at, m.updated_at,
+      a.last_rev
+    FROM sync_metrics m LEFT JOIN sync_acked a ON a.instance_id = m.instance_id
+    WHERE m.instance_id <> 'project' ORDER BY m.updated_at DESC`;
+  const tables: any[] = await sql`SELECT table_name, COUNT(*)::int AS n FROM sync_rows GROUP BY table_name`;
+  const tomb: any[] = await sql`SELECT table_name, COUNT(*)::int AS n FROM sync_deletes GROUP BY table_name`;
+  const outbox: any[] = await sql`SELECT COUNT(*)::int AS n FROM sync_outbox`;
+  const proj: any[] = await sql`SELECT bytes_pulled_24h, window_start FROM sync_metrics WHERE instance_id = 'project'`;
+  return json({
+    ok: true, version: RELAY_VERSION, enabled, min_client_version: minV,
+    project: {
+      egress_used_bytes_24h: proj.length ? Number(proj[0].bytes_pulled_24h || 0) : 0,
+      egress_budget_mb_24h: await cfgInt("project_egress_mb_24h", 100),
+    },
+    instances: insts.map((m) => ({
+      instance: m.instance_id, rows_pushed_24h: Number(m.rows_pushed_24h || 0),
+      bytes_pushed_24h: Number(m.bytes_pushed_24h || 0), rows_pulled_24h: Number(m.rows_pulled_24h || 0),
+      bytes_pulled_24h: Number(m.bytes_pulled_24h || 0), bootstrap_bytes: Number(m.bootstrap_bytes || 0),
+      last_error: m.last_error || "", last_error_at: m.last_error_at || null,
+      last_seen: m.updated_at || null, last_ack_rev: m.last_rev != null ? Number(m.last_rev) : 0,
+    })),
+    tables: Object.fromEntries(tables.map((t) => [t.table_name, Number(t.n)])),
+    tombstones: Object.fromEntries(tomb.map((t) => [t.table_name, Number(t.n)])),
+    outbox_depth: Number(outbox[0] && outbox[0].n || 0),
+    caps: {
+      rows_per_table: await cfgInt("rows_per_table_cap", 10000),
+      instance_rows_24h: await cfgInt("instance_rows_24h", 5000),
+      instance_bytes_push_24h: await cfgInt("instance_bytes_push_24h", 20971520),
+      instance_bytes_pull_24h: await cfgInt("instance_bytes_pull_24h", 20971520),
+      pull_max_rows: await cfgInt("pull_max_rows", 500),
+      pull_max_bytes: await cfgInt("pull_max_bytes", 262144),
+      project_egress_mb_24h: await cfgInt("project_egress_mb_24h", 100),
+    },
+  });
+}
+
+// legacy v1 endpoints: refuse politely so old clients back off instead of looping on data
+async function syncLegacyRejected(): Promise<Response> {
+  return json({ ok: false, error: "sync v1 endpoints retired; upgrade client to version >= 2" }, 426);
 }

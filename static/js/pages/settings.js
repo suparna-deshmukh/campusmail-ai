@@ -581,6 +581,55 @@ function secAdvanced(col) {
       el("div", { class: "row", style: "gap:8px" }, rsec, rsave),
       packBtn)));
 
+  /* Sync status */
+  const syncBody = el("div", { style: "padding-top:12px" },
+    el("div", { class: "t-small t-faint" }, "Loading sync status…"));
+  const syncCard = acc("Sync status", relayOn ? "On" : "Off", relayOn ? "zap" : "circle-dashed", () => syncBody);
+  const fmtBytes = (n) => {
+    n = Number(n || 0);
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1024 / 1024).toFixed(2) + " MB";
+  };
+  const loadSyncStatus = async () => {
+    try {
+      const d = await api("/api/sync/status");
+      syncBody.innerHTML = "";
+      const line = (k, v) => el("div", { class: "row", style: "justify-content:space-between;gap:12px" },
+        el("div", { class: "t-small t-faint" }, k), el("div", { class: "t-small" }, String(v)));
+      if (!d.relay_configured) {
+        syncBody.append(el("div", { class: "t-small t-faint" }, "No cloud relay is configured, so this instance works offline."));
+        return;
+      }
+      syncBody.append(
+        line("Client version", "v" + d.client_version + (d.halted ? "  ·  halted (relay requires upgrade)" : "")),
+        line("Instance", d.instance || "—"),
+        line("Changes waiting to send", d.pending_rows + " row(s)" + (d.fail_count ? "  ·  " + d.fail_count + " failed attempt(s), backing off" : "")),
+      );
+      const r = d.relay || {};
+      if (r.ok) {
+        const me = (r.instances || []).find((x) => x.instance === d.instance) || {};
+        syncBody.append(
+          el("div", { class: "t-small t-faint", style: "margin-top:10px" }, "Relay"),
+          line("Relay version / enabled", "v" + r.version + (r.enabled ? "  ·  on" : "  ·  kill switch ON")),
+          line("Last change id (rev)", String(d.rev_watermark)),
+          line("Sent to relay (24h)", (me.rows_pushed_24h || 0) + " rows · " + fmtBytes(me.bytes_pushed_24h)),
+          line("Received from relay (24h)", (me.rows_pulled_24h || 0) + " changes · " + fmtBytes(me.bytes_pulled_24h)),
+          line("Project egress (24h)", fmtBytes(r.project.egress_used_bytes_24h) + " of " + r.project.egress_budget_mb_24h + " MB"),
+          line("Outbox depth", r.outbox_depth + " change(s)"),
+        );
+        if (me.last_error) syncBody.append(line("Relay last error", me.last_error));
+      } else if (r.error) {
+        syncBody.append(el("div", { class: "t-small t-faint", style: "margin-top:10px" }, "Relay unreachable: " + r.error));
+      }
+    } catch (e) {
+      syncBody.innerHTML = "";
+      syncBody.append(el("div", { class: "t-small t-faint" }, "Could not load sync status: " + e.message));
+    }
+  };
+  col.append(syncCard);
+  if (relayOn) loadSyncStatus();
+
   /* File storage */
   const sbe = el("select", { class: "select", style: "width:170px", "aria-label": "Storage backend" },
     el("option", { value: "local" }, "This computer"),

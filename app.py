@@ -1528,6 +1528,9 @@ def api_campaign_delete(cid):
     if not cam:
         c.close()
         return api_err("Campaign not found", 404)
+    batch_ids = [r["id"] for r in c.execute("SELECT id FROM batches WHERE campaign_id=?", (cid,))]
+    email_ids = [r["id"] for r in c.execute(
+        "SELECT id FROM emails WHERE batch_id IN (SELECT id FROM batches WHERE campaign_id=?)", (cid,))]
     c.execute("DELETE FROM emails WHERE batch_id IN (SELECT id FROM batches WHERE campaign_id=?)", (cid,))
     c.execute("DELETE FROM batches WHERE campaign_id=?", (cid,))
     c.execute("UPDATE sheets SET campaign_id=0 WHERE campaign_id=?", (cid,))
@@ -1535,6 +1538,10 @@ def api_campaign_delete(cid):
     c.commit()
     import sync_relay
     sync_relay.record_delete("campaigns", cid)
+    for bid in batch_ids:
+        sync_relay.record_delete("batches", bid)
+    for eid in email_ids:
+        sync_relay.record_delete("emails", eid)
     log("campaign_delete", cam["name"])
     c.close()
     return jsonify({"ok": True})
@@ -2560,6 +2567,57 @@ def api_settings_relay_pack():
         "GMAIL_SENDER_EMAIL": acc["email"] or "",
         "GMAIL_REFRESH_TOKEN": tok.get("refresh_token", ""),
     }})
+
+
+@app.route("/api/sync/status")
+@login_required
+def api_sync_status():
+    """Local sync state + best-effort relay status for the Settings UI."""
+    import sync_relay
+    import urllib.request as _ur
+    url = (db.get_setting("cloud_relay_url", "") or "").strip().rstrip("/")
+    secret = (db.get_setting("cloud_relay_secret", "") or "").strip()
+    c = db.conn()
+    try:
+        pending = []
+        for table in sync_relay.SYNC_COLUMNS:
+            pushed = dict(c.execute("SELECT row_id, version_ms FROM sync_pushed "
+                                     "WHERE table_name=? AND kind='row'", (table,)).fetchall())
+            n_rows = 0
+            for r in c.execute("SELECT id, updated_at, updated_at_ms FROM %s" % table).fetchall():
+                ms = int(r["updated_at_ms"] or 0) or sync_relay._ts_ms(r["updated_at"])
+                if ms > int(pushed.get(r["id"], 0) or 0):
+                    n_rows += 1
+            pushed_del = dict(c.execute("SELECT row_id, version_ms FROM sync_pushed "
+                                         "WHERE table_name=? AND kind='del'", (table,)).fetchall())
+            n_dels = 0
+            for r in c.execute("SELECT row_id, deleted_at FROM sync_deletes WHERE table_name=?", (table,)).fetchall():
+                if sync_relay._ts_ms(r["deleted_at"]) > int(pushed_del.get(r["row_id"], 0) or 0):
+                    n_dels += 1
+            pending.append({"table": table, "rows": n_rows, "deletes": n_dels})
+    finally:
+        c.close()
+    relay = None
+    if url and secret:
+        try:
+            req = _ur.Request(url + "/api/sync/status", headers={"x-relay-secret": secret})
+            relay = json.loads(_ur.urlopen(req, timeout=8).read().decode())
+        except Exception as e:
+            relay = {"ok": False, "error": str(e)[:150]}
+    fails = int(db.get_setting("sync_fail_count", "0") or 0)
+    return jsonify({
+        "ok": True,
+        "client_version": sync_relay.VERSION,
+        "relay_configured": bool(url and secret),
+        "relay_url": url,
+        "instance": db.get_setting("sync_instance_id", ""),
+        "rev_watermark": int((db.get_setting("sync_v2_rev", "") or "0").split("|")[0] or 0),
+        "fail_count": fails,
+        "halted": sync_relay.SYNC_STATE.get("halted", False),
+        "pending": pending,
+        "pending_rows": sum(p["rows"] for p in pending),
+        "relay": relay,
+    })
 
 
 @app.route("/api/settings", methods=["POST"])

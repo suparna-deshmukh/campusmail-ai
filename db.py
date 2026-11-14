@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import sqlite3
+import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,6 +145,13 @@ CREATE TABLE IF NOT EXISTS sync_deletes(
   row_id INTEGER NOT NULL,
   deleted_at TEXT NOT NULL,
   PRIMARY KEY (table_name, row_id)
+);
+CREATE TABLE IF NOT EXISTS sync_pushed(
+  table_name TEXT NOT NULL,
+  row_id INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'row',
+  version_ms INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (table_name, row_id, kind)
 );
 """
 
@@ -349,6 +357,21 @@ def conn():
     return c
 
 
+def _parse_ts_ms(s):
+    """Naive 'YYYY-MM-DD HH:MM:SS' (or ISO) string -> epoch ms, parsed as UTC. 0 if unset."""
+    s = (s or "").strip()
+    if not s:
+        return 0
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return int(datetime.strptime(s, fmt).replace(
+                tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            continue
+    return 0
+
+
 def _migrate(c):
     cols = {r["name"] for r in c.execute("PRAGMA table_info(emails)").fetchall()}
     for col, decl in (
@@ -387,17 +410,49 @@ def _migrate(c):
         for col, decl in cols:
             if col not in tcols:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tbl, col, decl))
-    # auto-stamp updated_at on every insert/update of synced tables
+    # epoch-ms version column for sync (monotonic; display keeps using updated_at)
     for tbl in ("contacts", "emails", "batches", "campaigns", "email_templates", "sheets"):
-        c.execute("CREATE TRIGGER IF NOT EXISTS trg_%s_ins AFTER INSERT ON %s BEGIN "
-                  "UPDATE %s SET updated_at=datetime('now') WHERE id=NEW.id "
-                  "AND (updated_at IS NULL OR updated_at=''); END" % (tbl, tbl, tbl))
-        c.execute("CREATE TRIGGER IF NOT EXISTS trg_%s_upd AFTER UPDATE ON %s "
-                  "BEGIN UPDATE %s SET updated_at=datetime('now') WHERE id=NEW.id; END"
-                  % (tbl, tbl, tbl))
+        tcols = {r["name"] for r in c.execute("PRAGMA table_info(%s)" % tbl).fetchall()}
+        if "updated_at_ms" not in tcols:
+            c.execute("ALTER TABLE %s ADD COLUMN updated_at_ms INTEGER DEFAULT 0" % tbl)
+    # ensure the push-watermark table exists on upgraded databases
+    c.execute("CREATE TABLE IF NOT EXISTS sync_pushed("
+              "table_name TEXT NOT NULL, row_id INTEGER NOT NULL, "
+              "kind TEXT NOT NULL DEFAULT 'row', version_ms INTEGER NOT NULL DEFAULT 0, "
+              "PRIMARY KEY (table_name, row_id, kind))")
+    # Backfills must run with the stamping triggers dropped: the backfill UPDATEs
+    # would otherwise fire trg_*_upd and re-stamp updated_at, clobbering legacy
+    # display strings.
+    for tbl in ("contacts", "emails", "batches", "campaigns", "email_templates", "sheets"):
+        c.execute("DROP TRIGGER IF EXISTS trg_%s_bfins" % tbl)
+        c.execute("DROP TRIGGER IF EXISTS trg_%s_ins" % tbl)
+        c.execute("DROP TRIGGER IF EXISTS trg_%s_upd" % tbl)
     # backfill updated_at for existing rows (so first sync has sane versions)
     for tbl in ("contacts", "emails", "batches", "campaigns", "email_templates", "sheets"):
         c.execute("UPDATE %s SET updated_at=datetime('now') WHERE updated_at IS NULL OR updated_at=''" % tbl)
+    # backfill the epoch-ms version. Strings are parsed as UTC (display-time base);
+    # anything that parses into the future (e.g. wall-clock demo strings) is clamped
+    # to just now, so real trigger stamps always sort after legacy rows.
+    now_ms = int(time.time() * 1000)
+    for tbl in ("contacts", "emails", "batches", "campaigns", "email_templates", "sheets"):
+        for r in c.execute("SELECT id, updated_at FROM %s WHERE updated_at_ms IS NULL OR updated_at_ms=0" % tbl):
+            ms = _parse_ts_ms(r["updated_at"])
+            if ms > now_ms - 1000:
+                ms = now_ms - 1000
+            c.execute("UPDATE %s SET updated_at_ms=? WHERE id=?" % tbl, (ms, r["id"]))
+    # auto-stamp updated_at + epoch-ms version on every insert/update of synced tables.
+    # INSERT trigger only fires when updated_at is empty, so rows inserted with an
+    # explicit legacy timestamp keep their display string (ms already backfilled).
+    EPOCH_MS = ("CAST(strftime('%s','now') AS INTEGER)*1000"
+                "+CAST(substr(strftime('%f','now'),10,3) AS INTEGER)")
+    for tbl in ("contacts", "emails", "batches", "campaigns", "email_templates", "sheets"):
+        c.execute("CREATE TRIGGER trg_%s_ins AFTER INSERT ON %s BEGIN "
+                  "UPDATE %s SET updated_at=datetime('now'), updated_at_ms=%s "
+                  "WHERE id=NEW.id AND (updated_at IS NULL OR updated_at=''); END"
+                  % (tbl, tbl, tbl, EPOCH_MS))
+        c.execute("CREATE TRIGGER trg_%s_upd AFTER UPDATE ON %s "
+                  "BEGIN UPDATE %s SET updated_at=datetime('now'), updated_at_ms=%s "
+                  "WHERE id=NEW.id; END" % (tbl, tbl, tbl, EPOCH_MS))
     c.commit()
 
 
