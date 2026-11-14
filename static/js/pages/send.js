@@ -267,9 +267,11 @@ function renderStep1() {
       el("span"),
       footerSummary1(),
       el("button", { class: "btn btn-primary", onclick: () => { S.step = 2; render(); } }, "Check the " + fmtInt(nPeople()) + " emails"),
-      !nPeople() || !S.templateId || matchBlocking(),
+      !nPeople() || !S.templateId || matchBlocking() || (S.outcome === "schedule" && !S.when),
       matchBlocking() ? "Resolve the highlighted fields first"
-        : !S.templateId ? "Pick a template to continue" : !nPeople() ? "Pick some contacts to continue" : ""));
+        : !S.templateId ? "Pick a template to continue"
+        : (S.outcome === "schedule" && !S.when) ? "Pick a time to schedule"
+        : !nPeople() ? "Pick some contacts to continue" : ""));
 }
 function campaignPick() {
   const sel = el("select", { class: "select", style: "max-width:380px", "aria-label": "Campaign" },
