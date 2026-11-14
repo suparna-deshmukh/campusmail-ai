@@ -784,3 +784,16 @@ tr:hover .row-action, .row-action:focus-visible { visibility: visible; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Help modal */
+.help-body { display: flex; flex-direction: column; gap: var(--sp-3); }
+.help-body .seg { margin-bottom: var(--sp-2); }
+.help-lede { color: var(--text-2); font-size: 13.5px; line-height: 1.55; margin: 0 0 4px; }
+.help-step { display: flex; gap: var(--sp-3); align-items: flex-start; padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface); }
+.help-step-num { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--primary-50); color: var(--primary-600); font-weight: 700; font-size: 13px; }
+.help-step-t { font-weight: 650; font-size: 13.5px; margin-bottom: 2px; }
+.help-step-d { color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.help-keys { display: flex; flex-direction: column; gap: 10px; }
+.help-key-row { display: flex; align-items: center; gap: 14px; }
+.help-help-card { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface); }
+.help-help-ico { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--primary-50); color: var(--primary-600); }

@@ -188,6 +188,8 @@ body.offline .reconnect-chip { display: inline-block; }
   grid-template-columns: repeat(4, 1fr);
   gap: var(--sp-4);
 }
+.stat-row.five { grid-template-columns: repeat(5, 1fr); }
+@media (max-width: 1023px) { .stat-row.five { grid-template-columns: repeat(2, 1fr); } }
 
 /* Bottom progress line (page refresh) */
 .topbar-progress {

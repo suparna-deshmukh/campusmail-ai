@@ -385,9 +385,9 @@ def login_state():
 # ---------------- admin ----------------
 
 @app.route("/admin")
-@admin_required
+@login_required
 def admin_page():
-    return render_template("admin.html", page="admin")
+    return redirect("/team")
 
 
 @app.route("/api/admin/data")
@@ -507,27 +507,27 @@ def page_settings_section(sec):
 @app.route("/send")
 @login_required
 def page_send():
-    """Temporary: the 3-step send flow lands in Phase 3. Until then, the
-    mail merge wizard keeps the job done (plan section 13)."""
-    return redirect("/merge")
+    return render_template("send_new.html", page="send", cid=None)
 
 
 @app.route("/contacts")
 @login_required
 def page_contacts():
-    return render_template("contacts.html", page="contacts")
+    return redirect("/library?tab=lists")
 
 
 @app.route("/templates")
 @login_required
 def page_templates():
-    return render_template("templates.html", page="templates")
+    tid = request.args.get("edit", type=int)
+    return redirect("/library/templates/%d" % tid if tid else "/library?tab=templates")
 
 
 @app.route("/merge")
 @login_required
 def page_merge():
-    return render_template("merge.html", page="merge")
+    cid = request.args.get("campaign", type=int)
+    return redirect("/campaigns/%d/send" % cid if cid else "/send")
 
 
 @app.route("/queue")
@@ -539,7 +539,13 @@ def page_queue():
 @app.route("/activity")
 @login_required
 def page_activity():
-    return render_template("activity.html", page="activity")
+    return redirect("/team?tab=activity")
+
+
+@app.route("/reports")
+@login_required
+def page_reports():
+    return redirect("/campaigns")
 
 
 
@@ -547,7 +553,7 @@ def page_activity():
 @app.route("/guide")
 @login_required
 def page_guide():
-    return render_template("guide.html", page="guide")
+    return redirect("/?help=1")
 
 
 @app.route("/campaigns")
@@ -565,14 +571,13 @@ def page_campaign_detail(cid):
 @app.route("/campaigns/<int:cid>/send")
 @login_required
 def page_campaign_send(cid):
-    """Send flow (Phase 3). Until then, the mail merge wizard takes over."""
-    return redirect("/merge")
+    return render_template("send_new.html", page="send", cid=cid)
 
 
 @app.route("/assistant")
 @login_required
 def page_assistant():
-    return render_template("assistant.html", page="assistant")
+    return redirect("/?ask=1")
 
 
 @app.route("/local_img/<name>")
@@ -1258,6 +1263,55 @@ def api_email_handled(eid):
 
 # ---------------- merge ----------------
 
+@app.route("/api/emails/test", methods=["POST"])
+@login_required
+def api_emails_test():
+    """Render the first row of the chosen list and deliver one email to the
+    signed-in user's own address: as a Gmail draft in Drafts-only mode, or
+    live in Live mode."""
+    d = request.get_json(force=True)
+    tid = d.get("template_id")
+    mapping = d.get("mapping") or {}
+    sheet_id = int(d.get("sheet_id") or 0)
+    account_id = int(d.get("account_id") or 0)
+    c = db.conn()
+    tpl = c.execute("SELECT * FROM email_templates WHERE id=?", (tid,)).fetchone()
+    w = " AND sheet_id=?" if sheet_id else ""
+    args = [sheet_id] if sheet_id else []
+    r = c.execute("SELECT * FROM contacts WHERE 1=1" + w +
+                  " ORDER BY CAST(COALESCE(NULLIF(serial,''),'0') AS INTEGER), id LIMIT 1", args).fetchone()
+    c.close()
+    if not tpl:
+        return api_err("Template not found.", 404)
+    if not r:
+        return api_err("No contacts in that list.", 404)
+    if not account_id:
+        return api_err("Pick a send account first.", 400)
+    try:
+        _require_account(account_id, request.user)
+    except RuntimeError as e:
+        return api_err(str(e), 409)
+    subject, body = render_email(dict(tpl), _row_vals(r), mapping)
+    sig = db.get_setting("signature_html", "")
+    if d.get("append_signature") and sig:
+        body += "<p style='margin-top:14px'>" + sig + "</p>"
+    to = request.user["email"]
+    safe = db.get_setting("safe_mode") == "1"
+    if safe:
+        try:
+            gmail_client.create_draft(account_id, to, "[Test] " + subject, body)
+        except Exception as e:
+            return api_err(str(e)[:200], 409)
+        log("test_email_draft", to)
+        return jsonify({"ok": True, "mode": "draft"})
+    try:
+        gmail_client.send_with_retry(account_id, to, "[Test] " + subject, body)
+    except Exception as e:
+        return api_err(str(e)[:200], 409)
+    log("test_email_sent", to)
+    return jsonify({"ok": True, "mode": "sent"})
+
+
 @app.route("/api/merge/suggest")
 @login_required
 def api_merge_suggest():
@@ -1327,7 +1381,7 @@ def _run_merge(d):
     campaign_id = int(d.get("campaign_id") or 0)
     sheet_id = int(d.get("sheet_id") or 0)
     action = d.get("action") or "queue"
-    if action not in ("queue", "draft", "schedule", "send"):
+    if action not in ("queue", "create", "draft", "schedule", "send"):
         return api_err("Unknown action.")
     try:
         cc_list = parse_cc(d.get("cc"))
@@ -1394,7 +1448,23 @@ def _run_merge(d):
                   (bid, r["id"], r["serial"], r["hr_email"], subject, body, account_id))
         eids.append(c.execute("SELECT last_insert_rowid() id").fetchone()["id"])
     c.commit()
+    if action == "create":
+        log("batch_create", "Batch '" + name + "' - " + str(len(rows)) + " emails queued (nothing sent)")
+        c.close()
+        return jsonify({"ok": True, "batch_id": bid, "created": len(rows), "action": "create"})
     extra = {"action": action}
+    extra.update(_batch_finalize(c, bid, eids, action, account_id, when, stagger))
+    save_last_account(request.user["id"], account_id) if account_id else None
+    log("batch_create", "Batch '" + name + "' - " + str(len(rows)) + " emails from template " + str(tid)
+        + " (action " + action + ", cc " + str(len(cc_list)) + ")")
+    c.close()
+    return jsonify({"ok": True, "batch_id": bid, "created": len(rows), **extra})
+
+
+def _batch_finalize(c, bid, eids, action, account_id, when, stagger):
+    """Run draft / schedule / send on a batch's pending emails.
+    c is the caller's open connection; commits as it goes."""
+    extra = {}
     if action == "draft":
         made = failed = 0
         for eid in eids:
@@ -1447,11 +1517,53 @@ def _run_merge(d):
             time.sleep(0.4)
         c.commit()
         extra.update(sent=ok, failed=fail)
+    return extra
+
+
+@app.route("/api/batches/<int:bid>/send-as", methods=["POST"])
+@login_required
+def api_batch_send_as(bid):
+    """Finalize a created batch: draft, schedule, or send now - used after
+    attachments have been uploaded to the batch."""
+    d = request.get_json(force=True)
+    action = d.get("action") or ""
+    if action not in ("draft", "schedule", "send"):
+        return api_err("Unknown action.")
+    when, stagger = None, 0
+    if action == "schedule":
+        when_str = (d.get("at") or "").strip()
+        stagger = int(d.get("stagger") or 0)
+        try:
+            when = datetime.strptime(when_str, "%Y-%m-%d %H:%M").replace(tzinfo=datetime.now().astimezone().tzinfo)
+        except ValueError:
+            return api_err("Schedule time format must be YYYY-MM-DD HH:MM (local time).")
+        now = datetime.now().astimezone()
+        if when < now + timedelta(minutes=5):
+            return api_err("Schedule time must be at least 5 minutes in the future.")
+        if when > now + timedelta(days=45):
+            return api_err("Schedule up to 45 days ahead only.")
+    account_id = int(d.get("account_id") or 0)
+    try:
+        _require_account(account_id, request.user)
+    except RuntimeError as e:
+        return api_err(str(e), 409)
+    if action == "send" and db.get_setting("safe_mode") == "1":
+        return api_err("Safe mode is ON - immediate sending is blocked. Pick Drafts or Schedule, or turn off Safe mode in Settings.", 409)
+    c = db.conn()
+    b = c.execute("SELECT id FROM batches WHERE id=?", (bid,)).fetchone()
+    if not b:
+        c.close()
+        return api_err("Batch not found", 404)
+    eids = [r["id"] for r in c.execute(
+        "SELECT id FROM emails WHERE batch_id=? AND status='pending' ORDER BY id", (bid,))]
+    if not eids:
+        c.close()
+        return api_err("No queued emails left in this batch.", 409)
+    extra = {"action": action}
+    extra.update(_batch_finalize(c, bid, eids, action, account_id, when, stagger))
     save_last_account(request.user["id"], account_id) if account_id else None
-    log("batch_create", "Batch '" + name + "' - " + str(len(rows)) + " emails from template " + str(tid)
-        + " (action " + action + ", cc " + str(len(cc_list)) + ")")
     c.close()
-    return jsonify({"ok": True, "batch_id": bid, "created": len(rows), **extra})
+    return jsonify({"ok": True, "batch_id": bid, **extra})
 
 
 # ---------------- campaigns ----------------
@@ -1464,13 +1576,31 @@ def api_campaigns():
     for cam in c.execute("SELECT * FROM campaigns ORDER BY id DESC").fetchall():
         st = {r["status"]: r["n"] for r in c.execute(
             "SELECT e.status, COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
-            "WHERE b.campaign_id=? GROUP BY e.status", (cam["id"],))}
+            "WHERE b.campaign_id=? AND e.status != 'deleted' GROUP BY e.status", (cam["id"],))}
+        sent = st.get("sent", 0)
+        replied = c.execute(
+            "SELECT COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
+            "WHERE b.campaign_id=? AND e.status='sent' AND e.replied_at IS NOT NULL AND e.replied_at!=''",
+            (cam["id"],)).fetchone()["n"]
+        bounced = c.execute(
+            "SELECT COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
+            "WHERE b.campaign_id=? AND e.status='sent' AND e.bounced_at IS NOT NULL AND e.bounced_at!=''",
+            (cam["id"],)).fetchone()["n"]
+        n_sheets = c.execute("SELECT COUNT(*) n FROM sheets WHERE campaign_id=?", (cam["id"],)).fetchone()["n"]
+        n_contacts = c.execute(
+            "SELECT COUNT(*) n FROM contacts ct JOIN sheets s ON ct.sheet_id=s.id WHERE s.campaign_id=?",
+            (cam["id"],)).fetchone()["n"]
+        if n_sheets == 0:
+            n_contacts = c.execute(
+                "SELECT COUNT(DISTINCT e.contact_id) n FROM emails e JOIN batches b ON e.batch_id=b.id "
+                "WHERE b.campaign_id=? AND e.status != 'deleted' AND e.contact_id > 0",
+                (cam["id"],)).fetchone()["n"]
         out.append({**dict(cam), "status_counts": st, "n_emails": sum(st.values()),
+                    "n_sent": sent, "n_replied": replied, "n_bounced": bounced,
+                    "rate": round(100.0 * replied / sent) if sent else 0,
                     "n_batches": c.execute("SELECT COUNT(*) n FROM batches WHERE campaign_id=?", (cam["id"],)).fetchone()["n"],
-                    "n_sheets": c.execute("SELECT COUNT(*) n FROM sheets WHERE campaign_id=?", (cam["id"],)).fetchone()["n"],
-                    "n_contacts": c.execute(
-                        "SELECT COUNT(*) n FROM contacts ct JOIN sheets s ON ct.sheet_id=s.id WHERE s.campaign_id=?",
-                        (cam["id"],)).fetchone()["n"],
+                    "n_sheets": n_sheets,
+                    "n_contacts": n_contacts,
                     "last": c.execute("SELECT MAX(created_at) t FROM batches WHERE campaign_id=?", (cam["id"],)).fetchone()["t"]})
     c.close()
     return jsonify({"ok": True, "campaigns": out})
@@ -3183,14 +3313,6 @@ def api_batch_reminders(bid):
     return jsonify({"ok": True})
 
 
-# ---------------- outreach reports ----------------
-
-@app.route("/reports")
-@login_required
-def page_reports():
-    return redirect("/campaigns")
-
-
 MEMBER_EXPR = "COALESCE(NULLIF(b.created_by,''), NULLIF(cam.created_by,''), 'team')"
 
 
@@ -3558,9 +3680,15 @@ def api_home():
                             (cam["id"],)).fetchone()["n"]
         sent = st.get("sent", 0)
         total = sum(st.values())
+        n_sheets = c.execute("SELECT COUNT(*) n FROM sheets WHERE campaign_id=?", (cam["id"],)).fetchone()["n"]
         contacts = c.execute(
             "SELECT COUNT(*) n FROM contacts ct JOIN sheets s ON ct.sheet_id=s.id WHERE s.campaign_id=?",
             (cam["id"],)).fetchone()["n"]
+        if n_sheets == 0:
+            contacts = c.execute(
+                "SELECT COUNT(DISTINCT e.contact_id) n FROM emails e JOIN batches b ON e.batch_id=b.id "
+                "WHERE b.campaign_id=? AND e.status != 'deleted' AND e.contact_id > 0",
+                (cam["id"],)).fetchone()["n"]
         cams.append({"id": cam["id"], "name": cam["name"], "description": cam["description"],
                      "n_emails": total, "n_contacts": contacts, "sent": sent,
                      "replied": replied,

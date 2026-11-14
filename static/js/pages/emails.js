@@ -8,7 +8,7 @@ import {
   holdToConfirm, statusBadge, badge, errorCard, emptyState, withLoading,
 } from "/static/js/core/ui.js";
 import { STATUS, MSG, plural, statusOf, bounceReason } from "/static/js/core/copy.js";
-import { fmtInt, fmtDayTime, relTime, upcomingWhen, fmtLong, toBackend } from "/static/js/core/format.js";
+import { fmtInt, fmtDayTime, relTime, upcomingWhen, fmtLong, toBackend, localToUrl } from "/static/js/core/format.js";
 import { openTimePicker } from "/static/js/components/timepicker.js";
 import { openModeCard } from "/static/js/core/shell.js";
 
@@ -741,7 +741,7 @@ export async function openEmailDrawer(seedRow, ctx) {
   // the email (always white)
   body.append(el("div", { class: "ema-panel" },
     el("div", { class: "ema-subject" }, full.subject || "(no subject)"),
-    el("iframe", { class: "ema-frame", sandbox: "", title: "Email preview", srcdoc: "<!doctype html><meta charset=utf-8><body style='font:14px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;color:#1f2430;margin:0;padding:16px'>" + (full.body || "") + "</body>"})));
+    el("iframe", { class: "ema-frame", sandbox: "", title: "Email preview", srcdoc: "<!doctype html><meta charset=utf-8><body style='font:14px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;color:#1f2430;margin:0;padding:16px'>" + localToUrl(full.body || "") + "</body>"})));
   if (batch && batch.attachments) {
     try {
       const names = JSON.parse(batch.attachments || "[]");

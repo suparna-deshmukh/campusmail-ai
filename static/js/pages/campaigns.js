@@ -30,8 +30,31 @@ function filtered() {
   return list;
 }
 
+function pendingSend() {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith("cm_send_")) continue;
+      const st = JSON.parse(localStorage.getItem(k) || "null");
+      if (st && Date.now() - (st.saved_at || 0) < 7 * 86400e3) return { k, cid: k.slice(8), st };
+    }
+  } catch { /* private mode */ }
+  return null;
+}
+
 function render() {
   const list = filtered();
+  const old = document.getElementById("send-continue");
+  if (old) old.remove();
+  const ps = pendingSend();
+  if (ps) {
+    const b = el("div", { id: "send-continue", class: "banner banner-info", style: "margin-bottom:16px" },
+      icon("send", "i i-16"),
+      el("span", {}, "You started a send and didn't finish it. "),
+      el("a", { class: "btn btn-primary btn-sm", href: "/send?campaign=" + (ps.cid || "0") }, "Continue"),
+      el("button", { class: "btn btn-ghost btn-sm", onclick: () => { try { localStorage.removeItem(ps.k); } catch { /* ignore */ } render(); } }, "Discard"));
+    $wrap.parentElement.prepend(b);
+  }
   $rows.innerHTML = "";
   const counts = { all: campaigns.length, active: 0, finished: 0, draft: 0 };
   for (const c of campaigns) counts[statusOf(c)]++;
@@ -61,7 +84,7 @@ function render() {
   $empty.style.display = "none";
   for (const cm of list) {
     const st = cm.status_counts || {};
-    const sent = st.sent || 0, replied = st.replied || 0;
+    const sent = cm.n_sent || st.sent || 0, replied = cm.n_replied || 0;
     const tr = el("tr", { onclick: (e) => { if (!e.target.closest("button")) location.href = "/campaigns/" + cm.id; } },
       el("td", {},
         el("a", { class: "cell-main", href: "/campaigns/" + cm.id, style: "color:inherit" }, cm.name),
@@ -70,7 +93,7 @@ function render() {
       el("td", { class: "num camp-hide-m" }, fmtInt(cm.n_contacts)),
       el("td", { class: "num camp-hide-m" }, fmtInt(sent)),
       el("td", { class: "num camp-hide-m" }, fmtInt(replied)),
-      el("td", { class: "num camp-hide-m" }, fmtPct(sent ? 100 * replied / sent : 0)),
+      el("td", { class: "num camp-hide-m" }, fmtPct(cm.rate != null ? cm.rate : (sent ? 100 * replied / sent : 0))),
       el("td", { class: "cell-sub camp-hide-m" }, cm.last ? relTime(cm.last) : "—"),
       el("td", { class: "row-kebab", style: "white-space:nowrap" },
         el("a", { class: "btn btn-sm btn-ghost row-action camp-row-send", href: "/campaigns/" + cm.id + "/send" }, "Send emails"),

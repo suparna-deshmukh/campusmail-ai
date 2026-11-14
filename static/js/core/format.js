@@ -2,8 +2,13 @@
 
 const IN = { hour12: false };
 
+// Rewrite local: image refs (signature etc.) to the /local_img route for previews
+export function localToUrl(body) {
+  return String(body ?? "").replace(/src=(["'])local:([A-Za-z0-9._\-]+)\1/g, "src=$1/local_img/$2$1");
+}
+
 export function fmtInt(n) {
-  return Math.round(Number(n) || 0).toLocaleString("en-IN");
+  return String(Math.round(Number(n) || 0));
 }
 
 export function fmtPct(n) {

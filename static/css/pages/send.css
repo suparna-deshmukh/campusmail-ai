@@ -77,3 +77,15 @@
   margin-bottom: var(--sp-4);
 }
 .countdown .n { font-variant-numeric: tabular-nums; }
+
+/* Step 2 preview paper (white = the real email) */
+.preview-paper {
+  width: 100%;
+  min-height: 460px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: #fff;
+  display: block;
+}
+.progress-item.err .p-ico { color: var(--danger); }
+.progress-item.err { color: var(--danger); }

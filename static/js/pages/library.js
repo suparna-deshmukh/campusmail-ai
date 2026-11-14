@@ -5,7 +5,7 @@ import {
   errorCard, emptyState,
 } from "/static/js/core/ui.js";
 import { MSG, plural } from "/static/js/core/copy.js";
-import { fmtInt, fmtDay, relTime, initials, avatarColor } from "/static/js/core/format.js";
+import { fmtInt, fmtDay, relTime, initials, avatarColor, localToUrl } from "/static/js/core/format.js";
 
 const $ = (id) => document.getElementById(id);
 const view = $("lib-view");
@@ -183,7 +183,7 @@ function observeThumbs(root) {
       io.unobserve(th);
       const tid = th.dataset.tid;
       api("/api/templates/" + tid + "/preview").then((d) => {
-        const doc = "<!DOCTYPE html><html><head><style>body{margin:0;padding:28px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0F1629;line-height:1.55}img{max-width:100%}</style></head><body>" + (d.body || "") + "</body></html>";
+        const doc = "<!DOCTYPE html><html><head><style>body{margin:0;padding:28px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0F1629;line-height:1.55}img{max-width:100%}</style></head><body>" + localToUrl(d.body || "") + "</body></html>";
         const f = document.createElement("iframe");
         f.setAttribute("srcdoc", doc);
         f.setAttribute("title", "Template thumbnail");

@@ -7,12 +7,25 @@ import { onSeq, onKey, initKeys, shortcutList } from "./keys.js";
 const state = { data: null, ai_on: false, me: null, safe_mode: true, offline: false };
 window.cm = { state };
 
+/* ---------------- Menu placement (flip near viewport edges) ---------------- */
+function placeMenu(menuEl, anchorEl, gap = 6) {
+  const r = anchorEl.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const mw = menuEl.offsetWidth, mh = menuEl.offsetHeight;
+  const openUp = (r.bottom + gap + mh > vh - 8) && (r.top - gap - mh > 8);
+  const top = openUp ? r.top - gap - mh : r.bottom + gap;
+  const left = Math.min(Math.max(8, r.right - mw), Math.max(8, vw - mw - 8));
+  menuEl.style.top = (top + window.scrollY) + "px";
+  menuEl.style.left = (left + window.scrollX) + "px";
+}
+
 /* ---------------- Theme ---------------- */
 function applyTheme(t) {
   const dark = t === "dark" || (t === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
 }
-function themeNow() { return localStorage.getItem("cm_theme") || "auto"; }
+const _urlTheme = new URLSearchParams(location.search).get("theme");
+function themeNow() { return _urlTheme || localStorage.getItem("cm_theme") || "auto"; }
 document.documentElement.dataset.theme = themeNow() === "light" ? "light" : themeNow() === "dark" ? "dark" : (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 if (themeNow() === "auto") matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => applyTheme("auto"));
 
@@ -111,9 +124,7 @@ export function openModeCard() {
     if (state.safe_mode) confirmLiveMode().then((on) => { if (on) setSafeMode(false); });
   });
   document.body.append(m);
-  const r = card.getBoundingClientRect();
-  m.style.top = (r.bottom + 8 + window.scrollY) + "px";
-  m.style.left = (r.left + window.scrollX) + "px";
+  placeMenu(m, card, 8);
   const kill = (e) => { if (!m.contains(e.target) && e.target !== card) { m.remove(); document.removeEventListener("mousedown", kill, true); } };
   setTimeout(() => document.addEventListener("mousedown", kill, true), 0);
 }
@@ -187,9 +198,7 @@ function openSystemStatus() {
       el("a", { href: "/settings/advanced", style: "margin-left:auto;font-size:12px;font-weight:650" }, "Fix it")));
   }
   document.body.append(m);
-  const r = btn.getBoundingClientRect();
-  m.style.top = (r.bottom + 6 + window.scrollY) + "px";
-  m.style.left = Math.max(8, r.right - m.offsetWidth + window.scrollX) + "px";
+  placeMenu(m, btn, 6);
   const kill = (e) => { if (!m.contains(e.target) && e.target !== btn) { m.remove(); document.removeEventListener("mousedown", kill, true); } };
   setTimeout(() => document.addEventListener("mousedown", kill, true), 0);
 }
@@ -222,9 +231,7 @@ function openUserMenu(anchor) {
     fetch("/logout", { method: "POST" }).then(() => { location.href = "/login"; });
   } }, icon("log-out", "i i-16"), "Sign out"));
   document.body.append(m);
-  const r = anchor.getBoundingClientRect();
-  m.style.top = (r.bottom + 6 + window.scrollY) + "px";
-  m.style.left = Math.max(8, r.right - m.offsetWidth + window.scrollX) + "px";
+  placeMenu(m, anchor, 6);
   const kill = (e) => { if (!m.contains(e.target) && e.target !== anchor) { m.remove(); document.removeEventListener("mousedown", kill, true); } };
   setTimeout(() => document.addEventListener("mousedown", kill, true), 0);
 }
@@ -295,22 +302,87 @@ export function openPalette(initial = "") {
 }
 
 /* ---------------- Init ---------------- */
-export function shortcutsModal() {
-  const rows = shortcutList([
-    ["G then C", "Go to Campaigns"],
-    ["G then R", "Go to Replies"],
-    ["G then H", "Go to Home"],
-    ["N", "New send"],
-    ["/", "Search this page"],
-  ]);
-  return modal({
-    title: "Keyboard shortcuts",
-    sub: "A few keys that make this go faster.",
-    body: el("div", { style: "display:flex;flex-direction:column;gap:10px" },
-      ...rows.map(([keys, what]) => el("div", { style: "display:flex;align-items:center;gap:14px" },
-        el("span", { class: "kbd" }, keys),
-        el("span", { style: "font-size:13.5px" }, what)))),
+const HELP_STEPS = [
+  { t: "Connect your email",
+    d: "Sign in with the Gmail that will send. The step-by-step guide walks you through it.",
+    link: ["Open the guide", "/settings/gmail"] },
+  { t: "Create a campaign",
+    d: 'One campaign is one outreach effort - e.g. Summer 2027 recruiters, or Diwali wishes.',
+    link: ["New campaign", "/campaigns?new=1"] },
+  { t: "Add your list",
+    d: "Upload a CSV or Excel of recruiters, or reuse a list you already have in your Library.",
+    link: ["Open Library", "/library?tab=lists"] },
+  { t: "Pick a template and check it",
+    d: "Each person's details are filled in automatically. Send yourself a test before anyone else does.",
+    link: ["See templates", "/library?tab=templates"] },
+  { t: "Send your way",
+    d: "Save as drafts (safest), schedule for a time, or send now. You stay in control of every email.",
+    link: ["Start sending", "/send"] },
+];
+
+export function helpModal(tab = "how") {
+  const body = el("div", { class: "help-body" });
+  const seg = el("div", { class: "seg", role: "tablist", "aria-label": "Help sections" },
+    ...[["how", "How it works"], ["keys", "Shortcuts"], ["help", "Get help"]].map(([id, label]) =>
+      el("button", { class: "seg-item", role: "tab", "data-tab": id, type: "button" }, label)));
+  const show = (id) => {
+    seg.querySelectorAll(".seg-item").forEach((b) => b.classList.toggle("is-active", b.dataset.tab === id));
+    body.innerHTML = "";
+    if (id === "how") {
+      body.append(el("p", { class: "help-lede" },
+        "CampusMail turns one template and one contact list into personalised emails for every recruiter - and keeps track of replies and bounces."));
+      for (let i = 0; i < HELP_STEPS.length; i++) {
+        const st = HELP_STEPS[i];
+        const row = el("div", { class: "help-step" },
+          el("div", { class: "help-step-num" }, String(i + 1)),
+          el("div", { style: "min-width:0;flex:1" },
+            el("div", { class: "help-step-t" }, st.t),
+            el("div", { class: "help-step-d" }, st.d)));
+        if (st.link) row.append(el("a", { class: "btn btn-ghost btn-sm", href: st.link[1] }, st.link[0]));
+        body.append(row);
+      }
+    } else if (id === "keys") {
+      const rows = shortcutList([
+        ["G then C", "Go to Campaigns"],
+        ["G then R", "Go to Replies"],
+        ["G then H", "Go to Home"],
+        ["N", "New send"],
+        ["/", "Search or jump to..."],
+        ["?", "Open this help"],
+      ]);
+      body.append(el("p", { class: "help-lede" }, "A few keys that make this go faster."));
+      body.append(el("div", { class: "help-keys" },
+        ...rows.map(([keys, what]) => el("div", { class: "help-key-row" },
+          el("span", { class: "kbd" }, keys),
+          el("span", { style: "font-size:13.5px" }, what)))));
+    } else {
+      const card1 = el("div", { class: "help-help-card" },
+        el("div", { class: "help-help-ico" }, icon("sparkles", "i i-16")),
+        el("div", { style: "flex:1;min-width:0" },
+          el("div", { style: "font-weight:650" }, "Ask AI"),
+          el("div", { class: "t-caption t-faint" }, "Answers questions about your own data - campaigns, replies, bounced emails.")),
+        el("a", { class: "btn btn-ghost btn-sm", href: "/?ask=1" }, "Open Ask AI"));
+      const card2 = el("div", { class: "help-help-card" },
+        el("div", { class: "help-help-ico" }, icon("mail", "i i-16")),
+        el("div", { style: "flex:1;min-width:0" },
+          el("div", { style: "font-weight:650" }, "Still stuck?"),
+          el("div", { class: "t-caption t-faint" }, "Your team admin can look at the same workspace.")),
+        el("a", { class: "btn btn-ghost btn-sm", href: "mailto:f20230611@goa.bits-pilani.ac.in" }, "Email admin"));
+      body.append(card1, card2);
+    }
+  };
+  seg.addEventListener("click", (e) => {
+    const b = e.target.closest(".seg-item");
+    if (b) show(b.dataset.tab);
   });
+  show(tab);
+  const m = modal({
+    title: "Help",
+    sub: tab === "how" ? "The whole flow, in five small steps." : null,
+    wide: true,
+    body: el("div", {}, seg, body),
+  });
+  return m;
 }
 
 export function initShell() {
@@ -345,9 +417,10 @@ export function initShell() {
   onSeq("g r", () => location.href = "/replies");
   onSeq("g h", () => location.href = "/");
   onKey("n", () => location.href = "/send");
-  onKey("?", () => shortcutsModal());
+  onKey("?", () => helpModal("keys"));
   const helpBtn = document.getElementById("side-help");
-  if (helpBtn) helpBtn.addEventListener("click", () => shortcutsModal());
+  if (helpBtn) helpBtn.addEventListener("click", () => helpModal("how"));
+  if (new URLSearchParams(location.search).get("help") === "1") helpModal("how");
 
   // visibility-aware polling
   document.addEventListener("visibilitychange", () => {

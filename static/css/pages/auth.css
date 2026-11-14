@@ -1,0 +1,53 @@
+/* Auth screens (login + auth_done): centred card on the page background. */
+.auth-page {
+  min-height: 100dvh;
+  display: flex; align-items: center; justify-content: center;
+  padding: var(--sp-6);
+  background: var(--bg);
+}
+.auth-card {
+  width: 100%; max-width: 440px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-modal);
+  box-shadow: var(--shadow-lg);
+  padding: var(--sp-8) var(--sp-6);
+  display: flex; flex-direction: column; gap: var(--sp-5);
+}
+.auth-brand { display: flex; align-items: center; gap: 12px; }
+.auth-mark {
+  width: 38px; height: 38px; flex: none;
+  background: var(--primary-500);
+  border-radius: 11px;
+  display: grid; place-items: center;
+  color: #fff;
+}
+[data-theme="dark"] .auth-mark { background: var(--primary-700); }
+.auth-mark .i { width: 19px; height: 19px; }
+.auth-name { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+.auth-sub { font-size: 12.5px; color: var(--text-3); font-weight: 500; }
+.auth-state { display: flex; flex-direction: column; gap: var(--sp-4); }
+.auth-state h2 { font-size: 19px; font-weight: 650; }
+.auth-mut { color: var(--text-2); font-size: 13.5px; line-height: 1.55; }
+.auth-icon { font-size: 34px; line-height: 1; }
+.auth-icon .i { width: 40px; height: 40px; }
+.auth-icon.ok .i { color: var(--success); }
+.auth-icon.wait .i { color: var(--warn); }
+.auth-icon.no .i { color: var(--danger); }
+.auth-divider { display: flex; align-items: center; gap: 12px; color: var(--text-3); font-size: 12px; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--border-subtle, var(--border)); }
+.auth-google {
+  width: 100%; height: 44px;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-control);
+  font-size: 14px; font-weight: 600;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.auth-google:hover { border-color: var(--text-3); background: var(--surface-2); text-decoration: none; }
+[data-theme="dark"] .auth-google { background: transparent; }
+[data-theme="dark"] .auth-google:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.auth-foot { text-align: center; color: var(--text-3); font-size: 12px; margin-top: var(--sp-5); max-width: 46ch; }
+.auth-card .btn-primary { width: 100%; height: 44px; }
+.auth-card .banner { margin-bottom: 0; }

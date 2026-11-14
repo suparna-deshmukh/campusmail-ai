@@ -1,11 +1,22 @@
 <!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Gmail connected - CampusMail AI</title>
-<link rel="stylesheet" href="/static/css/legacy.css"></head>
-<body style="display:flex;align-items:center;justify-content:center;min-height:100vh">
-  <div class="card" style="max-width:420px;text-align:center;padding:36px">
-    <div style="font-size:40px">&#9989;</div>
-    <h2 style="margin:12px 0 6px">Gmail connected</h2>
-    <p class="muted">You can go back to CampusMail AI and continue.</p>
-    <a class="btn primary" href="/settings" style="margin-top:14px">Back to CampusMail AI</a>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gmail connected - CampusMail AI</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<script>
+  (function () {
+    var t = localStorage.getItem("cm_theme") || "auto";
+    var dark = t === "dark" || (t === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  })();
+</script>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="auth-page">
+  <div class="auth-card" style="max-width:420px;align-items:center;text-align:center">
+    <div class="auth-icon ok"><svg class="i" aria-hidden="true"><use href="/static/icons/sprite.svg#check-circle-2"/></svg></div>
+    <h2 style="font-size:19px;font-weight:650">Gmail connected</h2>
+    <p class="auth-mut">You can go back to CampusMail AI and continue.</p>
+    <a class="btn btn-primary" href="/settings">Back to CampusMail AI</a>
   </div>
 </body></html>

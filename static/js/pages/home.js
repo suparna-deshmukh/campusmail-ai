@@ -237,7 +237,7 @@ async function load() {
         el("p", { class: "home-greet-sub", id: "home-greet-sub" })),
       el("div", { class: "push", style: "flex:none" }, el("a", { class: "btn btn-primary", href: "/send" }, "Send emails"))),
     el("div", { id: "home-onboard" }),
-    el("div", { class: "stat-row mb-6 hide", id: "home-tiles", style: "margin-bottom:24px" }),
+    el("div", { class: "stat-row five mb-6 hide", id: "home-tiles", style: "margin-bottom:24px" }),
     el("div", { class: "grid-12 mb-6", id: "home-cards", style: "margin-bottom:32px" }),
     el("div", { id: "home-campaigns" }),
   );

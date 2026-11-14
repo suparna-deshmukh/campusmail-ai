@@ -33,7 +33,7 @@
 .camp-card .cc-head { display: flex; align-items: center; gap: var(--sp-2); }
 .camp-card .cc-name { font-size: 15px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .camp-card .cc-line { font-size: 12.5px; line-height: 16px; color: var(--text-2); }
-.camp-card .cc-figs { display: flex; gap: var(--sp-4); font-size: 12px; line-height: 16px; color: var(--text-3); font-weight: 500; }
+.camp-card .cc-figs { display: flex; gap: var(--sp-4); font-size: 12px; line-height: 16px; color: var(--text-2); font-weight: 500; }
 .camp-card .cc-figs b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
 .camp-card .progress { margin-top: 2px; }
 .camp-card .cc-foot { display: flex; align-items: center; gap: var(--sp-2); }

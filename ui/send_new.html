@@ -1,0 +1,12 @@
+{% extends "base_new.html" %}
+{% block title %}Send emails - CampusMail AI{% endblock %}
+{% block crumb %}<a href="/campaigns">Campaigns</a> <svg class="i i-14" aria-hidden="true"><use href="/static/icons/sprite.svg#chevron-right"/></svg> <span>Send emails</span>{% endblock %}
+{% block content %}
+<div class="page-in">
+  <div id="send-root"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.send_campaign_id = {{ cid or 'null' }};</script>
+<script type="module" src="{{ '/static/js/pages/send.js' ~ sv('js/pages/send.js') }}"></script>
+{% endblock %}
