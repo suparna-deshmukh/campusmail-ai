@@ -410,6 +410,9 @@ export function initShell() {
   if (scrim) scrim.addEventListener("click", () => document.body.classList.remove("side-open"));
   document.querySelectorAll(".side a").forEach((a) => a.addEventListener("click", () => document.body.classList.remove("side-open")));
 
+  // keycap: show Ctrl K on Windows/Linux (D-09)
+  const kbd = document.querySelector("#topbar-palette .kbd");
+  if (kbd && !/Mac|iPhone|iPad/i.test(navigator.userAgent)) kbd.textContent = "Ctrl K";
   // shortcuts
   initKeys();
   onKey("/", () => openPalette());

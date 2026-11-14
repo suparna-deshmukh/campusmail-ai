@@ -186,9 +186,13 @@ function header() {
     stepNames.map((n, i) => {
       const n1 = i + 1;
       const done = n1 < S.step, cur = n1 === S.step;
+      const future = !done && !cur;
       const b = el("button", {
         class: "send-step" + (cur ? " is-current" : "") + (done ? " is-done" : ""),
-        type: "button", disabled: String(!done),
+        type: "button",
+        "aria-current": cur ? "step" : null,
+        "aria-disabled": future ? "true" : null,
+        title: future ? "Finish this step first" : null,
         onclick: () => { if (done) { S.step = n1; render(); } },
       },
         el("span", { class: "send-step-n" }, done ? icon("check", "i i-14") : String(n1)), n);

@@ -57,7 +57,7 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
     style: "width:84px;display:none", "aria-label": "Minutes apart",
   });
   customIn.addEventListener("input", () => { customMin = Math.max(1, +customIn.value || 1); refresh(); });
-  const staggerSeg = el("div", { class: "seg", role: "group", "aria-label": "Space them out" },
+  const staggerSeg = el("div", { class: "seg seg-wrap", role: "group", "aria-label": "Space them out" },
     ...staggerOpts.map((o) => el("button", {
       class: "seg-item", onclick: () => {
         staggerMode = o.v;

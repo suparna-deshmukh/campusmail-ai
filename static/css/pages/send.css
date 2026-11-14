@@ -89,3 +89,107 @@
 }
 .progress-item.err .p-ico { color: var(--danger); }
 .progress-item.err { color: var(--danger); }
+
+/* ---- Stepper (D-02) ---- */
+.send-stepper { display: flex; gap: 8px; flex: none; }
+.send-step {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 30px; padding: 0 12px 0 8px;
+  border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-3);
+  font-size: 13px; font-weight: 550; cursor: default;
+  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.send-step-n {
+  width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--surface-2); color: var(--text-3);
+  font-size: 12px; font-weight: 650;
+}
+.send-step.is-current { border-color: var(--primary-500); background: var(--primary-50); color: var(--text); font-weight: 650; }
+.send-step.is-current .send-step-n { background: var(--primary-500); color: #fff; }
+.send-step.is-done { cursor: pointer; color: var(--text-2); border-color: var(--border-strong); }
+.send-step.is-done:hover { border-color: var(--primary-500); color: var(--text); }
+.send-step.is-done .send-step-n { background: var(--success-bg); color: var(--success); }
+
+/* ---- Campaign line (D-06 spacing) ---- */
+.send-cap { font-size: 13.5px; font-weight: 550; color: var(--text-2); margin-bottom: var(--sp-2); }
+.send-cap b { color: var(--text); font-weight: 650; }
+
+/* ---- List card chips (D-04) ---- */
+.opt-cols { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.mono-chip {
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 16px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0 6px; color: var(--text-2);
+}
+.opt-count {
+  font-size: 12px; font-weight: 550; color: var(--text-3);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+}
+
+/* ---- Contact tools row (D-03) ---- */
+.ct-tools { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.upload-drop {
+  display: flex; align-items: center; gap: 10px;
+  flex: 1; min-width: 240px; text-align: left;
+  border: 1.5px dashed var(--border-strong); border-radius: var(--r-card);
+  background: var(--surface); padding: 10px 14px;
+  font-size: 13px; font-weight: 550; color: var(--text-2);
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.upload-drop:hover { border-color: var(--primary-500); color: var(--text); }
+.upload-drop .i { flex: none; }
+.upload-drop .t-caption { margin-left: auto; text-align: right; }
+
+/* ---- Field-match note (D-05) ---- */
+.match-note {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  font-size: 13px; line-height: 19px;
+  padding: 10px 12px; border-radius: var(--r-card);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  margin-top: 10px;
+}
+.match-note .i { width: 16px; height: 16px; flex: none; }
+.match-note.ok { border-color: color-mix(in srgb, var(--success) 40%, var(--border)); background: var(--success-bg); }
+.match-note.ok .i { color: var(--success); }
+.match-note.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: var(--warn-bg); }
+.match-note.warn .i { color: var(--warn); }
+.match-disc { display: inline-flex; align-items: center; }
+.match-disc summary { cursor: pointer; font-weight: 550; color: var(--primary-600); }
+.match-disc summary::-webkit-details-marker { display: none; }
+
+/* ---- Template card thumbnail (D-22 partial: fixed crop + fade) ---- */
+.tpl-card { align-items: flex-start; }
+.tpl-thumb {
+  width: 150px; height: 108px; flex: none; position: relative;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  background: #fff;
+}
+.tpl-thumb iframe {
+  width: 280px; height: 202px; border: 0;
+  transform: scale(0.5357); transform-origin: top left; pointer-events: none;
+}
+.tpl-thumb::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 26px;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), #fff);
+}
+.tpl-edit { flex: none; margin-top: 2px; }
+
+/* ---- Contact picker modal (G1) ---- */
+.pick-wrap { display: flex; flex-direction: column; gap: 10px; }
+.pick-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pick-tools .input { flex: 1; min-width: 180px; }
+.pick-count { font-size: 12.5px; font-weight: 550; color: var(--text-3); white-space: nowrap; }
+.pick-list { max-height: 340px; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface); }
+.pick-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; cursor: pointer; }
+.pick-row:last-child { border-bottom: 0; }
+.pick-row:hover { background: var(--surface-2); }
+.pick-no { width: 36px; flex: none; font-family: var(--font-mono); font-size: 12px; color: var(--text-3); }
+.pick-co { width: 190px; flex: none; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-who { min-width: 0; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Time-picker segmented control: wrap instead of clip (D-25) ---- */
+.seg.seg-wrap { flex-wrap: wrap; }
