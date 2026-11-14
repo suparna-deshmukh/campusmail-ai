@@ -507,12 +507,26 @@ def all_settings():
     return out
 
 
-def log_activity(action, detail="", actor="user"):
+def log_activity(action, detail="", actor="user", throttle=0):
+    """Log an activity row. With throttle>0 (seconds), skip if the same action
+    was logged less than that long ago - keeps transient failures from spamming the feed."""
     c = conn()
+    if throttle:
+        last = c.execute("SELECT ts FROM activity WHERE action=? ORDER BY id DESC LIMIT 1",
+                         (action,)).fetchone()
+        if last and last["ts"]:
+            try:
+                from datetime import datetime
+                if (datetime.now() - datetime.fromisoformat(last["ts"])).total_seconds() < throttle:
+                    c.close()
+                    return False
+            except (ValueError, TypeError):
+                pass
     c.execute("INSERT INTO activity(ts, actor, action, detail) VALUES(?,?,?,?)",
               (now_iso(), actor, action, detail))
     c.commit()
     c.close()
+    return True
 
 
 def seed_if_empty(c):

@@ -187,7 +187,7 @@ function campaignCards(cams) {
     const emailed = Math.max(0, cam.n_emails - (cam.status_counts?.pending || 0));
     const pct = cam.n_contacts ? Math.min(100, Math.round(100 * emailed / cam.n_contacts)) : (emailed ? 100 : 0);
     const status = campaignStatus(cam);
-    const card = el("a", { class: "card card-flush card-clickable span-6", href: "/campaigns/" + cam.id, style: "padding:20px;display:block" },
+    const card = el("a", { class: "card card-flush card-clickable span-6 camp-card", href: "/campaigns/" + cam.id, style: "padding:20px" },
       el("div", { class: "cc-head" },
         el("span", { class: "cc-name" }, cam.name),
         el("span", { class: "push" }, campaignBadge(status))),
@@ -256,7 +256,7 @@ async function load() {
   else if (bouncedN) sub = `<b>${bouncedN}</b> ${bouncedN === 1 ? "email" : "emails"} ${bouncedN === 1 ? "bounced" : "bounced"}.`;
   else if (soon.length) sub = `<b>${fmtInt(soon[0].count)}</b> emails go out ${upcomingWhen(soon[0].when).toLowerCase()}.`;
   else sub = "You are all caught up.";
-  root.querySelector("#home-greet").textContent = greeting() + (meName ? ", " + meName : "") + ".";
+  root.querySelector("#home-greet").textContent = greeting() + (meName ? ", " + meName : "");
   root.querySelector("#home-greet-sub").innerHTML = sub;
 
   // onboarding (until all four rows done)

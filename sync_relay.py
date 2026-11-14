@@ -135,7 +135,7 @@ def _bump_fail(note=""):
         db.set_setting("sync_fail_count", str(n))
         db.set_setting("sync_last_attempt", str(int(time.time())))
         if note:
-            db.log_activity("sync_error", note[:200], "sync")
+            db.log_activity("sync_error", note[:200], "sync", throttle=1800)
     except Exception:
         pass
 
@@ -268,7 +268,7 @@ def sync_tick(force=False):
         # never propagate: a sync failure must not kill the host process/thread
         try:
             _bump_fail("sync_tick exception: %r" % (e,))
-            db.log_activity("sync_error", "tick failed: %r" % (e,), "sync")
+            db.log_activity("sync_error", "tick failed: %r" % (e,), "sync", throttle=1800)
         except Exception:
             pass
         SYNC_STATE["last_run"] = time.time()

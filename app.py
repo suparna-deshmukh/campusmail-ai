@@ -2307,7 +2307,7 @@ def bounces_tick():
         try:
             notices = gmail_client.list_bounce_notices(a["id"])
         except Exception as e:
-            db.log_activity("bounce_poll_error", str(e)[:200], "scheduler")
+            db.log_activity("bounce_poll_error", str(e)[:200], "scheduler", throttle=1800)
             continue
         if not notices:
             continue
@@ -2512,8 +2512,12 @@ def relay_status_pull():
         req = urllib.request.Request(url + "/api/status", headers={"x-relay-secret": secret})
         data = json.loads(urllib.request.urlopen(req, timeout=10).read().decode("utf-8"))
     except Exception as e:
-        db.log_activity("relay_pull_error", str(e)[:150], "scheduler")
+        SCHEDULER_STATE["relay_down"] = True
+        db.log_activity("relay_pull_error", str(e)[:150], "scheduler", throttle=1800)
         return
+    if SCHEDULER_STATE.get("relay_down"):
+        SCHEDULER_STATE["relay_down"] = False
+        db.log_activity("relay_recovered", "Cloud relay reachable again", "scheduler")
     c = db.conn()
     pending_logs = []
     for e in data.get("emails", []):
@@ -3177,6 +3181,88 @@ def api_ai_chat():
                                     "could not generate my summary. " + str(e)[:120], "events": events})
         return api_err("AI request failed: " + str(e)[:200], 502)
     return jsonify({"ok": True, "reply": reply, "events": events})
+
+
+# ---------------- Ask AI agent (confirmations + uploads) ----------------
+
+def _agent_parse_file(name, data):
+    """Classify an uploaded file for the agent: contact sheet (.csv/.xlsx) or template (.docx/.html/.txt)."""
+    import io
+
+    class _F:
+        def __init__(self, name, data):
+            self.filename = name
+            self._b = io.BytesIO(data)
+
+        def read(self, *a):
+            return self._b.read(*a)
+
+    n = name.lower()
+    if n.endswith((".csv", ".xlsx", ".tsv")):
+        try:
+            headers, rows = _parse_sheet_file(_F(name, data))
+        except ValueError as e:
+            return {"name": name, "kind": "bad", "error": str(e)}
+        if not rows:
+            return {"name": name, "kind": "bad", "error": "The file has no data rows."}
+        return {"name": name, "kind": "sheet", "headers": headers, "rows": rows, "filename": name}
+    if n.endswith(".docx"):
+        import tempfile, os
+        import docx_convert
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tf:
+            tf.write(data)
+            path = tf.name
+        try:
+            html = docx_convert.docx_to_html(path)
+        finally:
+            os.unlink(path)
+        if not html.strip():
+            return {"name": name, "kind": "bad", "error": "Could not read that .docx file."}
+        return {"name": name, "kind": "template", "html": html}
+    if n.endswith((".html", ".htm")):
+        return {"name": name, "kind": "template", "html": data.decode("utf-8", "replace")}
+    if n.endswith(".txt"):
+        import html as _html
+        paras = [p.strip() for p in data.decode("utf-8", "replace").splitlines() if p.strip()]
+        if not paras:
+            return {"name": name, "kind": "bad", "error": "The text file is empty."}
+        return {"name": name, "kind": "template",
+                "html": "".join("<p>" + _html.escape(x) + "</p>" for x in paras)}
+    return {"name": name, "kind": "bad",
+            "error": "Unsupported file type. Attach a .csv, .xlsx, .docx, .html or .txt file."}
+
+
+@app.route("/api/ai/agent", methods=["POST"])
+@login_required
+def api_ai_agent():
+    import base64
+    import agent as ag
+    if not ai_client.ai_configured():
+        return api_err("AI is not configured. Add an API key in Settings \u2192 AI features first.", 409)
+    d = request.get_json(force=True)
+    text = (d.get("text") or "").strip()
+    confirm = d.get("confirm")
+    answer = (d.get("answer") or "").strip() or None
+    if confirm is None and answer is None and not text and not d.get("file"):
+        return api_err("Nothing to do.")
+    file = None
+    f = d.get("file") or {}
+    if f.get("name") and f.get("data"):
+        try:
+            data = base64.b64decode(f["data"])
+        except Exception:
+            return api_err("Could not read the attached file.", 400)
+        if len(data) > 5 * 1024 * 1024:
+            return api_err("File too large (max 5 MB).", 400)
+        file = _agent_parse_file(f["name"], data)
+        if file.get("kind") == "bad":
+            return api_err(file.get("error") or "Could not read that file.", 400)
+    try:
+        out = ag.turn(request.user["id"], conv_id=d.get("conv_id"),
+                      text=text or None, file=file, confirm=confirm, answer=answer)
+    except Exception as e:
+        return api_err("AI request failed: " + str(e)[:200], 502)
+    return jsonify(out)
 
 
 # ---------------- signature ----------------
