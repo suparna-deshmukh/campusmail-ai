@@ -600,7 +600,7 @@ async function syncBootstrap(url: URL): Promise<Response> {
   const body = { ok: true, table, rows: out, relay_version: RELAY_VERSION };
   const bytes = JSON.stringify(body).length;
   await sql`INSERT INTO sync_metrics(instance_id, bootstrap_bytes, updated_at) VALUES (${instance}, ${bytes}, now())
-    ON CONFLICT (instance_id) DO UPDATE SET bootstrap_bytes = bootstrap_bytes + ${bytes}, updated_at = now()`;
+    ON CONFLICT (instance_id) DO UPDATE SET bootstrap_bytes = sync_metrics.bootstrap_bytes + ${bytes}, updated_at = now()`;
   return json(body);
 }
 
