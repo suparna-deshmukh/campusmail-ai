@@ -307,3 +307,247 @@ The activity log records all of it.
   big sync changes.
 - Design system: CSS tokens in `static/css/tokens.css` + `theme-dark.css`; component
   gallery at `/_kit` for dev reference.
+
+---
+
+## 10. User flows — complete catalog (planning input)
+
+This section enumerates **every user flow the platform supports or can be in**,
+per actor, with the surfaces involved and the states/edge cases each one must
+handle. Use it to build test/audit plans.
+
+**Actors:** `X` = not signed in · `N` = new, not yet on the team (pending) ·
+`M` = active team member (role `user`) · `A` = admin.
+
+**Conventions:** each flow lists *entry → steps → surfaces → states to verify
+(empty / loading / error / success) → edge cases*. "Safe mode" = live sending
+switch OFF in Settings. "Cap" = daily send limit.
+
+### A. Auth & access
+
+- **F-01 Google sign-in, first user** (`X→A`)
+  - Entry: `/login` → "Continue with Google". Steps: OAuth → Google profile read
+    → user created as **admin** (first account) → redirect to `/`.
+  - Edge: Google profile read fails (login page shows the error, no half-created
+    user); OAuth client not configured ("Google ready" false on login page).
+- **F-02 Google sign-in, unknown person** (`X→N`)
+  - User created with status `pending` → `bind_tenant` routes them to a **personal
+    workspace** (`data/workspaces/<hash>.db`): they are admin *of their own*
+    private instance (own campaigns/templates/lists), completely isolated from
+    the team's data. Login page may also show a "waiting for an invite / request"
+    state with an optional note.
+  - Edge: sign out/in must land back in the personal workspace; personal data must
+    never appear in the team DB or vice versa; deleting personal workspace data is
+    theirs only.
+- **F-03 Invited pending user joins the team** (`N→M`)
+  - Admin invites their email (Team → Members, F-52). On their next request they
+    are `active` and land on the **team** workspace with all shared data.
+  - Edge: invitation for an existing-but-pending email (status flip only); invite
+    typo emails; user logs in on two instances (laptop + cloud) after invite.
+- **F-04 Admin-email auto-promotion** (`N/M→A`)
+  - If a signing-in email equals Settings → Branding → "Admin email", the user is
+    auto-promoted to admin (logged as `user_promoted`).
+- **F-05 Session lifecycle** (all)
+  - Signed-in session cookie; expired/absent session on any `/api/*` → JSON error,
+    on any page → redirect to `/login`; logout clears the session.
+  - Edge: closing the drawer/palette mid-request; refreshing a deep link while
+    logged out then logging back in.
+- **F-06 Role-gated UI** (`M` vs `A`)
+  - Members: Team → Members tab hidden (API 403s too); Settings limited to
+    non-admin sections (branding/advanced are admin-only — the client redirects
+    members to the Gmail section).
+  - Edge: a demoted admin still holding the page must get 403 on the next admin
+    call, not a white screen.
+
+### B. Admin setup
+
+- **F-10 Connect a Gmail account** (`A`)
+  - Settings → Gmail: step-by-step guide (create OAuth client, paste client
+    secret, authorize) → OAuth popup/callback → account listed with status.
+  - States: client-secret-not-set (guide shown), mid-OAuth, success, error.
+- **F-11 Multiple accounts / removal** (`A`)
+  - Add a second account; "last used" tracking per user; remove an account
+    (in-flight/queued emails on it → defined behaviour: they error or stay).
+- **F-12 Configure AI** (`A`)
+  - Settings → AI features: toggle, API key (stored, never re-shown), model, base
+    URL, **Test connection** (OK/fail with reason). Applies to every AI feature
+    incl. Ask AI; without a key, AI surfaces show a "set a key" state, not errors.
+- **F-13 Live sending switch (safe mode)** (`A`)
+  - Home status card or Settings: ON/OFF. OFF = immediate sends blocked everywhere
+    (UI, agent, scheduler) with a clear message; drafts/schedule still allowed.
+- **F-14 Branding** (`A`)
+  - Team name (sidebar), login footer line, admin contact email — live effect on
+    login page + sidebar; invalid/empty values handled.
+- **F-15 Signature** (`A`)
+  - Editor with live preview; image upload (logo/photo) stored in file store;
+    signature append toggle per batch.
+- **F-16 Sending limits & behaviour** (`A`)
+  - Daily cap, default stagger (minutes), catch-up policy when the app was off at
+    send time: "send as soon as back" vs "mark missed".
+- **F-17 Member management** (`A`)
+  - Invite by email (+ optional name), change role admin/user, remove member.
+  - Edge: inviting self, removing self/last admin, re-inviting a removed user.
+
+### C. Campaign lifecycle
+
+- **F-20 Create campaign** (`M/A`)
+  - UI: Campaigns → New (name, description). Or Ask AI (F-61). Empty campaign =
+    no list, no template, zeroed stats, "No contact list yet" state.
+- **F-21 Import a contact list** (`M/A`)
+  - Upload CSV/XLSX (Library → lists or campaign audience): automatic column
+    detection (company / recruiter / HR email), row count, rows-without-email
+    warning, sheet linked to a campaign or not. Delete protection when a batch
+    uses the sheet.
+  - Edge: messy headers, duplicate emails, 1-row files, huge files, wrong file
+    type, .tsv, Unicode names.
+- **F-22 Create a template by upload** (`M/A`)
+  - .docx / .html / .txt upload → converted (docx→HTML) → editor. Fields auto-
+    detected from placeholders; images embedded via `local:` file references.
+- **F-23 Write/edit a template** (`M/A`)
+  - Editor: toolbar (bold/italic/underline/lists/undo/redo), insert fill-in field
+    (chips), insert image, white-paper preview (light **and** dark theme), preview
+    as a specific contact, autosave indicator, dirty state, AI "write it for me"
+    from a brief, AI polish.
+- **F-24 Template lifecycle** (`M/A`)
+  - List, rename, edit, **activate** (default for new sends; only one active),
+    delete (with sync tombstone), preview modal.
+- **F-25 Attach list + template to campaign** (`M/A`)
+  - Campaign hub: audience tab (add/remove lists, see real recipient count),
+    template tab (choose template).
+- **F-26 Send step 1 — audience** (`M/A`)
+  - Pick list(s) + optional serial range; recipient preview table; empty-list
+    guard ("No one to preview").
+- **F-27 Send step 2 — template & mapping** (`M/A`)
+  - Choose template; map each field → list column or literal value (AI can
+    suggest mapping); per-recipient previews rendered as real email paper.
+- **F-28 Send step 3 — action** (`M/A`)
+  - **Queue** (nothing sent) / **Drafts** (Gmail drafts) / **Schedule** (time 5
+    min ahead → 45 days out, stagger) / **Send now** (blocked by safe mode;
+    capped by daily cap; remainder behaviour defined). CC list (≤20, merge
+    fields allowed), signature append, batch attachments.
+  - Edge: cap reached mid-batch, no account selected, account token expired,
+    schedule in the past, schedule > 45 days, empty selection.
+- **F-29 Scheduled send execution** (system)
+  - Scheduler tick fires due batches; app was off → catch-up policy (F-16).
+  - Edge: laptop asleep at due time → cloud instance sends via relay (F-72);
+    double-send protection if both instances are awake.
+- **F-30 Follow-up reminders** (`M/A`)
+  - On a batch: remind non-repliers after N days, up to 5 rounds; reminder emails
+    tracked separately (`is_reminder`), cloud-originated reminders recorded.
+- **F-31 Campaign edit/delete** (`M/A`)
+  - Rename/description (UI + agent); delete removes batches + email records,
+    unlinks sheets, records tombstones (cloud deletes too). Gmail copies untouched
+    — stated in the confirmation.
+- **F-32 Cancel sends** (`M/A`)
+  - Cancel queued / drafted / scheduled emails individually or by campaign
+    (UI queue actions + agent `cancel_emails`); cancelled rows excluded from
+    stats; already-sent rows unaffected.
+
+### D. Daily operations
+
+- **F-40 Home triage** (`M/A`)
+  - "Needs your attention" items each with their action: unread replies → Replies;
+    bounced → fix list & re-send; failed sends → review; upcoming 24 h → open
+    batch; old drafts → review. Every count must reconcile with the pages they
+    link to.
+- **F-41 Replies inbox** (`M/A`)
+  - Filters (campaign, member, status, search), unread markers, empty state,
+    pagination/limit for large inboxes.
+- **F-42 Handle a reply** (`M/A`)
+  - Thread view (original + reply), AI-suggested reply (editable), mark handled,
+    manual "mark replied", link out to Gmail.
+- **F-43 Bounce handling** (`M/A`)
+  - Bounce list with SMTP reason per address; contact flagged `bounced`; fix the
+    address and re-send to fixed contacts only.
+  - Edge: Gmail bounce notifications missing (fallback: unknown reason shown,
+    not hidden).
+
+### E. Team & analytics
+
+- **F-50 Results analytics** (`M/A`)
+  - Per member / per campaign: total, sent, replied, bounced, reply rate;
+    filters: **person**, campaign, date range. Every member can view everyone's
+    numbers.
+- **F-51 Activity log** (`M/A`)
+  - Filterable feed of actions (sends, imports, sync, bounces, admin ops).
+    Transient errors must not spam it (throttled).
+- **F-52 Member management** (`A`)
+  - See F-17; plus pending-request view (who asked to join) and approve/deny.
+
+### F. Ask AI agent
+
+- **F-60 Data question** (`M/A`) — read tools run immediately, results shown as
+  step chips, answer must match DB exactly (verify numbers).
+- **F-61 Mutation, approved** — confirmation card → Yes → action executes,
+  result reported, activity logged, sync tombstone/push where applicable.
+- **F-62 Mutation, declined** — No → model told it was declined, adapts, never
+  silently retries the same action.
+- **F-63 Question with options** — option buttons (≤4) always plus free-text box.
+- **F-64 Question, free text** — e.g. "which email?" → typed answer continues the
+  same conversation.
+- **F-65 Attach contact list** — CSV/XLSX → described (columns, rows) → import
+  confirm (Yes/No) → sheet created, optionally campaign-linked.
+- **F-66 Attach template file** — DOCX/HTML/TXT → offered as new template (confirm)
+  → editable in Library afterwards.
+- **F-67 Multi-step request** — e.g. "create campaign, import this list, draft
+  the emails": sequential confirmations, each step verifiable, partial-failure
+  behaviour (step 3 fails → steps 1–2 stay, error explained).
+- **F-68 Test email to self** — real Gmail send (confirm card states recipient +
+  subject); used to verify signature/attachment/image rendering.
+- **F-69 Agent edge cases** — AI key missing (friendly pointer to Settings);
+  conversation > 2 h (expired → "ask again"); user types while a confirmation is
+  pending (must be rejected gracefully, not corrupted); drawer closed mid-turn;
+  provider error mid-loop (retry/backoff in client, error shown, state intact);
+  unsupported file type (clear message); > 5 MB file (rejected).
+
+### G. Cross-cutting & system flows
+
+- **F-70 Command palette (⌘K)** — all quick actions work from any page; typing
+  filters; Enter executes; Esc closes.
+- **F-71 Theme** — dark (default) / light; choice persists; **every** surface,
+  chart, modal, empty state and the white email-paper must be correct in both.
+- **F-72 Sync laptop ⇄ cloud** — create/edit/delete on either instance appears on
+  the other (rev-based, tombstones win); files via shared storage; relay
+  down → throttled error log + one "recovered" entry; schedule rides on whichever
+  instance is awake (no double send).
+- **F-73 Fresh-instance / empty states** — every page has a designed empty state
+  (no campaigns, no lists, no templates, no replies, no members, no activity);
+  first-run seeding behaviour documented and idempotent.
+- **F-74 Deep links** — campaign links, `?tab=` filters, `?ask=1` (opens Ask AI),
+  invite links; all survive logout → login.
+- **F-75 Help** — guide content matches current UI (steps, names, screenshots).
+- **F-76 Assets & caching** — all static assets versioned (`?v=`); a code deploy
+  must not leave a browser on stale CSS/JS (per-file versioning in the CSS bundle).
+- **F-77 Files & storage** — signature image, template images, batch attachments:
+  upload, reference in email (`local:`), resolve at send time, delete/cleanup.
+- **F-78 Errors & 404s** — unknown routes, API 4xx/5xx surfaces (toast or inline),
+  network down mid-action (no partial writes, retry affordance).
+- **F-79 Data export / danger zone** (`A`) — export data, reset flows with
+  explicit confirmations.
+
+### Actor × surface access matrix
+
+| Surface | X | N (personal) | M | A |
+| --- | --- | --- | --- | --- |
+| Login / request to join | ✓ | ✓ | ✓ | ✓ |
+| Personal workspace (own team) | — | ✓ (full, as admin) | — | — |
+| Home / Campaigns / Send / Replies / Library | — | ✓ (own data) | ✓ (team data) | ✓ |
+| Ask AI agent | — | ✓ | ✓ | ✓ |
+| Team → Results / Activity | — | ✓ | ✓ | ✓ |
+| Team → Members | — | ✓ | — | ✓ |
+| Settings (gmail, sending, signature, ai) | — | ✓ | ✓ | ✓ |
+| Settings (branding, advanced) | — | ✓ | — | ✓ |
+| Scheduler (send, replies, bounces, sync) | — | ✓ (own) | shared | shared |
+
+### Intentional behaviours (do not "fix")
+
+- Non-invited users see a **personal blank workspace** by design, not an error.
+- The template **editor/preview is white paper** even in dark mode (it represents
+  the real email the recipient gets).
+- Deleting campaigns/templates/sheets **never touches Gmail** (no `gmail.modify`
+  scope on purpose) — Gmail copies remain.
+- `users`, `settings`, `activity` are **not synced** between instances (per
+  instance); the cloud keeps its own copy of those.
+- Only **one white primary button per view**; in-card buttons are secondary.
+- Scheduled sends may fire from **either** instance (laptop or cloud) — that's how
+  "laptop asleep" works; guard against double-sends is the scheduled status flip.
