@@ -57,6 +57,18 @@ function renderShell(d) {
   const needs = (d.reply && (d.reply.needs_reply != null ? d.reply.needs_reply : d.reply.replied)) || 0;
   const b = document.getElementById("nav-replies-badge");
   if (b) { b.textContent = needs; b.classList.toggle("hot", needs > 0); b.style.display = needs ? "" : "none"; }
+  // sidebar user row (D-08): name + initials, never a bare ellipsis
+  const nameEl = document.getElementById("side-user-name");
+  const avEl = document.getElementById("side-avatar");
+  if (state.me && nameEl) {
+    const nm = state.me.name || state.me.email || "";
+    nameEl.textContent = nm;
+    nameEl.title = state.me.email || "";
+    if (avEl) {
+      avEl.textContent = initials(nm);
+      avEl.style.background = avatarColor(state.me.email || nm);
+    }
+  }
   // mode card
   renderModeCard();
   // system status
