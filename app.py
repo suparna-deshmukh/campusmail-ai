@@ -29,6 +29,9 @@ import db
 import docx_convert
 import filestore
 import gmail_client
+import services
+import cards as cards_mod
+import uuid
 
 BASE = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE / "uploads"
@@ -407,17 +410,18 @@ def admin_requests():
     u = db.get_user(int(d.get("user_id")))
     if not u:
         return api_err("User not found", 404)
-    if d.get("action") == "approve":
-        db.set_user_status(u["id"], "active")
-        log("request_approved", u["email"])
-    elif d.get("action") == "deny":
-        db.set_user_status(u["id"], "denied")
-        log("request_denied", u["email"])
-    elif d.get("action") == "revert":
-        db.set_user_status(u["id"], "pending")
-        log("request_reverted", u["email"])
-    else:
-        return api_err("Unknown action")
+    try:
+        action = d.get("action")
+        if action == "approve":
+            services.member_set_status(u["id"], "active", request.user)
+        elif action == "deny":
+            services.member_set_status(u["id"], "denied", request.user)
+        elif action == "revert":
+            services.member_set_status(u["id"], "pending", request.user)
+        else:
+            return api_err("Unknown action")
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -428,21 +432,21 @@ def admin_members():
     u = db.get_user(int(d.get("user_id")))
     if not u:
         return api_err("User not found", 404)
-    if d.get("action") == "role":
-        role = d.get("role")
-        if role not in ("admin", "user"):
-            return api_err("Bad role")
-        if u["id"] == request.user["id"]:
-            return api_err("You cannot change your own role.")
-        db.set_user_role(u["id"], role)
-        log("role_changed", u["email"] + " -> " + role)
-    elif d.get("action") == "remove":
-        if u["id"] == request.user["id"]:
-            return api_err("You cannot remove yourself.")
-        db.remove_user(u["id"])
-        log("member_removed", u["email"])
-    else:
-        return api_err("Unknown action")
+    try:
+        if d.get("action") == "role":
+            if d.get("role") not in ("admin", "user"):
+                return api_err("Bad role")
+            if u["id"] == request.user["id"]:
+                return api_err("You cannot change your own role.")
+            services.member_set_role(u["id"], d.get("role"), request.user)
+        elif d.get("action") == "remove":
+            if u["id"] == request.user["id"]:
+                return api_err("You cannot remove yourself.")
+            services.member_remove(u["id"], request.user)
+        else:
+            return api_err("Unknown action")
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -450,12 +454,11 @@ def admin_members():
 @admin_required
 def admin_invite():
     d = request.get_json(force=True)
-    email = (d.get("email") or "").strip().lower()
-    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
-        return api_err("Enter a valid email address.")
-    u, how = db.invite_member(email, (d.get("name") or "").strip())
-    log("invite", email + " (" + how + ")")
-    return jsonify({"ok": True, "email": email, "how": how})
+    try:
+        out = services.member_invite(d.get("email"), d.get("name") or "", request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify({"ok": True, "email": out["email"], "how": out["how"]})
 
 
 # ---------------- pages ----------------
@@ -750,8 +753,10 @@ def api_account_delete(aid):
         return api_err("Account not found", 404)
     if acc["owner_id"] != request.user["id"] and request.user["role"] != "admin":
         return api_err("Only the owner (or an admin) can remove this account.", 403)
-    db.delete_account(aid)
-    log("gmail_account_removed", "account " + str(aid))
+    try:
+        services.account_remove(aid, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -762,6 +767,7 @@ def api_account_delete(aid):
 def api_contacts():
     q = (request.args.get("q") or "").strip()
     status = request.args.get("status") or ""
+    sheet_id = request.args.get("sheet_id", type=int) or 0
     c = db.conn()
     sql = "SELECT * FROM contacts WHERE 1=1"
     args = []
@@ -771,6 +777,9 @@ def api_contacts():
     if status:
         sql += " AND status = ?"
         args.append(status)
+    if sheet_id:
+        sql += " AND sheet_id = ?"
+        args.append(sheet_id)
     sql += " ORDER BY CAST(COALESCE(NULLIF(serial,''),'0') AS INTEGER), id LIMIT 2000"
     rows = [dict(r) for r in c.execute(sql, args).fetchall()]
     total = c.execute("SELECT COUNT(*) n FROM contacts").fetchone()["n"]
@@ -878,19 +887,13 @@ def import_xlsx(c, path):
 @login_required
 def api_contact_update(cid):
     d = request.get_json(force=True)
-    c = db.conn()
-    sets, args = [], []
-    for k in ("serial", "company", "hr_name", "hr_email", "status", "notes"):
-        if k in d:
-            sets.append(k + " = ?")
-            args.append(d[k])
-    if not sets:
-        c.close()
+    fields = {k: d[k] for k in ("company", "hr_name", "hr_email", "status", "notes") if k in d}
+    if not fields:
         return api_err("Nothing to update.")
-    args += [cid]
-    c.execute("UPDATE contacts SET " + ", ".join(sets) + " WHERE id=?", args)
-    c.commit()
-    c.close()
+    try:
+        services.contact_update(cid, actor=request.user, **fields)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -1018,55 +1021,34 @@ def api_template_ai():
 @login_required
 def api_template_update(tid):
     d = request.get_json(force=True)
-    c = db.conn()
-    cur = c.execute("SELECT * FROM email_templates WHERE id=?", (tid,)).fetchone()
-    if not cur:
-        c.close()
-        return api_err("Template not found", 404)
-    sets, args = [], []
-    if "name" in d:
-        sets.append("name = ?")
-        args.append(d["name"])
-    if "subject" in d:
-        sets.append("subject = ?")
-        args.append(d["subject"])
-    if "body_html" in d:
-        sets.append("body_html = ?")
-        args.append(d["body_html"])
-    if "subject" in d or "body_html" in d:
-        sets.append("fields = ?")
-        args.append(json.dumps(all_fields(d.get("subject", cur["subject"]),
-                                        d.get("body_html", cur["body_html"]))))
-    if sets:
-        args.append(tid)
-        c.execute("UPDATE email_templates SET " + ", ".join(sets) + " WHERE id=?", args)
-        c.commit()
-    c.close()
+    try:
+        services.template_update(tid,
+                                  name=d.get("name") if "name" in d else None,
+                                  subject=d.get("subject") if "subject" in d else None,
+                                  body_html=d.get("body_html") if "body_html" in d else None,
+                                  actor=request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
 @app.route("/api/templates/<int:tid>/activate", methods=["POST"])
 @login_required
 def api_template_activate(tid):
-    c = db.conn()
-    c.execute("UPDATE email_templates SET is_active=0")
-    c.execute("UPDATE email_templates SET is_active=1 WHERE id=?", (tid,))
-    c.commit()
-    log("template_activate", "Template " + str(tid) + " set active")
-    c.close()
+    try:
+        services.template_activate(tid, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
 @app.route("/api/templates/<int:tid>/delete", methods=["POST"])
 @login_required
 def api_template_delete(tid):
-    c = db.conn()
-    c.execute("DELETE FROM email_templates WHERE id=?", (tid,))
-    c.commit()
-    import sync_relay
-    sync_relay.record_delete("email_templates", tid)
-    log("template_delete", "Template " + str(tid) + " deleted")
-    c.close()
+    try:
+        services.template_delete(tid, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -1220,36 +1202,21 @@ def api_template_create():
     kind = (d.get("kind") or "outreach").strip().lower()
     if kind not in ("outreach", "reminder"):
         kind = "outreach"
-    fields = all_fields(subject, body)
-    c = db.conn()
-    c.execute("INSERT INTO email_templates(name, type, kind, subject, body_html, fields, is_active, created_at, updated_at) "
-              "VALUES(?,?,?,?,?,?,0,?,?)",
-              (name, (d.get("type") or "html")[:20], kind, subject, body,
-               json.dumps(fields), db.now_iso(), db.now_iso()))
-    tid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
-    c.commit()
-    log("template_add", "Template '" + name + "' created")
-    c.close()
-    return jsonify({"ok": True, "id": tid, "fields": fields})
+    try:
+        out = services.template_create(name, subject, body, kind, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify({"ok": True, "id": out["id"], "fields": out["fields"]})
 
 
 @app.route("/api/sheets/<int:sid>", methods=["POST"])
 @login_required
 def api_sheet_rename(sid):
     d = request.get_json(force=True)
-    c = db.conn()
-    cur = c.execute("SELECT * FROM sheets WHERE id=?", (sid,)).fetchone()
-    if not cur:
-        c.close()
-        return api_err("List not found", 404)
-    name = (d.get("name") or "").strip()
-    if not name:
-        c.close()
-        return api_err("Give the list a name.")
-    c.execute("UPDATE sheets SET name=?, updated_at=? WHERE id=?", (name, db.now_iso(), sid))
-    c.commit()
-    log("sheet_update", "List renamed to '" + name + "'")
-    c.close()
+    try:
+        services.sheet_rename(sid, d.get("name"), request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -1257,20 +1224,10 @@ def api_sheet_rename(sid):
 @login_required
 def api_email_handled(eid):
     d = request.get_json(force=True)
-    c = db.conn()
-    r = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
-    if not r:
-        c.close()
-        return api_err("Email not found", 404)
-    if d.get("handled"):
-        c.execute("UPDATE emails SET handled_at=?, updated_at=? WHERE id=?", (db.now_iso(), db.now_iso(), eid))
-        verb = "Marked handled"
-    else:
-        c.execute("UPDATE emails SET handled_at=NULL, updated_at=? WHERE id=?", (db.now_iso(), eid))
-        verb = "Reopened"
-    c.commit()
-    log("handled", verb + " email " + str(eid))
-    c.close()
+    try:
+        services.email_handled(eid, bool(d.get("handled")), request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -1305,24 +1262,17 @@ def api_emails_test():
     except RuntimeError as e:
         return api_err(str(e), 409)
     subject, body = render_email(dict(tpl), _row_vals(r), mapping)
-    sig = db.get_setting("signature_html", "")
-    if d.get("append_signature") and sig:
-        body += "<p style='margin-top:14px'>" + sig + "</p>"
+    if d.get("append_signature"):
+        body = services.append_signature(body)
     to = request.user["email"]
-    safe = db.get_setting("safe_mode") == "1"
-    if safe:
-        try:
-            gmail_client.create_draft(account_id, to, "[Test] " + subject, body)
-        except Exception as e:
-            return api_err(str(e)[:200], 409)
-        log("test_email_draft", to)
-        return jsonify({"ok": True, "mode": "draft"})
     try:
-        gmail_client.send_with_retry(account_id, to, "[Test] " + subject, body)
+        out = services.test_email_send(account_id, to, subject, body, request.user,
+                                       template_id=tid, content_hash=services.template_content_hash(dict(tpl)))
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     except Exception as e:
         return api_err(str(e)[:200], 409)
-    log("test_email_sent", to)
-    return jsonify({"ok": True, "mode": "sent"})
+    return jsonify({"ok": True, "mode": out["mode"]})
 
 
 @app.route("/api/merge/suggest")
@@ -1349,6 +1299,7 @@ def api_merge_preview():
     mapping = d.get("mapping") or {}
     limit = int(d.get("limit") or 3)
     sheet_id = int(d.get("sheet_id") or 0)
+    contact_ids = [int(i) for i in (d.get("contact_ids") or []) if str(i).isdigit()]
     c = db.conn()
     tpl = c.execute("SELECT * FROM email_templates WHERE id=?", (tid,)).fetchone()
     sfrom, sto = d.get("serial_from"), d.get("serial_to")
@@ -1360,6 +1311,9 @@ def api_merge_preview():
     if sto:
         w += " AND CAST(COALESCE(NULLIF(serial,''),'0') AS INTEGER) <= ?"
         args.append(int(sto))
+    if contact_ids:
+        w += " AND id IN (%s)" % ",".join("?" * len(contact_ids))
+        args += contact_ids
     rows = c.execute("SELECT * FROM contacts WHERE 1=1" + w +
                      " ORDER BY CAST(COALESCE(NULLIF(serial,''),'0') AS INTEGER), id LIMIT ?",
                      args + [limit]).fetchall()
@@ -1387,150 +1341,11 @@ def api_merge_generate():
 
 
 def _run_merge(d):
-    tid = d.get("template_id")
-    mapping = d.get("mapping") or {}
-    name = (d.get("name") or "").strip() or "Batch " + datetime.now().strftime("%Y-%m-%d %H:%M")
-    account_id = int(d.get("account_id") or 0)
-    campaign_id = int(d.get("campaign_id") or 0)
-    sheet_id = int(d.get("sheet_id") or 0)
-    action = d.get("action") or "queue"
-    if action not in ("queue", "create", "draft", "schedule", "send"):
-        return api_err("Unknown action.")
     try:
-        cc_list = parse_cc(d.get("cc"))
-    except ValueError as e:
-        return api_err(str(e), 400)
-    if len(cc_list) > 20:
-        return api_err("Up to 20 CC addresses.")
-    sfrom, sto = d.get("serial_from"), d.get("serial_to")
-    if (sfrom or sto) and int(sfrom or 0) > int(sto or 999999):
-        return api_err("Serial range start is after its end.")
-    when, stagger = None, 0
-    if action == "schedule":
-        when_str = (d.get("at") or "").strip()
-        stagger = int(d.get("stagger") or 0)
-        try:
-            when = datetime.strptime(when_str, "%Y-%m-%d %H:%M").replace(tzinfo=datetime.now().astimezone().tzinfo)
-        except ValueError:
-            return api_err("Schedule time format must be YYYY-MM-DD HH:MM (local time).")
-        now = datetime.now().astimezone()
-        if when < now + timedelta(minutes=5):
-            return api_err("Schedule time must be at least 5 minutes in the future.")
-        if when > now + timedelta(days=45):
-            return api_err("Schedule up to 45 days ahead only.")
-    if action in ("draft", "schedule", "send"):
-        try:
-            _require_account(account_id, request.user)
-        except RuntimeError as e:
-            return api_err(str(e), 409)
-        if action == "send" and db.get_setting("safe_mode") == "1":
-            return api_err("Safe mode is ON - immediate sending is blocked. Pick Drafts or Schedule, or turn off Safe mode in Settings.", 409)
-    c = db.conn()
-    tpl = c.execute("SELECT * FROM email_templates WHERE id=?", (tid,)).fetchone()
-    if not tpl:
-        c.close()
-        return api_err("Template not found", 404)
-    w = " AND sheet_id=?" if sheet_id else ""
-    args = [sheet_id] if sheet_id else []
-    if sfrom:
-        w += " AND CAST(COALESCE(NULLIF(serial,''),'0') AS INTEGER) >= ?"
-        args.append(int(sfrom))
-    if sto:
-        w += " AND CAST(COALESCE(NULLIF(serial,''),'0') AS INTEGER) <= ?"
-        args.append(int(sto))
-    rows = c.execute("SELECT * FROM contacts WHERE 1=1" + w +
-                     " ORDER BY CAST(COALESCE(NULLIF(serial,''),'0') AS INTEGER), id", args).fetchall()
-    if not rows:
-        c.close()
-        return api_err("No contacts in that serial range.", 404)
-    append_sig = 1 if d.get("append_signature") else 0
-    sig = db.get_setting("signature_html", "") if append_sig else ""
-    cc_str = ", ".join(cc_list)
-    c.execute("INSERT INTO batches(name, template_id, mapping, account_id, created_at, append_signature, cc, campaign_id, sheet_id, created_by) "
-              "VALUES(?,?,?,?,?,?,?,?,?,?)",
-              (name, tid, json.dumps(mapping), account_id, db.now_iso(), append_sig, cc_str, campaign_id, sheet_id,
-               request.user["email"]))
-    bid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
-    eids = []
-    for r in rows:
-        subject, body = render_email(dict(tpl), _row_vals(r), mapping)
-        if sig:
-            body += "<p style='margin-top:14px'>" + sig + "</p>"
-        c.execute("INSERT INTO emails(batch_id, contact_id, serial, to_addr, subject, body_html, account_id, status) "
-                  "VALUES(?,?,?,?,?,?,?,'pending')",
-                  (bid, r["id"], r["serial"], r["hr_email"], subject, body, account_id))
-        eids.append(c.execute("SELECT last_insert_rowid() id").fetchone()["id"])
-    c.commit()
-    if action == "create":
-        log("batch_create", "Batch '" + name + "' - " + str(len(rows)) + " emails queued (nothing sent)")
-        c.close()
-        return jsonify({"ok": True, "batch_id": bid, "created": len(rows), "action": "create"})
-    extra = {"action": action}
-    extra.update(_batch_finalize(c, bid, eids, action, account_id, when, stagger))
-    save_last_account(request.user["id"], account_id) if account_id else None
-    log("batch_create", "Batch '" + name + "' - " + str(len(rows)) + " emails from template " + str(tid)
-        + " (action " + action + ", cc " + str(len(cc_list)) + ")")
-    c.close()
-    return jsonify({"ok": True, "batch_id": bid, "created": len(rows), **extra})
-
-
-def _batch_finalize(c, bid, eids, action, account_id, when, stagger):
-    """Run draft / schedule / send on a batch's pending emails.
-    c is the caller's open connection; commits as it goes."""
-    extra = {}
-    if action == "draft":
-        made = failed = 0
-        for eid in eids:
-            r = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
-            try:
-                batch = c.execute("SELECT * FROM batches WHERE id=?", (bid,)).fetchone()
-                attach = _load_attachments(dict(batch)) if batch else []
-                gmail_client.create_draft(account_id, r["to_addr"], r["subject"], r["body_html"],
-                                          attach or None, _cc_of(dict(batch)))
-                c.execute("UPDATE emails SET status='drafted', account_id=?, error='' WHERE id=?", (account_id, eid))
-                c.execute("UPDATE contacts SET status='drafted' WHERE id=?", (r["contact_id"],))
-                made += 1
-            except Exception as e:
-                c.execute("UPDATE emails SET status='error', error=? WHERE id=?", (str(e)[:300], eid))
-                failed += 1
-        c.commit()
-        extra.update(created_drafts=made, failed=failed)
-    elif action == "schedule":
-        for i, eid in enumerate(eids):
-            t = when + timedelta(minutes=stagger * i)
-            c.execute("UPDATE emails SET status='scheduled', account_id=?, scheduled_at=?, error='' WHERE id=?",
-                      (account_id, t.isoformat(), eid))
-            c.execute("UPDATE contacts SET status='scheduled' WHERE id=(SELECT contact_id FROM emails WHERE id=?)", (eid,))
-        c.commit()
-        for eid in eids:
-            _cloud_push_email(eid, "scheduled")
-        extra.update(scheduled=len(eids),
-                     last=(when + timedelta(minutes=stagger * max(0, len(eids) - 1))).isoformat())
-    elif action == "send":
-        cap = int(db.get_setting("max_sends_per_day") or 100)
-        sent_today = sends_today()
-        ok = fail = 0
-        for eid in eids:
-            if sent_today + ok >= cap:
-                break
-            r = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
-            try:
-                batch = c.execute("SELECT * FROM batches WHERE id=?", (bid,)).fetchone()
-                attach = _load_attachments(dict(batch)) if batch else []
-                res = gmail_client.send_with_retry(account_id, r["to_addr"], r["subject"], r["body_html"],
-                                                   attach or None, _cc_of(dict(batch)))
-                mid = res.get("message_id", "") if isinstance(res, dict) else ""
-                c.execute("UPDATE emails SET status='sent', account_id=?, sent_at=?, error='', message_id=? WHERE id=?",
-                          (account_id, db.now_iso(), mid, eid))
-                c.execute("UPDATE contacts SET status='sent' WHERE id=?", (r["contact_id"],))
-                ok += 1
-            except Exception as e:
-                c.execute("UPDATE emails SET status='error', error=? WHERE id=?", (str(e)[:300], eid))
-                fail += 1
-            time.sleep(0.4)
-        c.commit()
-        extra.update(sent=ok, failed=fail)
-    return extra
+        out = services.merge(d, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify(out)
 
 
 @app.route("/api/batches/<int:bid>/send-as", methods=["POST"])
@@ -1539,44 +1354,12 @@ def api_batch_send_as(bid):
     """Finalize a created batch: draft, schedule, or send now - used after
     attachments have been uploaded to the batch."""
     d = request.get_json(force=True)
-    action = d.get("action") or ""
-    if action not in ("draft", "schedule", "send"):
-        return api_err("Unknown action.")
-    when, stagger = None, 0
-    if action == "schedule":
-        when_str = (d.get("at") or "").strip()
-        stagger = int(d.get("stagger") or 0)
-        try:
-            when = datetime.strptime(when_str, "%Y-%m-%d %H:%M").replace(tzinfo=datetime.now().astimezone().tzinfo)
-        except ValueError:
-            return api_err("Schedule time format must be YYYY-MM-DD HH:MM (local time).")
-        now = datetime.now().astimezone()
-        if when < now + timedelta(minutes=5):
-            return api_err("Schedule time must be at least 5 minutes in the future.")
-        if when > now + timedelta(days=45):
-            return api_err("Schedule up to 45 days ahead only.")
-    account_id = int(d.get("account_id") or 0)
     try:
-        _require_account(account_id, request.user)
-    except RuntimeError as e:
-        return api_err(str(e), 409)
-    if action == "send" and db.get_setting("safe_mode") == "1":
-        return api_err("Safe mode is ON - immediate sending is blocked. Pick Drafts or Schedule, or turn off Safe mode in Settings.", 409)
-    c = db.conn()
-    b = c.execute("SELECT id FROM batches WHERE id=?", (bid,)).fetchone()
-    if not b:
-        c.close()
-        return api_err("Batch not found", 404)
-    eids = [r["id"] for r in c.execute(
-        "SELECT id FROM emails WHERE batch_id=? AND status='pending' ORDER BY id", (bid,))]
-    if not eids:
-        c.close()
-        return api_err("No queued emails left in this batch.", 409)
-    extra = {"action": action}
-    extra.update(_batch_finalize(c, bid, eids, action, account_id, when, stagger))
-    save_last_account(request.user["id"], account_id) if account_id else None
-    c.close()
-    return jsonify({"ok": True, "batch_id": bid, **extra})
+        out = services.batch_send_as(bid, d.get("action") or "", d.get("at") or "",
+                                     d.get("stagger") or 0, int(d.get("account_id") or 0), request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify(out)
 
 
 # ---------------- campaigns ----------------
@@ -1604,13 +1387,11 @@ def api_campaigns():
             "SELECT COUNT(*) n FROM contacts ct JOIN sheets s ON ct.sheet_id=s.id WHERE s.campaign_id=?",
             (cam["id"],)).fetchone()["n"]
         if n_sheets == 0:
-            n_contacts = c.execute(
-                "SELECT COUNT(DISTINCT e.contact_id) n FROM emails e JOIN batches b ON e.batch_id=b.id "
-                "WHERE b.campaign_id=? AND e.status != 'deleted' AND e.contact_id > 0",
-                (cam["id"],)).fetchone()["n"]
+            n_contacts = c.execute("SELECT COUNT(*) n FROM contacts").fetchone()["n"]
+        delivered = max(0, sent - bounced)
         out.append({**dict(cam), "status_counts": st, "n_emails": sum(st.values()),
-                    "n_sent": sent, "n_replied": replied, "n_bounced": bounced,
-                    "rate": round(100.0 * replied / sent) if sent else 0,
+                    "n_sent": sent, "n_replied": replied, "n_bounced": bounced, "n_delivered": delivered,
+                    "rate": round(100.0 * replied / delivered) if delivered else 0,
                     "n_batches": c.execute("SELECT COUNT(*) n FROM batches WHERE campaign_id=?", (cam["id"],)).fetchone()["n"],
                     "n_sheets": n_sheets,
                     "n_contacts": n_contacts,
@@ -1640,53 +1421,22 @@ def api_campaign_create():
 @login_required
 def api_campaign_update(cid):
     d = request.get_json(force=True)
-    c = db.conn()
-    cam = c.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
-    if not cam:
-        c.close()
-        return api_err("Campaign not found", 404)
-    sets, args = [], []
-    if "name" in d:
-        name = (d.get("name") or "").strip()
-        if not name:
-            c.close()
-            return api_err("Give the campaign a name.")
-        sets.append("name=?"); args.append(name)
-    if "description" in d:
-        sets.append("description=?"); args.append((d.get("description") or "").strip())
-    if sets:
-        args.append(cid)
-        c.execute("UPDATE campaigns SET " + ", ".join(sets) + " WHERE id=?", args)
-        c.commit()
-        log("campaign_update", name if "name" in d else str(cid))
-    c.close()
+    try:
+        services.campaign_update(cid, name=d.get("name") if "name" in d else None,
+                                 description=d.get("description") if "description" in d else None,
+                                 actor=request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
 @app.route("/api/campaigns/<int:cid>/delete", methods=["POST"])
 @login_required
 def api_campaign_delete(cid):
-    c = db.conn()
-    cam = c.execute("SELECT id, name FROM campaigns WHERE id=?", (cid,)).fetchone()
-    if not cam:
-        c.close()
-        return api_err("Campaign not found", 404)
-    batch_ids = [r["id"] for r in c.execute("SELECT id FROM batches WHERE campaign_id=?", (cid,))]
-    email_ids = [r["id"] for r in c.execute(
-        "SELECT id FROM emails WHERE batch_id IN (SELECT id FROM batches WHERE campaign_id=?)", (cid,))]
-    c.execute("DELETE FROM emails WHERE batch_id IN (SELECT id FROM batches WHERE campaign_id=?)", (cid,))
-    c.execute("DELETE FROM batches WHERE campaign_id=?", (cid,))
-    c.execute("UPDATE sheets SET campaign_id=0 WHERE campaign_id=?", (cid,))
-    c.execute("DELETE FROM campaigns WHERE id=?", (cid,))
-    c.commit()
-    import sync_relay
-    sync_relay.record_delete("campaigns", cid)
-    for bid in batch_ids:
-        sync_relay.record_delete("batches", bid)
-    for eid in email_ids:
-        sync_relay.record_delete("emails", eid)
-    log("campaign_delete", cam["name"])
-    c.close()
+    try:
+        services.campaign_delete(cid, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -1698,6 +1448,16 @@ def api_campaign_detail(cid):
     if not cam:
         c.close()
         return api_err("Campaign not found", 404)
+    # optional analytics view: filter everything to one sender (team member)
+    sender = (request.args.get("sender") or "").strip()
+    sender_uid = None
+    if sender:
+        su = c.execute("SELECT id FROM users WHERE email=?", (sender,)).fetchone()
+        if su:
+            sender_uid = su["id"]
+    send_by = "JOIN gmail_accounts ga ON e.account_id = ga.id" if sender_uid else ""
+    send_w = "AND ga.owner_id = ?" if sender_uid else ""
+    send_p = (sender_uid,) if sender_uid else ()
     st = {r["status"]: r["n"] for r in c.execute(
         "SELECT e.status, COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
         "WHERE b.campaign_id=? GROUP BY e.status", (cid,))}
@@ -1705,7 +1465,9 @@ def api_campaign_detail(cid):
     for b in c.execute("SELECT * FROM batches WHERE campaign_id=? ORDER BY id DESC", (cid,)).fetchall():
         bc = {r["status"]: r["n"] for r in c.execute(
             "SELECT status, COUNT(*) n FROM emails WHERE batch_id=? GROUP BY status", (b["id"],))}
-        batches.append({**dict(b), "counts": bc})
+        bn = c.execute("SELECT COUNT(*) n FROM emails WHERE batch_id=? "
+                       "AND bounced_at IS NOT NULL AND bounced_at != ''", (b["id"],)).fetchone()["n"]
+        batches.append({**dict(b), "counts": bc, "bounced": bn})
     sheets = [dict(r) for r in c.execute("SELECT * FROM sheets WHERE campaign_id=? ORDER BY id DESC", (cid,)).fetchall()]
     for sh in sheets:
         sh["headers"] = json.loads(sh["headers"] or "[]")
@@ -1715,12 +1477,9 @@ def api_campaign_detail(cid):
         (cid,)).fetchone()["n"]
     recipients = []
     if n_sheets == 0:
-        # no linked lists: audience = the distinct people actually emailed in
-        # this campaign (same fallback /api/home uses for its campaign cards)
-        n_contacts = c.execute(
-            "SELECT COUNT(DISTINCT e.contact_id) n FROM emails e JOIN batches b ON e.batch_id=b.id "
-            "WHERE b.campaign_id=? AND e.status != 'deleted' AND e.contact_id > 0",
-            (cid,)).fetchone()["n"]
+        # no linked lists: the audience is the whole contact list (the send
+        # flow defaults to "All contacts" for sheet-less campaigns)
+        n_contacts = c.execute("SELECT COUNT(*) n FROM contacts").fetchone()["n"]
         recipients = [dict(r) for r in c.execute("""
             SELECT co.id AS contact_id, co.company, co.hr_name, co.hr_email,
                    MAX(CASE WHEN e.bounced_at IS NOT NULL AND e.bounced_at != '' THEN 1 ELSE 0 END) AS bounced,
@@ -1746,31 +1505,43 @@ def api_campaign_detail(cid):
           SUM(CASE WHEN e.status='sent' AND COALESCE(e.replied_at,'')='' AND COALESCE(e.bounced_at,'')='' THEN 1 ELSE 0 END) AS n_sent_unreplied,
           MAX(CASE WHEN e.status='sent' AND COALESCE(e.bounced_at,'')='' THEN e.sent_at END) AS last_sent_at,
           MIN(CASE WHEN e.status='scheduled' THEN e.scheduled_at END) AS next_scheduled_at
-        FROM emails e JOIN batches b ON e.batch_id=b.id
-        WHERE b.campaign_id=? AND e.status != 'deleted'
-    """, (cid,)).fetchone()
+        FROM emails e JOIN batches b ON e.batch_id=b.id %s
+        WHERE b.campaign_id=? AND e.status != 'deleted' %s
+    """ % (send_by, send_w), (cid,) + send_p).fetchone()
     summary = dict(srow)
     for k in ("n_emails", "n_ready", "n_drafted", "n_scheduled", "n_sent",
               "n_replied", "n_bounced", "n_failed", "n_stopped", "n_sent_unreplied"):
         summary[k] = summary.get(k) or 0
     per_day = {r["d"]: r["n"] for r in c.execute("""
         SELECT date(e.sent_at) d, COUNT(*) n
-        FROM emails e JOIN batches b ON e.batch_id=b.id
-        WHERE b.campaign_id=? AND e.status='sent' AND e.sent_at IS NOT NULL AND e.sent_at != ''
-        GROUP BY d""", (cid,)).fetchall()}
+        FROM emails e JOIN batches b ON e.batch_id=b.id %s
+        WHERE b.campaign_id=? AND e.status='sent' AND e.sent_at IS NOT NULL AND e.sent_at != '' %s
+        GROUP BY d""" % (send_by, send_w), (cid,) + send_p).fetchall()}
     n_emailed = c.execute(
-        "SELECT COUNT(DISTINCT e.contact_id) n FROM emails e JOIN batches b ON e.batch_id=b.id "
-        "WHERE b.campaign_id=? AND e.status != 'deleted'", (cid,)).fetchone()["n"]
+        "SELECT COUNT(DISTINCT e.contact_id) n FROM emails e JOIN batches b ON e.batch_id=b.id %s "
+        "WHERE b.campaign_id=? AND e.status != 'deleted' %s" % (send_by, send_w),
+        (cid,) + send_p).fetchone()["n"]
     recent_replies = [dict(r) for r in c.execute("""
         SELECT e.id, e.to_addr, e.replied_at, co.company, co.hr_name
-        FROM emails e JOIN batches b ON e.batch_id=b.id LEFT JOIN contacts co ON co.id=e.contact_id
-        WHERE b.campaign_id=? AND e.replied_at IS NOT NULL AND e.replied_at != ''
-        ORDER BY e.replied_at DESC LIMIT 5""", (cid,)).fetchall()]
+        FROM emails e JOIN batches b ON e.batch_id=b.id %s LEFT JOIN contacts co ON co.id=e.contact_id
+        WHERE b.campaign_id=? AND e.replied_at IS NOT NULL AND e.replied_at != '' %s
+        ORDER BY e.replied_at DESC LIMIT 5""" % (send_by, send_w), (cid,) + send_p).fetchall()]
+    # who has sent in this campaign (for the per-sender analytics filter)
+    senders = [dict(r) for r in c.execute("""
+        SELECT COALESCE(u.email, 'unknown') AS email,
+               COALESCE(NULLIF(u.display_name, ''), COALESCE(u.email, 'Unknown')) AS name,
+               COUNT(e.id) AS n
+        FROM emails e JOIN batches b ON e.batch_id=b.id
+        LEFT JOIN gmail_accounts ga ON e.account_id=ga.id
+        LEFT JOIN users u ON u.id=ga.owner_id
+        WHERE b.campaign_id=? AND e.status != 'deleted'
+        GROUP BY COALESCE(u.email, 'unknown'), 2
+        ORDER BY n DESC""", (cid,)).fetchall()]
     c.close()
     return jsonify({"ok": True, "campaign": dict(cam), "status_counts": st,
                     "batches": batches, "sheets": sheets, "n_contacts": n_contacts, "recipients": recipients,
                     "summary": summary, "per_day": per_day, "recent_replies": recent_replies,
-                    "n_emailed": n_emailed})
+                    "n_emailed": n_emailed, "senders": senders, "sender": sender or None})
 
 
 # ---------------- sheets ----------------
@@ -1787,6 +1558,13 @@ def _parse_sheet_file(f):
         data = [r for r in data if any(x.strip() for x in r)]
         if data:
             raw_headers, raw_rows = data[0], data[1:]
+    elif fname.endswith(".tsv"):
+        import io
+        text = f.read().decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(text), delimiter="\t")
+        raw_headers = [(h or "").strip() for h in (reader.fieldnames or [])]
+        for row in reader:
+            raw_rows.append([(row.get(h) or "").strip() for h in raw_headers])
     elif fname.endswith((".csv", ".txt")):
         import io
         text = f.read().decode("utf-8-sig", errors="replace")
@@ -1795,7 +1573,7 @@ def _parse_sheet_file(f):
         for row in reader:
             raw_rows.append([(row.get(h) or "").strip() for h in raw_headers])
     else:
-        raise ValueError("Upload a .csv or .xlsx file.")
+        raise ValueError("Upload a .csv, .tsv or .xlsx file.")
     headers, seen = [], {}
     for h in raw_headers:
         base = re.sub(r"[^a-z0-9]+", "_", h.lower()).strip("_") or "col"
@@ -1828,28 +1606,68 @@ def api_sheet_upload():
     email_col = next((h for h in headers if re.search(r"email|mail", h, re.I)), "")
     comp_col = next((h for h in headers if re.search(r"company|organi[sz]ation|\\borg\\b|firm", h, re.I)), "")
     name_col = next((h for h in headers if h != comp_col and re.search(r"recruiter|hr|name|person|contact", h, re.I)), "")
-    c = db.conn()
-    c.execute("INSERT INTO sheets(name, campaign_id, filename, headers, rows, n_rows, created_by, created_at) "
-              "VALUES(?,?,?,?,?,?,?,?)",
-              (name, campaign_id, f.filename, json.dumps(headers), json.dumps(rows),
-               len(rows), request.user["email"], db.now_iso()))
-    sid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
-    no_email = 0
-    for i, r in enumerate(rows):
-        em = (r.get(email_col) or "").strip()
-        if not em:
-            no_email += 1
-        c.execute("INSERT INTO contacts(serial, company, hr_name, hr_email, status, sheet_id, extra, created_at) "
-                  "VALUES(?,?,?,?, 'new', ?, ?, ?)",
-                  (str(i + 1), (r.get(comp_col) or "").strip(), (r.get(name_col) or "").strip(), em,
-                   sid, json.dumps({"sheet": name, "row": r}), db.now_iso()))
-    c.commit()
-    log("sheet_upload", name + " - " + str(len(rows)) + " rows"
-        + (" (campaign " + str(campaign_id) + ")" if campaign_id else ""))
-    c.close()
-    return jsonify({"ok": True, "id": sid, "name": name, "headers": headers, "n_rows": len(rows),
+    try:
+        out = services.sheet_upload(name, campaign_id, headers, rows, f.filename, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify({"ok": True, "id": out["sheet_id"], "sheet_id": out["sheet_id"], "name": out["name"],
+                    "headers": headers, "n_rows": out["rows"],
                     "preview": rows[:3], "email_col": email_col, "name_col": name_col,
-                    "company_col": comp_col, "no_email": no_email})
+                    "company_col": comp_col, "no_email": out["no_email"],
+                    "duplicates": out["duplicates"]})
+
+
+def _parse_pasted_table(text):
+    """Pasted-from-Excel/Sheets text -> (headers, rows-of-dicts)."""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Paste a table first.")
+    lines = [ln for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n") if ln.strip()]
+    if len(lines) < 2:
+        raise ValueError("Paste a header row plus at least one data row.")
+    first = lines[0]
+    if "\t" in first:
+        grid = [ln.split("\t") for ln in lines]
+    elif "," in first and ";" not in first:
+        grid = [ln.split(",") for ln in lines]
+    elif ";" in first:
+        grid = [ln.split(";") for ln in lines]
+    else:
+        grid = [ln.split() for ln in lines]
+    width = max(len(r) for r in grid)
+    grid = [r + [""] * (width - len(r)) for r in grid]
+    headers = [(h or "").strip() for h in grid[0]]
+    data = [[(v or "").strip() for v in r] for r in grid[1:]]
+    data = [r for r in data if any(v for v in r)]
+    if not data:
+        raise ValueError("No data rows found in the pasted text.")
+    known = ("serial", "no", "company", "organi", "firm", "recruiter", "hr", "name", "email", "mail")
+    recognized = [h for h in headers if any(k in re.sub(r"[^a-z]", "", h.lower()) for k in known)]
+    if not recognized:
+        headers = (["serial", "company", "hr_name", "hr_email"] if width >= 4
+                   else ["company", "hr_name", "hr_email"] if width == 3
+                   else ["company", "hr_email"] if width == 2 else ["hr_email"])
+    rows = [dict(zip(headers, r)) for r in data]
+    return headers, rows
+
+
+@app.route("/api/sheets/paste", methods=["POST"])
+@login_required
+def api_sheet_paste():
+    d = request.get_json(force=True)
+    campaign_id = int(d.get("campaign_id") or 0)
+    name = (d.get("name") or "").strip() or "Pasted list - " + datetime.now().strftime("%Y-%m-%d %H:%M")
+    try:
+        headers, rows = _parse_pasted_table(d.get("text") or "")
+    except ValueError as e:
+        return api_err(str(e), 400)
+    try:
+        out = services.sheet_upload(name, campaign_id, headers, rows, "paste", request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify({"ok": True, "id": out["sheet_id"], "sheet_id": out["sheet_id"], "name": out["name"],
+                    "headers": headers, "n_rows": out["rows"], "no_email": out["no_email"],
+                    "duplicates": out["duplicates"]})
 
 
 @app.route("/api/sheets")
@@ -1881,17 +1699,10 @@ def api_sheet_get(sid):
 @app.route("/api/sheets/<int:sid>/delete", methods=["POST"])
 @login_required
 def api_sheet_delete(sid):
-    c = db.conn()
-    n = c.execute("SELECT COUNT(*) n FROM batches WHERE sheet_id=?", (sid,)).fetchone()["n"]
-    if n:
-        c.close()
-        return api_err("This sheet is used by " + str(n) + " batch(es), so it cannot be deleted.")
-    c.execute("DELETE FROM sheets WHERE id=?", (sid,))
-    c.commit()
-    import sync_relay
-    sync_relay.record_delete("sheets", sid)
-    log("sheet_delete", "Sheet " + str(sid) + " deleted")
-    c.close()
+    try:
+        services.sheet_delete(sid, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -2026,125 +1837,51 @@ def _cc_of(batch):
 @login_required
 def api_emails_draft():
     d = request.get_json(force=True)
-    account_id = int(d.get("account_id") or 0)
     ids = _selected_ids(d)
     if not ids:
         return api_err("Nothing selected.")
     try:
-        _require_account(account_id, request.user)
-    except RuntimeError as e:
-        return api_err(str(e), 409)
-    save_last_account(request.user["id"], account_id)
-    c = db.conn()
-    made = failed = 0
-    for eid in ids:
-        r = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
-        if not r or r["status"] == "deleted":
-            continue
-        try:
-            batch = c.execute("SELECT * FROM batches WHERE id=?", (r["batch_id"],)).fetchone()
-            attach = _load_attachments(dict(batch)) if batch else []
-            gmail_client.create_draft(account_id, r["to_addr"], r["subject"], r["body_html"],
-                                      attach or None, _cc_of(dict(batch)))
-            c.execute("UPDATE emails SET status='drafted', account_id=?, error='' WHERE id=?", (account_id, eid))
-            c.execute("UPDATE contacts SET status='drafted' WHERE id=?", (r["contact_id"],))
-            made += 1
-            _cloud_push_email(eid, "drafted")
-        except Exception as e:
-            c.execute("UPDATE emails SET status='error', error=? WHERE id=?", (str(e)[:300], eid))
-            failed += 1
-    c.commit()
-    log("drafts_create", str(made) + " drafts (" + str(failed) + " failed) from account " + str(account_id))
-    c.close()
-    return jsonify({"ok": True, "created": made, "failed": failed})
+        out = services.emails_draft(ids, int(d.get("account_id") or 0), request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify({"ok": True, **out})
 
 
 @app.route("/api/emails/schedule", methods=["POST"])
 @login_required
 def api_emails_schedule():
     d = request.get_json(force=True)
-    account_id = int(d.get("account_id") or 0)
     ids = _selected_ids(d)
     if not ids:
         return api_err("Nothing selected.")
     try:
-        _require_account(account_id, request.user)
-    except RuntimeError as e:
-        return api_err(str(e), 409)
-    when_str = (d.get("at") or "").strip()
-    stagger = int(d.get("stagger") or 0)
-    try:
-        when = datetime.strptime(when_str, "%Y-%m-%d %H:%M").replace(tzinfo=datetime.now().astimezone().tzinfo)
-    except ValueError:
-        return api_err("Time format must be YYYY-MM-DD HH:MM (local time).")
-    now = datetime.now().astimezone()
-    if when < now + timedelta(minutes=5):
-        return api_err("Schedule time must be at least 5 minutes in the future.")
-    if when > now + timedelta(days=45):
-        return api_err("Up to 45 days ahead only.")
-    save_last_account(request.user["id"], account_id)
-    c = db.conn()
-    n = 0
-    for i, eid in enumerate(ids):
-        t = when + timedelta(minutes=stagger * i)
-        c.execute("UPDATE emails SET status='scheduled', account_id=?, scheduled_at=?, error='' WHERE id=?",
-                  (account_id, t.isoformat(), eid))
-        c.execute("UPDATE contacts SET status='scheduled' WHERE id=(SELECT contact_id FROM emails WHERE id=?)", (eid,))
-        n += 1
-    c.commit()
-    for eid in ids:
-        _cloud_push_email(eid, "scheduled")
-    log("schedule", str(n) + " emails scheduled for " + when_str + " (stagger " + str(stagger) + " min, account " + str(account_id) + ")")
-    c.close()
-    return jsonify({"ok": True, "scheduled": n, "first": when.isoformat(),
-                    "last": (when + timedelta(minutes=stagger * max(0, len(ids) - 1))).isoformat()})
+        out = services.emails_schedule(ids, d.get("at") or "", d.get("stagger") or 0,
+                                       int(d.get("account_id") or 0), request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify({"ok": True, **out})
 
 
 @app.route("/api/emails/send-now", methods=["POST"])
 @login_required
 def api_emails_send_now():
-    if db.get_setting("safe_mode") == "1":
-        return api_err("Safe mode is ON. Turn it off in Settings to allow immediate sending.", 409)
     d = request.get_json(force=True)
-    account_id = int(d.get("account_id") or 0)
     ids = _selected_ids(d)
     if not ids:
         return api_err("Nothing selected.")
+    hold = 0 if d.get("_agent_direct") else int(db.get_setting("send_undo_seconds") or 0)
     try:
-        _require_account(account_id, request.user)
-    except RuntimeError as e:
-        return api_err(str(e), 409)
-    cap = int(db.get_setting("max_sends_per_day") or 100)
-    sent_today = sends_today()
-    if sent_today >= cap:
-        return api_err("Daily cap reached (" + str(cap) + ").", 409)
-    save_last_account(request.user["id"], account_id)
-    c = db.conn()
-    ok = fail = 0
-    for eid in ids:
-        if sent_today + ok >= cap:
-            break
-        r = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
-        if not r:
-            continue
-        try:
-            batch = c.execute("SELECT * FROM batches WHERE id=?", (r["batch_id"],)).fetchone()
-            attach = _load_attachments(dict(batch)) if batch else []
-            res = gmail_client.send_with_retry(account_id, r["to_addr"], r["subject"], r["body_html"],
-                                               attach or None, _cc_of(dict(batch)))
-            mid = res.get("message_id", "") if isinstance(res, dict) else ""
-            c.execute("UPDATE emails SET status='sent', account_id=?, sent_at=?, error='', message_id=? WHERE id=?",
-                      (account_id, db.now_iso(), mid, eid))
-            c.execute("UPDATE contacts SET status='sent' WHERE id=?", (r["contact_id"],))
-            ok += 1
-        except Exception as e:
-            c.execute("UPDATE emails SET status='error', error=? WHERE id=?", (str(e)[:300], eid))
-            fail += 1
-        time.sleep(0.4)
-    c.commit()
-    log("send_now", str(ok) + " sent now (" + str(fail) + " failed) from account " + str(account_id))
-    c.close()
-    return jsonify({"ok": True, "sent": ok, "failed": fail})
+        if hold > 0:
+            # Undo window for immediate sends (spec 7.7, decision Q6): the batch is
+            # held as scheduled with release_at = now + hold. The agent's own
+            # prepare_send action manages its hold explicitly (_agent_direct).
+            out = services.send_now_held(ids, int(d.get("account_id") or 0),
+                                         request.user, internal_hold_seconds=hold)
+        else:
+            out = services.emails_send_now(ids, int(d.get("account_id") or 0), request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify({"ok": True, **out})
 
 
 @app.route("/api/emails/delete", methods=["POST"])
@@ -2154,14 +1891,8 @@ def api_emails_delete():
     ids = d.get("ids") or []
     if not ids:
         return api_err("Nothing selected.")
-    c = db.conn()
-    c.executemany("UPDATE emails SET status='deleted', scheduled_at=NULL WHERE id=?", [(i,) for i in ids])
-    c.commit()
-    log("emails_delete", "Removed " + str(len(ids)) + " email(s) from queue")
-    c.close()
-    for i in ids:
-        _cloud_push_email(i, "deleted")
-    return jsonify({"ok": True, "removed": len(ids)})
+    out = services.emails_delete(ids, request.user)
+    return jsonify({"ok": True, "removed": out["removed"]})
 
 
 @app.route("/api/emails/cancel", methods=["POST"])
@@ -2171,59 +1902,22 @@ def api_emails_cancel():
     ids = d.get("ids") or []
     if not ids:
         return api_err("Nothing selected.")
-    c = db.conn()
-    n = 0
-    for i in ids:
-        r = c.execute("SELECT id, status FROM emails WHERE id=?", (i,)).fetchone()
-        if r and r["status"] in ("scheduled", "pending"):
-            c.execute("UPDATE emails SET status='cancelled', scheduled_at=NULL, error='' WHERE id=?", (i,))
-            n += 1
-    c.commit()
-    log("emails_cancel", "Stopped " + str(n) + " email(s)")
-    c.close()
-    for i in ids:
-        _cloud_push_email(i, "cancelled")
-    return jsonify({"ok": True, "cancelled": n})
+    out = services.emails_cancel(ids, request.user)
+    return jsonify({"ok": True, "cancelled": out["cancelled"]})
 
 
 @app.route("/api/emails/<int:eid>/reply", methods=["POST"])
 @login_required
 def api_email_reply(eid):
     d = request.get_json(force=True)
-    body = (d.get("body") or "").strip()
-    if not body:
-        return api_err("Write the reply first.")
-    account_id = int(d.get("account_id") or 0)
-    as_draft = bool(d.get("as_draft"))
-    c = db.conn()
-    r = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
-    if not r:
-        c.close()
-        return api_err("Email not found", 404)
-    r = dict(r)
-    subject = ("Re: " if not r["subject"].lower().startswith("re:") else "") + r["subject"]
     try:
-        _require_account(account_id, request.user)
-        if as_draft or db.get_setting("safe_mode") == "1":
-            batch = c.execute("SELECT * FROM batches WHERE id=?", (r["batch_id"],)).fetchone()
-            gmail_client.create_draft(account_id, r["to_addr"], subject,
-                                      "<p>" + body.replace("\n", "<br>") + "</p>", None, _cc_of(dict(batch)) if batch else None)
-            c.close()
-            log("reply_draft", "Reply draft for email " + str(eid))
-            return jsonify({"ok": True, "drafted": True})
-        batch = c.execute("SELECT * FROM batches WHERE id=?", (r["batch_id"],)).fetchone()
-        res = gmail_client.send_with_retry(account_id, r["to_addr"], subject,
-                                           "<p>" + body.replace("\n", "<br>") + "</p>",
-                                           None, _cc_of(dict(batch)) if batch else None)
-        c.close()
-        log("reply_sent", "Manual reply sent for email " + str(eid))
-        return jsonify({"ok": True, "sent": True})
-    except RuntimeError as e:
-        c.close()
-        return api_err(str(e), 409)
+        out = services.email_reply(eid, d.get("body"), int(d.get("account_id") or 0),
+                                   as_draft=bool(d.get("as_draft")), actor=request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     except Exception as e:
-        c.close()
         return api_err(str(e)[:200], 500)
+    return jsonify({"ok": True, **out})
 
 
 @app.route("/api/emails/<int:eid>/reply-suggest", methods=["POST"])
@@ -2492,6 +2186,7 @@ def _cloud_push_email(email_id, status=None):
         "reminder_subject": rem_subj, "reminder_body": rem_body,
         "replied_at": r["replied_at"],
         "bounced_at": r["bounced_at"] or "", "bounce_reason": (r["bounce_reason"] or ""),
+        "undo_hold": bool(services.undo_hold_for_batch(r["batch_id"])) if r["batch_id"] else False,
     }]}
     try:
         req = urllib.request.Request(url + "/api/emails",
@@ -2565,8 +2260,40 @@ def relay_status_pull():
         db.log_activity("reminder_sent_cloud", detail, "scheduler")
 
 
+def _release_due_holds():
+    """Undo window (spec 7.7): release held batches once release_at is due.
+    If safe mode was switched ON during the window, the emails stay queued."""
+    c = db.conn()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = c.execute("SELECT * FROM undo_holds WHERE release_at <= ?", (now_str,)).fetchall()
+    for h in rows:
+        bid = h["batch_id"]
+        if db.get_setting("safe_mode") == "1":
+            n = c.execute("UPDATE emails SET status='pending', scheduled_at=NULL, error='' "
+                          "WHERE batch_id=? AND status='scheduled'", (bid,)).rowcount
+            c.execute("DELETE FROM undo_holds WHERE batch_id=?", (bid,))
+            c.commit()
+            db.log_activity("hold_release_blocked",
+                            "Batch %s - undo window over but safe mode is ON: %d email(s) kept queued" % (bid, n),
+                            "scheduler")
+        else:
+            c.execute("DELETE FROM undo_holds WHERE batch_id=?", (bid,))
+            c.commit()
+            db.log_activity("hold_released", "Batch %s - undo window over, emails may send" % bid, "scheduler")
+            for er in c.execute("SELECT id FROM emails WHERE batch_id=? AND status='scheduled'", (bid,)).fetchall():
+                try:
+                    _cloud_push_email(er["id"], "scheduled")
+                except Exception:
+                    pass
+    c.close()
+
+
 def scheduler_tick():
     SCHEDULER_STATE["last_tick"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        _release_due_holds()
+    except Exception as e:
+        SCHEDULER_STATE["last_error"] = str(e)[:200]
     if db.get_setting("safe_mode") == "1":
         return
     if _relay_enabled():
@@ -2604,11 +2331,12 @@ def scheduler_tick():
         return
     cap = int(db.get_setting("max_sends_per_day") or 100)
     sent = 0
+    sent_start = sends_today()
     c = db.conn()
     for r in due:
         if db.get_setting("safe_mode") == "1":
             break
-        if sent >= cap - sends_today():
+        if sent_start + sent >= cap:
             break
         try:
             if not r["account_id"]:
@@ -2623,10 +2351,12 @@ def scheduler_tick():
             c.execute("UPDATE emails SET status='sent', sent_at=?, error='', message_id=? WHERE id=?",
                       (db.now_iso(), mid, r["id"]))
             c.execute("UPDATE contacts SET status='sent' WHERE id=?", (r["contact_id"],))
+            c.commit()  # release the write lock before log_activity opens its own connection
             db.log_activity("scheduler_sent", "serial " + r["serial"] + " -> " + r["to_addr"], "scheduler")
             sent += 1
         except Exception as e:
             c.execute("UPDATE emails SET status='error', error=? WHERE id=?", (str(e)[:300], r["id"]))
+            c.commit()
             db.log_activity("scheduler_error", "serial " + str(r["serial"]) + ": " + str(e)[:200], "scheduler")
             SCHEDULER_STATE["last_error"] = str(e)[:200]
             break
@@ -2689,6 +2419,7 @@ def api_scheduler_trigger():
 def api_settings_get():
     s = db.all_settings()
     s.pop("ai_api_key", None)
+    s.pop("ai_api_key_2", None)
     s.pop("app_secret", None)
     s.pop("supabase_service_key", None)
     s["supabase_key_set"] = "1" if db.get_setting("supabase_service_key") else "0"
@@ -2750,8 +2481,12 @@ def api_sync_status():
             pushed = dict(c.execute("SELECT row_id, version_ms FROM sync_pushed "
                                      "WHERE table_name=? AND kind='row'", (table,)).fetchall())
             n_rows = 0
-            for r in c.execute("SELECT id, updated_at, updated_at_ms FROM %s" % table).fetchall():
-                ms = int(r["updated_at_ms"] or 0) or sync_relay._ts_ms(r["updated_at"])
+            scol = [k for k in ("id", "updated_at", "updated_at_ms")
+                    if k in sync_relay.SYNC_COLUMNS[table]]
+            for r in c.execute("SELECT %s FROM %s" % (",".join(scol), table)).fetchall():
+                ms = int(r["updated_at_ms"] or 0) if "updated_at_ms" in r.keys() else 0
+                if not ms and "updated_at" in r.keys():
+                    ms = sync_relay._ts_ms(r["updated_at"])
                 if ms > int(pushed.get(r["id"], 0) or 0):
                     n_rows += 1
             pushed_del = dict(c.execute("SELECT row_id, version_ms FROM sync_pushed "
@@ -2790,18 +2525,10 @@ def api_sync_status():
 @login_required
 def api_settings_post():
     d = request.get_json(force=True)
-    u = request.user
-    for k in ("safe_mode", "max_sends_per_day", "default_stagger_min", "catchup_policy",
-              "ai_base_url", "ai_model", "ai_enabled", "cloud_relay_url",
-              "storage_backend", "supabase_url", "supabase_bucket"):
-        if k in d:
-            db.set_setting(k, d[k])
-    for k in ("ai_api_key", "google_client_id", "google_client_secret", "client_secret_json",
-              "admin_email", "cloud_relay_secret", "brand_team_name", "brand_tagline",
-              "supabase_service_key"):
-        if k in d and u["role"] == "admin":
-            db.set_setting(k, d[k])
-    log("settings", "Settings updated")
+    try:
+        services.settings_update(request.user, d)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -3142,8 +2869,7 @@ def _exec_tool(name, a):
 @app.route("/api/ai/chat", methods=["POST"])
 @login_required
 def api_ai_chat():
-    if not ai_client.ai_configured():
-        return api_err("Set an AI key in Settings first.", 409)
+    return api_err("The Ask AI chat moved to the new drawer - use POST /api/ai/agent.", 410)
     d = request.get_json(force=True)
     msgs = d.get("messages") or []
     if not msgs:
@@ -3232,19 +2958,50 @@ def _agent_parse_file(name, data):
             "error": "Unsupported file type. Attach a .csv, .xlsx, .docx, .html or .txt file."}
 
 
+_card_id = None
+
+
+def _agent_agent_error(out):
+    code = out.get("code") or 502
+    return jsonify({"ok": False, "error": out.get("error") or "AI request failed.", "code": code}), code
+
+
+def _card_file_from_response(response):
+    """Parse a file uploaded through a card. Attachments go to filestore;
+    contact sheets / templates are parsed server-side and attached as
+    response['parsed'] (the raw bytes never reach the model)."""
+    f = response.get("file") or {}
+    if not (f.get("name") and f.get("data")):
+        return True
+    try:
+        data = base64.b64decode(f["data"])
+    except Exception:
+        return "Could not read the attached file."
+    if len(data) > 5 * 1024 * 1024:
+        return "File too large (max 5 MB)."
+    card = cards_mod.get_card(_card_id)
+    purpose = (card.get("payload") or {}).get("purpose") if card else None
+    if purpose == "attachment":
+        ext = Path(f["name"]).suffix.lower() or ".bin"
+        name = "att_" + uuid.uuid4().hex[:10] + ext
+        filestore.put(name, data)
+        log("agent_attachment", f["name"], )
+        response["file"] = {"name": f["name"], "stored_name": name}
+        return True
+    parsed = _agent_parse_file(f["name"], data)
+    if parsed.get("kind") == "bad":
+        return parsed.get("error") or "Could not read that file."
+    response["parsed"] = parsed
+    response["file"] = {"name": f["name"]}
+    return True
+
+
 @app.route("/api/ai/agent", methods=["POST"])
 @login_required
 def api_ai_agent():
-    import base64
     import agent as ag
-    if not ai_client.ai_configured():
-        return api_err("AI is not configured. Add an API key in Settings \u2192 AI features first.", 409)
     d = request.get_json(force=True)
     text = (d.get("text") or "").strip()
-    confirm = d.get("confirm")
-    answer = (d.get("answer") or "").strip() or None
-    if confirm is None and answer is None and not text and not d.get("file"):
-        return api_err("Nothing to do.")
     file = None
     f = d.get("file") or {}
     if f.get("name") and f.get("data"):
@@ -3255,13 +3012,83 @@ def api_ai_agent():
         if len(data) > 5 * 1024 * 1024:
             return api_err("File too large (max 5 MB).", 400)
         file = _agent_parse_file(f["name"], data)
-        if file.get("kind") == "bad":
+        if file.get("kind") == "bad" and not text:
             return api_err(file.get("error") or "Could not read that file.", 400)
     try:
-        out = ag.turn(request.user["id"], conv_id=d.get("conv_id"),
-                      text=text or None, file=file, confirm=confirm, answer=answer)
+        out = ag.turn(request.user["id"], conv_id=d.get("conv_id"), text=text or None, file=file)
     except Exception as e:
         return api_err("AI request failed: " + str(e)[:200], 502)
+    if not out.get("ok"):
+        return _agent_agent_error(out)
+    return jsonify(out)
+
+
+@app.route("/api/ai/cards/<card_id>/respond", methods=["POST"])
+@login_required
+def api_ai_card_respond(card_id):
+    global _card_id
+    import agent as ag
+    _card_id = card_id
+    d = request.get_json(force=True) or {}
+    response = d.get("response") or {}
+    ok = _card_file_from_response(response)
+    if ok is not True:
+        return api_err(str(ok), 400)
+    out = ag.respond(card_id, request.user["id"], response, d.get("idempotency_key") or "")
+    if not out.get("ok"):
+        return _agent_agent_error(out)
+    return jsonify(out)
+
+
+@app.route("/api/ai/cards/<card_id>/update", methods=["POST"])
+@login_required
+def api_ai_card_update(card_id):
+    import agent as ag
+    d = request.get_json(force=True) or {}
+    out = ag.update(card_id, request.user["id"], d.get("fields") or {},
+                    d.get("version"), d.get("idempotency_key") or "")
+    if not out.get("ok"):
+        return _agent_agent_error(out)
+    return jsonify(out)
+
+
+@app.route("/api/ai/cards/<card_id>/cancel", methods=["POST"])
+@login_required
+def api_ai_card_cancel(card_id):
+    import agent as ag
+    out = ag.cancel(card_id, request.user["id"])
+    if not out.get("ok"):
+        return _agent_agent_error(out)
+    return jsonify(out)
+
+
+@app.route("/api/ai/convs/<conv_id>")
+@login_required
+def api_ai_conv_get(conv_id):
+    import agent as ag
+    out = ag.restore(conv_id, request.user["id"])
+    if not out.get("ok"):
+        return _agent_agent_error(out)
+    return jsonify(out)
+
+
+@app.route("/api/ai/convs/<conv_id>/close", methods=["POST"])
+@login_required
+def api_ai_conv_close(conv_id):
+    import agent as ag
+    return jsonify(ag.close(conv_id, request.user["id"]))
+
+
+@app.route("/api/ai/restore")
+@login_required
+def api_ai_restore():
+    import agent as ag
+    cid = ag.latest_conv(request.user["id"])
+    if not cid:
+        return jsonify({"ok": True, "conv_id": None})
+    out = ag.restore(cid, request.user["id"])
+    if not out.get("ok"):
+        return jsonify({"ok": True, "conv_id": None})
     return jsonify(out)
 
 
@@ -3277,8 +3104,7 @@ def api_signature_get():
 @login_required
 def api_signature_set():
     d = request.get_json(force=True)
-    db.set_setting("signature_html", (d.get("html") or "").strip())
-    log("signature_save", "")
+    services.set_signature(d.get("html"), request.user)
     return jsonify({"ok": True})
 
 
@@ -3406,28 +3232,11 @@ def api_batch_get(bid):
 @login_required
 def api_batch_reminders(bid):
     d = request.get_json(force=True)
-    days = int(d.get("days") or 0)
-    maxr = max(1, min(5, int(d.get("max") or 1)))
-    tid = int(d.get("template_id") or 0)
-    if days and not (0 < days <= 90):
-        return api_err("Reminder delay must be 1-90 days.")
-    if tid:
-        c = db.conn()
-        t = c.execute("SELECT id FROM email_templates WHERE id=?", (tid,)).fetchone()
-        c.close()
-        if not t:
-            return api_err("Reminder template not found.", 404)
-    c = db.conn()
-    b = c.execute("SELECT * FROM batches WHERE id=?", (bid,)).fetchone()
-    c.close()
-    if not b:
-        return api_err("Batch not found", 404)
-    c = db.conn()
-    c.execute("UPDATE batches SET reminder_days=?, reminder_template_id=?, reminder_max=? WHERE id=?",
-              (days, tid, maxr, bid))
-    c.commit()
-    c.close()
-    log("batch_reminders", "batch " + str(bid) + ": every " + str(days) + " day(s), max " + str(maxr))
+    try:
+        services.batch_reminders(bid, d.get("days") or 0, d.get("max") or 1,
+                                 int(d.get("template_id") or 0), request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -3628,17 +3437,10 @@ def api_email_update(eid):
 def api_email_mark_replied(eid):
     d = request.get_json(force=True)
     on = bool(d.get("replied"))
-    c = db.conn()
-    r = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
-    if not r:
-        c.close()
-        return api_err("Email not found", 404)
-    c.execute("UPDATE emails SET replied_at=? WHERE id=?", (db.now_iso() if on else None, eid))
-    if on:
-        c.execute("UPDATE contacts SET status='replied' WHERE id=?", (r["contact_id"],))
-    c.commit()
-    c.close()
-    log("mark_replied", "email " + str(eid) + (" marked replied" if on else " marked not replied"))
+    try:
+        services.email_mark_replied(eid, on, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     _cloud_push_email(eid)
     return jsonify({"ok": True})
 
@@ -3713,12 +3515,17 @@ def _css_bundle_mtime(path):
 
 
 def _static_version(path):
-    """Cache-busting query for /static files: ?v=<mtime> (bundle-aware for CSS)."""
+    """Cache-busting query for /static files: ?v=<mtime>.<content-hash>.
+
+    The hash is over the file bytes, so two edits landing in the same
+    second still produce distinct version tags (a bare mtime tag lets a
+    1-year immutable browser cache serve stale bytes forever)."""
     try:
         if path.lstrip("/").endswith(".css"):
             return "?v=" + str(int(_css_bundle_mtime(path)))
         p = BASE / "static" / path.lstrip("/")
-        return "?v=" + str(int(p.stat().st_mtime))
+        digest = hashlib.md5(p.read_bytes()).hexdigest()[:10]
+        return "?v=%d.%s" % (int(p.stat().st_mtime), digest)
     except OSError:
         return ""
 
@@ -3755,6 +3562,10 @@ def _static_cache(resp):
         else:
             # unversioned assets (e.g. @imported CSS): revalidate via ETag
             resp.headers["Cache-Control"] = "no-cache"
+    elif resp.is_json or (resp.content_type or "").startswith("text/html"):
+        # the page shell carries the ?v= tags; it must never be cached,
+        # otherwise clients keep requesting stale asset versions
+        resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 
@@ -3837,6 +3648,11 @@ def api_home():
                             "AND e.replied_at IS NOT NULL AND e.replied_at != ''",
                             (cam["id"],)).fetchone()["n"]
         sent = st.get("sent", 0)
+        bounced = c.execute("SELECT COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
+                            "WHERE b.campaign_id=? AND e.status != 'deleted' "
+                            "AND e.bounced_at IS NOT NULL AND e.bounced_at != ''",
+                            (cam["id"],)).fetchone()["n"]
+        delivered = max(0, sent - bounced)
         total = sum(st.values())
         n_sheets = c.execute("SELECT COUNT(*) n FROM sheets WHERE campaign_id=?", (cam["id"],)).fetchone()["n"]
         contacts = c.execute(
@@ -3849,8 +3665,8 @@ def api_home():
                 (cam["id"],)).fetchone()["n"]
         cams.append({"id": cam["id"], "name": cam["name"], "description": cam["description"],
                      "n_emails": total, "n_contacts": contacts, "sent": sent,
-                     "replied": replied,
-                     "rate": round(100.0 * replied / sent) if sent else 0,
+                     "replied": replied, "bounced": bounced, "delivered": delivered,
+                     "rate": round(100.0 * replied / delivered) if delivered else 0,
                      "status_counts": st,
                      "last": cam["updated_at"]})
     c.close()
@@ -3867,8 +3683,9 @@ def api_home():
         "bounced": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
                              "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"],
     }
+    tiles["delivered"] = max(0, tiles["sent"] - tiles["bounced"])
     c.close()
-    out["tiles"] = {**tiles, "rate": round(100.0 * tiles["replies"] / tiles["sent"]) if tiles["sent"] else 0}
+    out["tiles"] = {**tiles, "rate": round(100.0 * tiles["replies"] / tiles["delivered"]) if tiles["delivered"] else 0}
 
     # onboarding progress (6.3)
     c = db.conn()
@@ -3912,15 +3729,10 @@ def api_sheet_practice():
 def api_sheet_set_campaign(sid):
     """Attach a contact list to a campaign, or remove it (0). Audience tab."""
     d = request.get_json(force=True)
-    campaign_id = int(d.get("campaign_id") or 0)
-    c = db.conn()
-    if campaign_id and not c.execute("SELECT id FROM campaigns WHERE id=?", (campaign_id,)).fetchone():
-        c.close()
-        return api_err("Campaign not found", 404)
-    c.execute("UPDATE sheets SET campaign_id=? WHERE id=?", (campaign_id, sid))
-    c.commit()
-    c.close()
-    log("sheet_campaign", "Sheet " + str(sid) + " moved to campaign " + str(campaign_id))
+    try:
+        services.sheet_set_campaign(sid, int(d.get("campaign_id") or 0), request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
     return jsonify({"ok": True})
 
 
@@ -3929,21 +3741,8 @@ def api_sheet_set_campaign(sid):
 def api_emails_revert():
     """Undo helper: put emails back to the status/times the caller passed."""
     d = request.get_json(force=True)
-    items = d.get("items") or []
-    c = db.conn()
-    n = 0
-    for it in items[:1000]:
-        try:
-            c.execute("UPDATE emails SET status=?, scheduled_at=?, error='' WHERE id=? "
-                      "AND status IN ('pending','scheduled','cancelled')",
-                      (it.get("status"), it.get("scheduled_at"), int(it.get("id") or 0)))
-            n += 1
-        except (TypeError, ValueError):
-            continue
-    c.commit()
-    c.close()
-    log("emails_revert", "Reverted " + str(n) + " email(s)")
-    return jsonify({"ok": True, "reverted": n})
+    out = services.emails_revert(d.get("items") or [], request.user)
+    return jsonify({"ok": True, "reverted": out["reverted"]})
 # ==================== end UI redesign additions ====================
 
 

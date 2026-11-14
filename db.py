@@ -175,6 +175,9 @@ DEFAULT_SETTINGS = {
     "supabase_bucket": "campusmail-files",
     "brand_team_name": "",
     "brand_tagline": "Local tool - your data stays on this machine.",
+    "send_undo_seconds": "20",
+    "bulk_confirm_threshold": "50",
+    "ai_thinking_budget": "",
 }
 
 COLUMN_ALIASES = {
@@ -259,6 +262,11 @@ def remove_user(uid):
     c.execute("DELETE FROM users WHERE id=?", (uid,))
     c.commit()
     c.close()
+    try:
+        import sync_relay
+        sync_relay.record_delete("users", uid)
+    except Exception:
+        pass
 
 
 def invite_member(email, display_name=""):
@@ -440,6 +448,29 @@ def _migrate(c):
             if ms > now_ms - 1000:
                 ms = now_ms - 1000
             c.execute("UPDATE %s SET updated_at_ms=? WHERE id=?" % tbl, (ms, r["id"]))
+    # users + activity join the two-way sync: team members and per-user activity
+    # must be visible on every instance. Version column for LWW, plus a one-time
+    # rebase of legacy activity ids (small AUTOINCREMENT values that both
+    # instances would otherwise reuse and clobber each other).
+    for tbl in ("users", "activity"):
+        tcols = {r["name"] for r in c.execute("PRAGMA table_info(%s)" % tbl).fetchall()}
+        if "updated_at_ms" not in tcols:
+            c.execute("ALTER TABLE %s ADD COLUMN updated_at_ms INTEGER DEFAULT 0" % tbl)
+    for r in c.execute("SELECT id FROM users WHERE updated_at_ms IS NULL OR updated_at_ms=0"):
+        c.execute("UPDATE users SET updated_at_ms=? WHERE id=?", (now_ms, r["id"]))
+    if c.execute("SELECT 1 FROM settings WHERE key='activity_rebased_v1'").fetchone() is None:
+        used = {r["id"] for r in c.execute("SELECT id FROM activity")}
+        seq_by_ms = {}
+        for r in c.execute("SELECT id, ts FROM activity WHERE id < 1000000000000 ORDER BY id"):
+            ms = _parse_ts_ms(r["ts"]) or now_ms
+            seq = seq_by_ms.get(ms, 0)
+            seq_by_ms[ms] = seq + 1
+            new_id = ms * 1000 + seq
+            while new_id in used:
+                new_id += 1
+            used.add(new_id)
+            c.execute("UPDATE activity SET id=?, updated_at_ms=? WHERE id=?", (new_id, ms, r["id"]))
+        c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('activity_rebased_v1', '1')")
     # auto-stamp updated_at + epoch-ms version on every insert/update of synced tables.
     # INSERT trigger only fires when updated_at is empty, so rows inserted with an
     # explicit legacy timestamp keep their display string (ms already backfilled).
@@ -453,6 +484,57 @@ def _migrate(c):
         c.execute("CREATE TRIGGER trg_%s_upd AFTER UPDATE ON %s "
                   "BEGIN UPDATE %s SET updated_at=datetime('now'), updated_at_ms=%s "
                   "WHERE id=NEW.id; END" % (tbl, tbl, tbl, EPOCH_MS))
+    # Users are synced too: stamp the version column on every change. The INSERT
+    # trigger keeps an explicitly supplied stamp (remote apply), UPDATE re-stamps.
+    c.execute("DROP TRIGGER IF EXISTS trg_users_ins")
+    c.execute("DROP TRIGGER IF EXISTS trg_users_upd")
+    c.execute("CREATE TRIGGER trg_users_ins AFTER INSERT ON users BEGIN "
+              "UPDATE users SET updated_at_ms=%s WHERE id=NEW.id "
+              "AND (updated_at_ms IS NULL OR updated_at_ms=0); END" % EPOCH_MS)
+    c.execute("CREATE TRIGGER trg_users_upd AFTER UPDATE ON users BEGIN "
+              "UPDATE users SET updated_at_ms=%s WHERE id=NEW.id; END" % EPOCH_MS)
+    # ---- Ask AI upgrade: non-synced local tables (never in SYNC_COLUMNS) ----
+    c.execute("CREATE TABLE IF NOT EXISTS approvals("
+              "approval_id TEXT PRIMARY KEY, conv_id TEXT, uid INTEGER,"
+              " action TEXT, params_json TEXT, params_hash TEXT,"
+              " render_hash TEXT, preview_hash TEXT,"
+              " expires_at REAL, used INTEGER DEFAULT 0, voided INTEGER DEFAULT 0,"
+              " created_at TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS card_responses("
+              "card_id TEXT, idempotency_key TEXT, result_json TEXT,"
+              " PRIMARY KEY (card_id, idempotency_key))")
+    c.execute("CREATE TABLE IF NOT EXISTS ai_usage("
+              "user_id INTEGER, day TEXT, calls INTEGER DEFAULT 0,"
+              " prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0,"
+              " last_call_ts REAL DEFAULT 0, minute_calls INTEGER DEFAULT 0,"
+              " minute_ts REAL DEFAULT 0,"
+              " PRIMARY KEY (user_id, day))")
+    for _col, _decl in (("minute_calls", "INTEGER DEFAULT 0"), ("minute_ts", "REAL DEFAULT 0")):
+        try:
+            c.execute("ALTER TABLE ai_usage ADD COLUMN %s %s" % (_col, _decl))
+        except Exception:
+            pass
+    c.execute("CREATE TABLE IF NOT EXISTS template_test_sends("
+              "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+              " template_id INTEGER, content_hash TEXT, user_id INTEGER,"
+              " sent_at TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS undo_holds("
+              "batch_id INTEGER PRIMARY KEY, release_at TEXT, user_id INTEGER,"
+              " created_at TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS email_snoozes("
+              "email_id INTEGER PRIMARY KEY, snoozed_until TEXT,"
+              " snoozed_by TEXT, updated_at TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS link_check_cache("
+              "url_hash TEXT PRIMARY KEY, result_json TEXT, checked_at REAL)")
+    c.execute("CREATE TABLE IF NOT EXISTS ask_ai_convs("
+              "conv_id TEXT PRIMARY KEY, uid INTEGER, state_json TEXT,"
+              " created_at REAL, last_used REAL)")
+    c.execute("CREATE TABLE IF NOT EXISTS ask_ai_cards("
+              "card_id TEXT PRIMARY KEY, conv_id TEXT, type TEXT, status TEXT DEFAULT 'pending',"
+              " payload_json TEXT, step_id TEXT, flow_id TEXT, result_json TEXT,"
+              " created_at REAL, expires_at REAL)")
+    c.execute("CREATE TABLE IF NOT EXISTS campaign_meta("
+              "campaign_id INTEGER PRIMARY KEY, template_id INTEGER DEFAULT 0, updated_at TEXT)")
     c.commit()
 
 
@@ -498,6 +580,22 @@ def set_setting(key, value):
     c.close()
 
 
+def get_user_setting(user_id, key, default=None):
+    c = conn()
+    r = c.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (int(user_id), key)).fetchone()
+    c.close()
+    return r["value"] if r else default
+
+
+def set_user_setting(user_id, key, value):
+    c = conn()
+    c.execute("INSERT INTO user_settings(user_id, key, value) VALUES(?,?,?) "
+              "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value",
+              (int(user_id), key, str(value)))
+    c.commit()
+    c.close()
+
+
 def all_settings():
     out = dict(DEFAULT_SETTINGS)
     c = conn()
@@ -522,11 +620,24 @@ def log_activity(action, detail="", actor="user", throttle=0):
                     return False
             except (ValueError, TypeError):
                 pass
-    c.execute("INSERT INTO activity(ts, actor, action, detail) VALUES(?,?,?,?)",
-              (now_iso(), actor, action, detail))
-    c.commit()
+    ts = now_iso()
+    now_ms = int(time.time() * 1000)
+    base = now_ms * 1000
+    # Globally-unique id (ms*1000+seq): rows from both instances never collide,
+    # so activity syncs both ways without one side clobbering the other.
+    for _ in range(8):
+        n = c.execute("SELECT COUNT(*) n FROM activity WHERE id BETWEEN ? AND ?",
+                      (base, base + 999)).fetchone()["n"]
+        try:
+            c.execute("INSERT INTO activity(id, ts, actor, action, detail, updated_at_ms) "
+                      "VALUES(?,?,?,?,?,?)", (base + n, ts, actor, action, detail, now_ms))
+            c.commit()
+            c.close()
+            return True
+        except sqlite3.IntegrityError:
+            c.rollback()
     c.close()
-    return True
+    return False
 
 
 def seed_if_empty(c):

@@ -197,6 +197,7 @@ function campaignCards(cams) {
       el("div", { class: "progress" }, el("span", { style: `width:${pct}%` })),
       el("div", { class: "cc-figs" },
         el("span", {}, "Sent ", el("b", { class: "cc-sent" }, fmtInt(cam.sent))),
+        cam.bounced > 0 ? el("span", {}, "Bounced ", el("b", { class: "cc-bounced" }, fmtInt(cam.bounced))) : null,
         el("span", {}, "Replied ", el("b", { class: "cc-replied" }, fmtInt(cam.replied))),
         el("span", {}, "Reply rate ", el("b", {}, fmtPct(cam.rate)))),
       el("div", { class: "cc-foot" },
@@ -270,10 +271,10 @@ async function load() {
     tilesEl.classList.remove("hide");
     const defs = [
       ["Emails sent", tiles.sent, "30 days", "/replies", true],
-      ["Replies", tiles.replies, "waiting: " + replyN, "/replies", true],
-      ["Reply rate", null, "of " + fmtInt(tiles.sent) + " sent", null, false],
-      ["Scheduled", tiles.scheduled, soon[0] ? "next " + upcomingWhen(soon[0].when).toLowerCase() : "none yet", "/campaigns", true],
       ["Bounced", tiles.bounced, tiles.bounced ? "need fixing" : "none", "/replies?tab=bounced", true],
+      ["Replies", tiles.replies, "waiting: " + replyN, "/replies", true],
+      ["Reply rate", null, "of " + fmtInt(tiles.delivered != null ? tiles.delivered : tiles.sent) + " delivered", null, false],
+      ["Scheduled", tiles.scheduled, soon[0] ? "next " + upcomingWhen(soon[0].when).toLowerCase() : "none yet", "/campaigns", true],
     ];
     for (const [label, val, sub2, href, isLink] of defs) {
       const valueNode = el("span", { class: "stat-value" }, "0");

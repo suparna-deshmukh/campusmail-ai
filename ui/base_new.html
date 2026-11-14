@@ -108,6 +108,7 @@
 
 <script>window.me_email = {{ me_email|tojson }}; window.me_name = {{ (me.display_name if me else "")|tojson }}; window.me_role = {{ (me.role if me else 'none')|tojson }}; window.brand_team = {{ brand_team|tojson }};</script>
 <script type="module" src="{{ '/static/js/shell-init.js' ~ sv('js/shell-init.js') }}"></script>
+<script type="module" src="{{ '/static/js/core/ask-ai-editor.js' ~ sv('js/core/ask-ai-editor.js') }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

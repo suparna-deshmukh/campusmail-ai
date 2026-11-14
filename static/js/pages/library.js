@@ -183,7 +183,7 @@ function observeThumbs(root) {
       io.unobserve(th);
       const tid = th.dataset.tid;
       api("/api/templates/" + tid + "/preview").then((d) => {
-        const doc = "<!DOCTYPE html><html><head><style>body{margin:0;padding:28px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#0F1629;line-height:1.55}img{max-width:100%}</style></head><body>" + localToUrl(d.body || "") + "</body></html>";
+        const doc = "<!DOCTYPE html><html><head><style>body{margin:0;padding:14px 16px;font-family:Arial,Helvetica,sans-serif;font-size:12.5px;color:#0F1629;line-height:1.45}img{max-width:100%}</style></head><body>" + localToUrl(d.body || "") + "</body></html>";
         const f = document.createElement("iframe");
         f.setAttribute("srcdoc", doc);
         f.setAttribute("title", "Template thumbnail");
@@ -506,7 +506,11 @@ async function initEditor(tid) {
   function editorHtml() {
     let h = editor.innerHTML;
     h = h.replace(/<span class="fill-pill" data-f="([^"]*)"[^>]*>[\s\S]*?<\/span>/g, (m, f) => f);
+    h = h.replace(/\/local_img\//g, "local:");  // keep canonical local: refs in saved data
     return h;
+  }
+  function showHtml(html) {  // display form: local: refs point at the /local_img route
+    return localToUrl(String(html || ""));
   }
   function wrapPills(html) {
     return String(html || "").replace(PLACEHOLDER_RE, (raw, a, b, cc, dd) => {
@@ -550,7 +554,7 @@ async function initEditor(tid) {
       const c = s.contacts.find((x) => String(x.id) === s.previewAs);
       if (c) row = { serial: c.serial || "1", company: c.company, hr_name: c.hr_name, hr_email: c.hr_email };
     }
-    preview.innerHTML = fillBodyClient(editorHtml(), row);
+    preview.innerHTML = localToUrl(fillBodyClient(editorHtml(), row));
     const fields = detectFieldsClient(subject.value, editor.innerHTML);
     fillins.innerHTML = "";
     if (fields.length) {
@@ -591,7 +595,7 @@ async function initEditor(tid) {
       subject.value = s.template.subject || "";
       s.kind = s.template.kind || "outreach";
       kindSeg.querySelectorAll(".seg-item").forEach((x) => x.classList.toggle("is-active", x.dataset.k === s.kind));
-      editor.innerHTML = wrapPills(s.template.body_html);
+      editor.innerHTML = wrapPills(showHtml(s.template.body_html));
       const c = await api("/api/contacts").catch(() => ({ rows: [] }));
       s.contacts = (c.rows || []).slice(0, 5);
       for (const x of s.contacts) {
@@ -612,7 +616,7 @@ async function initEditor(tid) {
                 subject.value = draft.subject || "";
                 s.kind = draft.kind || s.kind;
                 kindSeg.querySelectorAll(".seg-item").forEach((x) => x.classList.toggle("is-active", x.dataset.k === s.kind));
-                editor.innerHTML = wrapPills(draft.body || "");
+                editor.innerHTML = wrapPills(showHtml(draft.body));
                 renderPreview(); markDirty(); bar.remove();
               } }, "Restore"),
               el("button", { class: "btn btn-ghost btn-sm", onclick: () => { localStorage.removeItem("cm_tpl_draft_" + s.id); bar.remove(); } }, "Discard"),

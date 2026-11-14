@@ -84,7 +84,7 @@ function render() {
   $empty.style.display = "none";
   for (const cm of list) {
     const st = cm.status_counts || {};
-    const sent = cm.n_sent || st.sent || 0, replied = cm.n_replied || 0;
+    const sent = cm.n_sent || st.sent || 0, replied = cm.n_replied || 0, bounced = cm.n_bounced || 0;
     const tr = el("tr", { onclick: (e) => { if (!e.target.closest("button")) location.href = "/campaigns/" + cm.id; } },
       el("td", {},
         el("a", { class: "cell-main", href: "/campaigns/" + cm.id, style: "color:inherit" }, cm.name),
@@ -92,6 +92,7 @@ function render() {
       el("td", {}, badge(CAMPAIGN_STATUS[statusOf(cm)].label, CAMPAIGN_STATUS[statusOf(cm)].cls, CAMPAIGN_STATUS[statusOf(cm)].icon)),
       el("td", { class: "num camp-hide-m" }, fmtInt(cm.n_contacts)),
       el("td", { class: "num camp-hide-m" }, fmtInt(sent)),
+      el("td", { class: "num camp-hide-m" + (bounced ? " is-bounced" : "") }, fmtInt(bounced)),
       el("td", { class: "num camp-hide-m" }, fmtInt(replied)),
       el("td", { class: "num camp-hide-m" }, fmtPct(cm.rate != null ? cm.rate : (sent ? 100 * replied / sent : 0))),
       el("td", { class: "cell-sub camp-hide-m" }, cm.last ? relTime(cm.last) : "—"),

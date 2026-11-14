@@ -12,6 +12,8 @@ import { openTimePicker } from "/static/js/components/timepicker.js";
 const cid = window.hub_campaign_id;
 const root = document.getElementById("hub-root");
 const initTab = new URLSearchParams(location.search).get("tab");
+let senderFilter = new URLSearchParams(location.search).get("sender") || "";
+const apiUrl = () => "/api/campaigns/" + cid + (senderFilter ? "?sender=" + encodeURIComponent(senderFilter) : "");
 let tab = initTab === "emails" ? "emails" : initTab === "audience" ? "audience" : "overview";
 let data = null;
 let accounts = [];
@@ -47,7 +49,7 @@ function ctx() {
 async function load() {
   try {
     const [d, acc] = await Promise.all([
-      api("/api/campaigns/" + cid),
+      api(apiUrl()),
       api("/api/accounts").catch(() => ({ accounts: [], last_account_id: 0 })),
     ]);
     data = d;
@@ -87,7 +89,7 @@ function render() {
 /* silent refresh after in-tab actions: data + header + tab counts, panel untouched */
 async function refreshData() {
   try {
-    data = await api("/api/campaigns/" + cid);
+    data = await api(apiUrl());
     refreshShell();
   } catch { /* keep working on stale data */ }
 }
@@ -254,6 +256,22 @@ function tabs() {
 
 /* ---------------- overview (7.3) ---------------- */
 function renderOverview(panel) {
+  const senders = data.senders || [];
+  if (senders.length) {
+    const sel = el("select", { class: "select ov-sender" },
+      el("option", { value: "" }, "All senders"),
+      ...senders.map((s) => el("option", { value: s.email },
+        s.name + " · " + fmtInt(s.n) + (s.email === "unknown" ? " (unlinked)" : ""))));
+    if (senderFilter) sel.value = senderFilter;
+    sel.addEventListener("change", () => {
+      const p = new URLSearchParams(location.search);
+      if (sel.value) p.set("sender", sel.value); else p.delete("sender");
+      if (tab !== "overview") p.set("tab", "overview");
+      location.href = "/campaigns/" + cid + "?" + p.toString();
+    });
+    panel.append(el("div", { class: "ov-senders" },
+      el("span", { class: "t-caption" }, "Sent by"), sel));
+  }
   const ns = nextStep();
   if (ns) panel.append(ns);
   panel.append(statTiles());
@@ -329,26 +347,28 @@ function statTiles() {
 
 function funnelCard() {
   const s = data.summary;
+  // each row's percentage is relative to its own base stage (not the row above):
+  // bounced and replied are both measured against emailed
   const items = [
-    { label: "Contacts", n: data.n_contacts, op: 1 },
-    { label: "Emailed", n: data.n_emailed || 0, op: 0.55 },
-    { label: "Replied", n: s.n_replied, op: 0.3 },
+    { label: "Contacts", n: data.n_contacts, op: 1, base: -1 },
+    { label: "Emailed", n: data.n_emailed || 0, op: 0.55, base: 0 },
   ];
+  if (s.n_bounced) items.push({ label: "Bounced", n: s.n_bounced, op: 0.9, cls: "bar-bounced", base: 1 });
+  items.push({ label: "Replied", n: s.n_replied, op: 0.3, base: 1 });
   const max = Math.max(1, ...items.map((it) => it.n));
-  const rows = items.map((it, i) => {
-    const prevN = i === 0 ? null : items[i - 1].n;
-    const pct = i === 0 ? "your list"
-      : prevN === 0 ? "no " + items[i - 1].label.toLowerCase() + " yet"
-      : Math.round(100 * it.n / prevN) + "% of " + items[i - 1].label.toLowerCase();
+  const rows = items.map((it) => {
+    const base = it.base < 0 ? null : items[it.base];
+    const pct = !base ? "your list"
+      : base.n === 0 ? "no " + base.label.toLowerCase() + " yet"
+      : Math.round(100 * it.n / base.n) + "% of " + base.label.toLowerCase();
     return el("div", { class: "funnel-row" },
       el("div", { class: "funnel-label" }, it.label),
-      el("div", { class: "funnel-bar", style: "width:" + Math.min(100, Math.max(2, 100 * it.n / max)) + "%;opacity:" + it.op }),
+      el("div", { class: "funnel-bar" + (it.cls ? " " + it.cls : ""), style: "width:" + Math.min(100, Math.max(2, 100 * it.n / max)) + "%;opacity:" + it.op }),
       el("div", {},
         el("div", { class: "funnel-val" }, fmtInt(it.n)),
         el("div", { class: "funnel-pct" }, pct)));
   });
   const extra = [];
-  if (s.n_bounced) extra.push(fmtInt(s.n_bounced) + " bounced");
   if (s.n_failed) extra.push(fmtInt(s.n_failed) + " failed");
   return el("div", { class: "card" },
     el("div", { class: "card-head" }, el("div", { class: "t-card" }, "From contact to reply")),
@@ -418,14 +438,22 @@ function sendsCard() {
   const color = { pending: "var(--st-ready)", drafted: "var(--st-drafted)", scheduled: "var(--st-scheduled)", sent: "var(--st-sent)", error: "var(--st-failed)", cancelled: "var(--st-stopped)" };
   for (const b of batches) {
     const n = Object.values(b.counts || {}).reduce((a, x) => a + x, 0);
+    const bounced = b.bounced || 0;
+    const sentN = b.counts.sent || 0;
+    const deliveredN = Math.max(0, sentN - bounced);
+    const parts = [];
+    if (n) {
+      order.filter((k) => k !== "sent" && b.counts[k]).forEach((k) => parts.push(el("span", { style: "width:" + (100 * b.counts[k] / n) + "%;background:" + color[k] })));
+      if (deliveredN) parts.push(el("span", { style: "width:" + (100 * deliveredN / n) + "%;background:" + color.sent, title: deliveredN + " delivered" }));
+      if (bounced) parts.push(el("span", { style: "width:" + (100 * bounced / n) + "%;background:var(--st-failed)", title: bounced + " bounced" }));
+    }
     const mix = n
-      ? el("div", { class: "mixbar" },
-          ...order.filter((k) => b.counts[k]).map((k) => el("span", { style: "width:" + (100 * b.counts[k] / n) + "%;background:" + color[k] })))
+      ? el("div", { class: "mixbar" }, ...parts)
       : el("span", { class: "t-caption t-faint" }, "—");
     card.append(el("div", { class: "sendrow" },
       el("div", { style: "min-width:0" },
         el("div", { class: "sr-name" }, b.name || ("Send " + b.id)),
-        el("div", { class: "sr-sub" }, "Created " + fmtDay(b.created_at))),
+        el("div", { class: "sr-sub" }, "Created " + fmtDay(b.created_at) + (bounced ? " · " + fmtInt(bounced) + " bounced" : ""))),
       el("span", { class: "num", title: "Emails" }, fmtInt(n)),
       mix,
       el("span", { class: "sr-sub", style: "min-width:86px" }, b.reminder_days > 0 ? "On, after " + b.reminder_days + " days" : "Off"),

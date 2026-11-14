@@ -230,53 +230,74 @@ def normalize_field(name):
     return re.sub(r"[^a-z0-9]+", "", name.lower())
 
 
-SYNONYMS = [
-    ("recruiter", ("hrname", "company", "hr")),
-    ("company", ("company", "organization", "organisation")),
-    ("organisation", ("company", "organization", "organisation")),
-    ("organization", ("company", "organization", "organisation")),
-    ("email", ("hremail", "email", "mail")),
+# Semantic groups: template field / column name -> canonical group.
+# "recruiter" is a person (HR name), "organisation" is the company.
+GROUP_KEYWORDS = [
+    ("name", ("recruiter", "hrname", "person", "contact", "fullname", "name")),
+    ("email", ("hremail", "email", "mail", "addr")),
+    ("company", ("organisation", "organization", "company", "firm", "client", "employer")),
+    ("serial", ("serial", "number", "sn")),
 ]
+
+
+def _group(norm_name):
+    """Map a normalized name onto a semantic group (longest keyword wins)."""
+    best_group, best_len = None, 0
+    for group, kws in GROUP_KEYWORDS:
+        for kw in kws:
+            k = re.sub(r"[^a-z0-9]+", "", kw.lower())
+            if k and k in norm_name and len(k) > best_len:
+                best_group, best_len = group, len(k)
+    return best_group
+
+
+def _common_length(a, b):
+    """Length of the longest common substring."""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for ch in a:
+        cur = [0]
+        for j, chb in enumerate(b):
+            cur.append(prev[j] + 1 if ch == chb else 0)
+            best = max(best, cur[-1])
+        prev = cur
+    return best
 
 
 def suggest_mapping(fields, column_names):
     """Suggest which dataset column fills each template field."""
     cols = [c.strip() for c in column_names if c and c.strip()]
+    col_groups = [(c, normalize_field(c), _group(normalize_field(c))) for c in cols]
     out = {}
+    used = set()
     for f in fields:
         fn = normalize_field(f)
-        best = None
+        fg = _group(fn)
+        best, bestscore = None, 0
+        # 1. exact normalized match
         for c in cols:
             if normalize_field(c) == fn:
-                best = c
+                best, bestscore = c, 100
                 break
-        if not best:
+        # 2. same semantic group (unused column preferred)
+        if bestscore < 90 and fg:
+            for c, cn, cg in col_groups:
+                if cg != fg:
+                    continue
+                sc = 50 + min(20, _common_length(fn, cn)) + (0 if c in used else 5)
+                if sc > bestscore:
+                    best, bestscore = c, sc
+        # 3. substring fallback (only when nothing grouped matched)
+        if bestscore < 50 and fn:
             for c in cols:
                 cn = normalize_field(c)
-                if fn and (fn in cn or cn in fn) and len(fn) > 2:
-                    best = c
+                if (fn in cn or cn in fn) and len(fn) > 2 and len(cn) > 2:
+                    best, bestscore = c, 30
                     break
-        if not best:
-            for key, aliases in SYNONYMS:
-                if key in fn:
-                    cand, bestscore = None, 0
-                    for c in cols:
-                        cn = normalize_field(c)
-                        for a in aliases:
-                            an = normalize_field(a)
-                            if cn == an:
-                                sc = 3
-                            elif cn.startswith(an):
-                                sc = 2
-                            elif an in cn:
-                                sc = 1
-                            else:
-                                continue
-                            if sc > bestscore:
-                                bestscore, cand = sc, c
-                    if cand:
-                        best = cand
-                    break
+        if best:
+            used.add(best)
         out[f] = best or ""
     return out
 

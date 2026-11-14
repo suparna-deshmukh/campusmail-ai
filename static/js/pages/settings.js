@@ -147,7 +147,7 @@ function secGmail(col) {
       const rowEl = el("div", { class: "set-acc-row" },
         el("span", { class: "avatar", style: `background:${avatarColor(a.email || label)}` }, initials(a.email || label)),
         el("div", { class: "set-acc-main" },
-          el("div", { class: "set-acc-email" }, a.email || label),
+          el("div", { class: "set-acc-email", title: a.email || label }, a.email || label),
           el("div", { class: "set-acc-cap" },
             [a.label && a.label !== a.email ? a.label : null,
               a.mine ? "Added by you" : "Added by a teammate"].filter(Boolean).join(" · "))),
@@ -165,7 +165,6 @@ function secGmail(col) {
                   saved();
                 } catch (e) { toast(e.message, { type: "error" }); }
               }, "Shared with the team"))) : null,
-          el("div", { class: "set-acc-share" }, el("span", { class: "t-caption" }, "Anyone on the team can send from it")),
           kebabAccount(a, admin)));
     w.append(rowEl);
     }

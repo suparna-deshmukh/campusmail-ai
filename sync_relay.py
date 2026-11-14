@@ -49,10 +49,14 @@ SYNC_COLUMNS = {
                         "is_active", "created_at", "updated_at", "updated_at_ms"],
     "sheets": ["id", "name", "campaign_id", "filename", "headers", "rows", "n_rows",
                "created_by", "created_at", "updated_at", "updated_at_ms"],
+    "users": ["id", "email", "display_name", "role", "status", "request_note",
+              "created_at", "updated_at_ms"],
+    "activity": ["id", "ts", "actor", "action", "detail", "updated_at_ms"],
 }
 
 # apply remote rows parents-first so re-inserts never orphan children
-TABLE_ORDER = ["campaigns", "email_templates", "sheets", "batches", "contacts", "emails"]
+TABLE_ORDER = ["users", "campaigns", "email_templates", "sheets", "batches",
+               "contacts", "emails", "activity"]
 
 SYNC_STATE = {"last_run": 0, "last_pull": 0, "last_attempt": 0, "halted": False}
 PUSH_BATCH = 50
@@ -61,6 +65,16 @@ PULL_MIN_INTERVAL = 90
 
 def _now_utc():
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _norm_payload(p):
+    """Legacy outbox rows may carry payload as a double-encoded JSON string."""
+    if isinstance(p, str):
+        try:
+            p = json.loads(p)
+        except ValueError:
+            p = {}
+    return p if isinstance(p, dict) else {}
 
 
 def _ts_ms(s):
@@ -222,13 +236,26 @@ def _row_ms(row):
     return ms or _ts_ms(row["updated_at"] if "updated_at" in row.keys() else None)
 
 
+def _version_cols(table):
+    """Version columns present on this table (users/activity lack updated_at)."""
+    return [k for k in ("updated_at", "updated_at_ms") if k in SYNC_COLUMNS[table]]
+
+
 def _apply_change(c, table, rid, op, payload):
     """Apply one outbox change locally. Returns True if applied (or idempotently skipped)."""
     if table not in SYNC_COLUMNS or not isinstance(rid, int) or rid <= 0:
         return False
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    vcols = ",".join(_version_cols(table))
     if op == "delete":
-        ms = int((payload or {}).get("deleted_at_ms") or 0)
-        local = c.execute("SELECT updated_at, updated_at_ms FROM %s WHERE id=?" % table, (rid,)).fetchone()
+        ms = int(payload.get("deleted_at_ms") or 0)
+        local = c.execute("SELECT %s FROM %s WHERE id=?" % (vcols, table), (rid,)).fetchone()
         if local and _row_ms(local) > ms:
             return False  # local copy was modified after the remote delete - keep it
         if local:
@@ -247,16 +274,33 @@ def _apply_change(c, table, rid, op, payload):
     if _local_tombstone_ms(c, table, rid) >= ms:
         return False  # local tombstone is newer - never resurrect
     cols = SYNC_COLUMNS[table]
-    local = c.execute("SELECT updated_at, updated_at_ms FROM %s WHERE id=?" % table, (rid,)).fetchone()
+    local = c.execute("SELECT %s FROM %s WHERE id=?" % (vcols, table), (rid,)).fetchone()
+    local_id = rid
+    if table == "users":
+        # User identity is the email, not the id: the same person exists with
+        # different autoincrement ids on each instance. Merge by email so no
+        # duplicate account ever appears on either side.
+        email = (data.get("email") or "").strip()
+        if email:
+            by_email = c.execute(
+                "SELECT id, %s FROM users WHERE email=?" % vcols,
+                (email,)).fetchone()
+            if by_email and by_email["id"] != rid:
+                local = by_email
+                local_id = by_email["id"]
     if local and _row_ms(local) > ms:
         return False  # local copy is newer
-    vals = [rid] + [data.get(col) for col in cols if col != "id"]
+    vals = [local_id] + [data.get(col) for col in cols if col != "id"]
     if local:
         # DELETE+INSERT: the INSERT trigger does not re-stamp updated_at when one is
         # supplied, so the remote timestamp stays authoritative (no echo, no LWW flip).
-        c.execute("DELETE FROM %s WHERE id=?" % table, (rid,))
+        c.execute("DELETE FROM %s WHERE id=?" % table, (local_id,))
     c.execute("INSERT INTO %s(%s) VALUES(%s)" % (table, ",".join(cols), ",".join("?" * len(cols))),
               vals)
+    if table == "users" and local_id != rid:
+        # Watermark the merged local id too, so the merged row is not re-pushed.
+        c.execute("INSERT OR REPLACE INTO sync_pushed(table_name, row_id, kind, version_ms) "
+                  "VALUES(?,?, 'row', ?)", (table, local_id, ms))
     return True
 
 
@@ -365,7 +409,10 @@ def _sync_tick_inner(force=False):
     except ValueError:
         _bump_fail("changes bad json")
         return
-    changes = parsed.get("changes") or []
+    if not isinstance(parsed, dict):
+        _bump_fail("changes bad json shape: %r" % (str(parsed)[:80],))
+        return
+    changes = [ch for ch in (parsed.get("changes") or []) if isinstance(ch, dict)]
     if not changes:
         SYNC_STATE["last_pull"] = now
         if pushed_rows or pushed_dels:
@@ -382,15 +429,22 @@ def _sync_tick_inner(force=False):
         # mark applied remote changes as pushed so they are never re-pushed
         # back to their origin (echo loop)
         for ch in upserts:
-            if _apply_change(c, ch.get("table"), ch.get("row_id"), "upsert", ch.get("payload") or {}):
-                data = (ch.get("payload") or {}).get("data") or {}
+            payload = _norm_payload(ch.get("payload"))
+            if _apply_change(c, ch.get("table"), ch.get("row_id"), "upsert", payload):
+                data = payload.get("data") or {}
+                if isinstance(data, str):
+                    try:
+                        data = json.loads(data)
+                    except ValueError:
+                        data = {}
                 ms = int(data.get("updated_at_ms") or 0) or _ts_ms(data.get("updated_at"))
                 c.execute("INSERT OR REPLACE INTO sync_pushed(table_name, row_id, kind, version_ms) "
                           "VALUES(?,?, 'row', ?)", (ch.get("table"), ch.get("row_id"), ms))
         for ch in changes:
             if ch.get("op") == "delete":
-                if _apply_change(c, ch.get("table"), ch.get("row_id"), "delete", ch.get("payload") or {}):
-                    ms = int((ch.get("payload") or {}).get("deleted_at_ms") or 0)
+                payload = _norm_payload(ch.get("payload"))
+                if _apply_change(c, ch.get("table"), ch.get("row_id"), "delete", payload):
+                    ms = int(payload.get("deleted_at_ms") or 0)
                     c.execute("INSERT OR REPLACE INTO sync_pushed(table_name, row_id, kind, version_ms) "
                               "VALUES(?,?, 'del', ?)", (ch.get("table"), ch.get("row_id"), ms))
         c.commit()

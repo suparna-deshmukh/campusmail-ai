@@ -5,7 +5,7 @@
 import postgres from "npm:postgres@3.4.5";
 
 const SECRET = Deno.env.get("RELAY_SECRET") || "";
-const DB_URL = Deno.env.get("DATABASE_URL") || "";
+const DB_URL = Deno.env.get("DATABASE_URL") || Deno.env.get("SUPABASE_DB_URL") || "";
 const CLIENT_ID = Deno.env.get("GMAIL_CLIENT_ID") || "";
 const CLIENT_SECRET = Deno.env.get("GMAIL_CLIENT_SECRET") || "";
 const REFRESH_TOKEN = Deno.env.get("GMAIL_REFRESH_TOKEN") || "";
@@ -18,6 +18,7 @@ let schemaReady = false;
 async function ensureSchema() {
   await sql`ALTER TABLE relay_emails ADD COLUMN IF NOT EXISTS bounced_at TIMESTAMPTZ`;
   await sql`ALTER TABLE relay_emails ADD COLUMN IF NOT EXISTS bounce_reason TEXT DEFAULT ''`;
+  await sql`ALTER TABLE relay_emails ADD COLUMN IF NOT EXISTS undo_hold BOOLEAN NOT NULL DEFAULT FALSE`;
   await sql`CREATE TABLE IF NOT EXISTS relay_processed_dsn (
     message_id   TEXT PRIMARY KEY,
     processed_at TIMESTAMPTZ NOT NULL DEFAULT now())`;
@@ -39,6 +40,19 @@ async function ensureSchema() {
     deleted_at TIMESTAMPTZ NOT NULL,
     instance   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (table_name, row_id))`;
+  // row_id must be BIGINT: activity ids are epoch-ms based (~1.8e15) and
+  // overflow the 32-bit INTEGER these tables were first created with.
+  const ridType: any[] = await sql`SELECT data_type FROM information_schema.columns
+    WHERE table_name = 'sync_rows' AND column_name = 'row_id'`;
+  if (ridType.length && ridType[0].data_type && ridType[0].data_type.toLowerCase() !== "bigint") {
+    await sql`ALTER TABLE sync_rows DROP CONSTRAINT sync_rows_pkey`;
+    await sql`ALTER TABLE sync_rows ALTER COLUMN row_id TYPE BIGINT`;
+    await sql`ALTER TABLE sync_rows ADD PRIMARY KEY (table_name, row_id)`;
+    await sql`ALTER TABLE sync_deletes DROP CONSTRAINT sync_deletes_pkey`;
+    await sql`ALTER TABLE sync_deletes ALTER COLUMN row_id TYPE BIGINT`;
+    await sql`ALTER TABLE sync_deletes ADD PRIMARY KEY (table_name, row_id)`;
+    try { await sql`ALTER TABLE sync_outbox ALTER COLUMN row_id TYPE BIGINT`; } catch (e) { /* pre-0004 */ }
+  }
 }
 
 function json(obj: unknown, code = 200): Response {
@@ -85,7 +99,7 @@ async function upsertEmails(req: Request): Promise<Response> {
       INSERT INTO relay_emails(local_id, account_id, to_addr, cc, subject, body_text,
         attachments, status, scheduled_at, batch_name, campaign_name, is_reminder, serial,
         error, reminder_days, reminder_max, reminder_subject, reminder_body, replied_at,
-        bounced_at, bounce_reason, updated_at)
+        bounced_at, bounce_reason, undo_hold, updated_at)
       VALUES (${e.local_id}, ${e.account_id || 0}, ${e.to_addr || ""}, ${e.cc || ""}, ${e.subject || ""},
         ${e.body_html || ""}, ${JSON.stringify(e.attachments || [])}, ${e.status || "scheduled"},
         ${e.scheduled_at ? new Date(e.scheduled_at) : null}, ${e.batch_name || ""},
@@ -93,7 +107,8 @@ async function upsertEmails(req: Request): Promise<Response> {
         ${e.error || ""}, ${e.reminder_days || 0}, ${e.reminder_max || 0},
         ${e.reminder_subject || ""}, ${e.reminder_body || ""},
         ${e.replied_at ? new Date(e.replied_at) : null},
-        ${e.bounced_at ? new Date(e.bounced_at) : null}, ${e.bounce_reason || ""}, now())
+        ${e.bounced_at ? new Date(e.bounced_at) : null}, ${e.bounce_reason || ""},
+        ${e.undo_hold ? true : false}, now())
       ON CONFLICT (local_id) DO UPDATE SET
         account_id = excluded.account_id, to_addr = excluded.to_addr, cc = excluded.cc,
         subject = excluded.subject, body_text = excluded.body_text,
@@ -103,7 +118,7 @@ async function upsertEmails(req: Request): Promise<Response> {
         serial = excluded.serial, error = excluded.error,
         reminder_days = excluded.reminder_days, reminder_max = excluded.reminder_max,
         reminder_subject = excluded.reminder_subject, reminder_body = excluded.reminder_body,
-        replied_at = excluded.replied_at,
+        replied_at = excluded.replied_at, undo_hold = excluded.undo_hold,
         bounced_at = CASE WHEN excluded.bounced_at IS NOT NULL THEN excluded.bounced_at
                    ELSE relay_emails.bounced_at END,
         bounce_reason = CASE WHEN excluded.bounce_reason IS NOT NULL AND excluded.bounce_reason != ''
@@ -157,6 +172,7 @@ async function pump(): Promise<Response> {
     WHERE local_id IN (
       SELECT local_id FROM relay_emails
       WHERE status = 'scheduled' AND scheduled_at IS NOT NULL AND scheduled_at <= now()
+        AND (undo_hold = FALSE OR scheduled_at <= now() - interval '60 seconds')
       ORDER BY scheduled_at LIMIT ${PUMP_LIMIT} FOR UPDATE SKIP LOCKED
     )
     RETURNING *`;
@@ -318,7 +334,8 @@ async function scanBounces(): Promise<number> {
 //   (503), per-instance rolling-24h row/byte budgets (429), per-table row caps (507),
 //   project rolling-24h egress budget (503), per-pull row/byte caps (truncated flag).
 
-const SYNC_TABLES = ["contacts", "emails", "batches", "campaigns", "email_templates", "sheets"];
+const SYNC_TABLES = ["contacts", "emails", "batches", "campaigns", "email_templates",
+                     "sheets", "users", "activity"];
 const RELAY_VERSION = 2;
 
 async function cfgVal(key: string, dflt: string): Promise<string> {

@@ -21,9 +21,9 @@
 }
 .lib-thumb iframe {
   position: absolute; top: 0; left: 0;
-  width: 285.7%; height: 285.7%;
+  width: 333.3%; height: 333.3%;
   border: 0; pointer-events: none;
-  transform: scale(0.35); transform-origin: top left;
+  transform: scale(0.3); transform-origin: top left;
 }
 .lib-thumb .lib-thumb-ph {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
