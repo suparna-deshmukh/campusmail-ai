@@ -896,10 +896,10 @@ def api_contact_delete():
     ids = d.get("ids") or []
     c = db.conn()
     c.executemany("DELETE FROM contacts WHERE id=?", [(i,) for i in ids])
+    c.commit()
     import sync_relay
     for i in ids:
         sync_relay.record_delete("contacts", i)
-    c.commit()
     log("contact_delete", "Deleted " + str(len(ids)) + " contact(s)")
     c.close()
     return jsonify({"ok": True, "deleted": len(ids)})
@@ -1057,9 +1057,9 @@ def api_template_activate(tid):
 def api_template_delete(tid):
     c = db.conn()
     c.execute("DELETE FROM email_templates WHERE id=?", (tid,))
+    c.commit()
     import sync_relay
     sync_relay.record_delete("email_templates", tid)
-    c.commit()
     log("template_delete", "Template " + str(tid) + " deleted")
     c.close()
     return jsonify({"ok": True})
@@ -1533,6 +1533,8 @@ def api_campaign_delete(cid):
     c.execute("UPDATE sheets SET campaign_id=0 WHERE campaign_id=?", (cid,))
     c.execute("DELETE FROM campaigns WHERE id=?", (cid,))
     c.commit()
+    import sync_relay
+    sync_relay.record_delete("campaigns", cid)
     log("campaign_delete", cam["name"])
     c.close()
     return jsonify({"ok": True})
@@ -1716,9 +1718,9 @@ def api_sheet_delete(sid):
         c.close()
         return api_err("This sheet is used by " + str(n) + " batch(es), so it cannot be deleted.")
     c.execute("DELETE FROM sheets WHERE id=?", (sid,))
+    c.commit()
     import sync_relay
     sync_relay.record_delete("sheets", sid)
-    c.commit()
     log("sheet_delete", "Sheet " + str(sid) + " deleted")
     c.close()
     return jsonify({"ok": True})
@@ -2349,8 +2351,10 @@ def relay_status_pull():
         lid, st = e.get("local_id"), e.get("status")
         if not lid or st not in ("sent", "error", "scheduled", "cancelled", "drafted"):
             continue
-        exists = c.execute("SELECT 1 FROM emails WHERE id=?", (lid,)).fetchone()
-        if not exists and e.get("is_reminder") and st == "sent":
+        row = c.execute("SELECT status FROM emails WHERE id=?", (lid,)).fetchone()
+        if row and row["status"] == "deleted":
+            continue  # locally deleted - never resurrect from cloud status
+        if not row and e.get("is_reminder") and st == "sent":
             parent = c.execute("SELECT * FROM emails WHERE id=?", (e.get("parent_local_id") or 0,)).fetchone()
             if parent:
                 c.execute("INSERT INTO emails(id, batch_id, contact_id, serial, to_addr, subject, body_html, "

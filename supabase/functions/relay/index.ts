@@ -28,6 +28,11 @@ async function ensureSchema() {
     updated_at TIMESTAMPTZ NOT NULL,
     instance   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (table_name, row_id))`;
+  const dtype: any[] = await sql`SELECT data_type FROM information_schema.columns
+    WHERE table_name = 'sync_rows' AND column_name = 'data'`;
+  if (dtype.length && dtype[0].data_type && dtype[0].data_type.toLowerCase() !== "jsonb") {
+    await sql`ALTER TABLE sync_rows ALTER COLUMN data TYPE JSONB USING data::jsonb`;
+  }
   await sql`CREATE TABLE IF NOT EXISTS sync_deletes (
     table_name TEXT NOT NULL,
     row_id     INTEGER NOT NULL,
@@ -388,7 +393,7 @@ async function syncPull(url: URL): Promise<Response> {
       WHERE table_name = ${table}
       ORDER BY updated_at, row_id LIMIT 2000`;
   return json({ ok: true, rows: rows.map((r) => ({
-    id: r.row_id, data: r.data,
+    id: r.row_id, data: typeof r.data === "string" ? JSON.parse(r.data) : r.data,
     updated_at: new Date(r.updated_at).toISOString(), instance: r.instance || "",
   })) });
 }

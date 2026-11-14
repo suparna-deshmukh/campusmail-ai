@@ -87,36 +87,49 @@ def _http(method, url, payload=None):
                                  headers={"Content-Type": "application/json",
                                           "x-relay-secret": _cfg()[1]},
                                  method=method)
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=90) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
 def _apply_rows(table, rows):
-    """Upsert remote rows locally; incoming wins only when newer (or row missing)."""
+    """Upsert remote rows locally; incoming wins only when newer (or row missing).
+
+    Rows we deleted locally (sync_deletes) are never resurrected by the row
+    store: the relay keeps deleted rows, so a delete record must win until the
+    matching remote delete is applied."""
     cols = SYNC_COLUMNS[table]
     c = db.conn()
     applied = 0
     for row in rows:
         rid, data = row.get("id"), row.get("data") or {}
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except ValueError:
+                continue
         if not rid:
             continue
         try:
             rid = int(rid)
         except Exception:
             continue
+        if c.execute("SELECT 1 FROM sync_deletes WHERE table_name=? AND row_id=?",
+                     (table, rid)).fetchone():
+            continue  # deleted locally - do not resurrect from the row store
         local = c.execute("SELECT updated_at FROM %s WHERE id=?" % table, (rid,)).fetchone()
         inc_ts = _norm_ts(data.get("updated_at"))
         if local and _norm_ts(local["updated_at"]) > inc_ts:
             continue  # local copy is newer
         if local:
             sets = ", ".join("%s=?" % col for col in cols if col != "id")
-            vals = [data.get(col, "" if col != "id" else rid) for col in cols if col != "id"]
+            vals = [data.get(col) for col in cols if col != "id"]
             c.execute("UPDATE %s SET %s WHERE id=?" % (table, sets), vals + [rid])
         else:
-            cols2 = cols[:]
-            vals = [data.get(col) for col in cols2]
-            c.execute("INSERT INTO %s(%s) VALUES(%s)" % (table, ",".join(cols2),
-                        ",".join("?" * len(cols2))), vals)
+            # insert with the REMOTE id (data never carries it) - renumbering
+            # would re-pollute the relay with duplicate rows on the next push
+            vals = [rid] + [data.get(col) for col in cols if col != "id"]
+            c.execute("INSERT INTO %s(%s) VALUES(%s)" % (table, ",".join(cols),
+                        ",".join("?" * len(cols))), vals)
             applied += 1
     c.commit()
     c.close()
@@ -218,19 +231,19 @@ def sync_tick(force=False):
             c = db.conn()
             local = [dict(r) for r in c.execute(
                 "SELECT %s FROM %s WHERE (COALESCE(updated_at,''), id) > (?, ?) "
-                "ORDER BY COALESCE(updated_at,''), id LIMIT 500"
+                "ORDER BY COALESCE(updated_at,''), id LIMIT 200"
                 % (",".join(cols), table), (p_ts, p_id)).fetchall()]
             d_ts, d_id = _split_cursor(db.get_setting("sync_push_del_" + table, ""))
             dels_local = [dict(r) for r in c.execute(
                 "SELECT row_id, deleted_at FROM sync_deletes WHERE table_name=? "
                 "AND (COALESCE(deleted_at,''), row_id) > (?, ?) "
-                "ORDER BY COALESCE(deleted_at,''), row_id LIMIT 500", (table, d_ts, d_id)).fetchall()]
+                "ORDER BY COALESCE(deleted_at,''), row_id LIMIT 200", (table, d_ts, d_id)).fetchall()]
             c.close()
             batch = []
             for r in local:
                 batch.append({"id": r["id"], "data": {k: (r.get(k) or "") for k in cols if k != "id"},
                               "updated_at": r.get("updated_at") or ""})
-                if len(batch) >= 500:
+                if len(batch) >= 200:
                     _push_remote(table, batch, [])
                     batch = []
             if batch or dels_local:
