@@ -11,7 +11,7 @@
   </div>
 
   <div class="tabs tm-tabs" id="tm-tabs" role="tablist">
-    <a class="tab" role="tab" href="/team?tab=members" data-tab="members">Members <span class="seg-badge" id="tm-req-badge" style="display:none"></span></a>
+    {% if me and me.role == "admin" %}<a class="tab" role="tab" href="/team?tab=members" data-tab="members">Members <span class="seg-badge" id="tm-req-badge" style="display:none"></span></a>{% endif %}
     <a class="tab" role="tab" href="/team?tab=results" data-tab="results">Results</a>
     <a class="tab" role="tab" href="/team?tab=activity" data-tab="activity">Activity</a>
   </div>

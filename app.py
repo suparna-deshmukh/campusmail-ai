@@ -1193,6 +1193,19 @@ def api_team_reports_summary():
     return jsonify({"ok": True, "totals": agg(rows), "by_member": by_member, "by_company": by_company})
 
 
+@app.route("/api/team/members")
+@login_required
+def api_team_members():
+    """Active team roster — any team member may read it (used by the
+    person filter on the Results tab, which is not admin-only)."""
+    c = db.conn()
+    rows = [dict(r) for r in c.execute(
+        "SELECT id, email, display_name, role FROM users WHERE status='active' "
+        "ORDER BY display_name COLLATE NOCASE, email").fetchall()]
+    c.close()
+    return jsonify({"ok": True, "members": rows})
+
+
 @app.route("/api/templates", methods=["POST"])
 @login_required
 def api_template_create():

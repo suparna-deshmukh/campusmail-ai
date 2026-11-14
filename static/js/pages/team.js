@@ -18,17 +18,21 @@ const state = {
 async function init() {
   document.querySelectorAll("#tm-tabs .tab").forEach((t) =>
     t.setAttribute("aria-selected", String(t.dataset.tab === state.tab)));
-  if (window.me_role !== "admin") {
-    view.append(emptyState({ icon: "shield-check", title: "Admins only",
-      text: "You need admin access to see the team page. Ask your admin for access." }));
-    return;
-  }
+  const isAdmin = window.me_role === "admin";
   try {
-    state.admin = await api("/api/admin/data");
+    state.admin = isAdmin
+      ? await api("/api/admin/data")
+      : await api("/api/team/members").then((d) => ({ requests: [], members: d.members }));
   } catch (e) {
     view.append(errorCard("Could not load the team.", { onRetry: init }));
     return;
   }
+  if (!isAdmin && state.tab === "members") {
+    state.tab = "results";
+    history.replaceState(null, "", "/team?tab=results");
+  }
+  document.querySelectorAll("#tm-tabs .tab").forEach((t) =>
+    t.setAttribute("aria-selected", String(t.dataset.tab === state.tab)));
   const pend = state.admin.requests.length;
   const b = $("tm-req-badge");
   if (b) { b.textContent = String(pend); b.style.display = pend ? "" : "none"; }
@@ -222,10 +226,9 @@ function renderResults() {
   api("/api/campaigns").then((d) => {
     for (const c of d.campaigns) camSel.append(el("option", { value: String(c.id) }, c.name));
   }).catch(() => {});
-  api("/api/admin/data").then((d) => {
-    r.members = d.members.filter((m) => m.status !== "pending");
-    for (const m of r.members) memSel.append(el("option", { value: m.email }, m.display_name || m.email));
-  }).catch(() => {});
+  for (const m of (state.admin.members || []).filter((m) => m.status !== "pending")) {
+    memSel.append(el("option", { value: m.email }, m.display_name || m.email));
+  }
   camSel.onchange = () => { r.campaign = camSel.value; load(); };
   memSel.onchange = () => { r.member = memSel.value; load(); };
 

@@ -10,7 +10,7 @@
 <script>
   (function () {
     var force = new URLSearchParams(location.search).get("theme");
-    var t = force || localStorage.getItem("cm_theme") || "auto";
+    var t = force || localStorage.getItem("cm_theme") || "dark";
     var dark = t === "dark" || (t === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   })();
