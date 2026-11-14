@@ -84,22 +84,39 @@ First tick after deploy: each instance pushes its full current state once
 are ~90-byte responses.
 
 ## Migration to a new Supabase project (when the new key is available)
-1. Deploy the same `functions/relay/index.ts` + `migrations/0004_sync_v2.sql` to the
-   new project; create fresh `RELAY_SECRET`.
+1. Deploy the same `functions/relay/index.ts` + `migrations/0004_sync_v2.sql` to
+   the new project; create fresh `RELAY_SECRET`.
 2. On the laptop (source of truth, clean DB): set new `cloud_relay_url` /
    `cloud_relay_secret` in Settings, then reset the sync state
    (`DELETE FROM settings WHERE key IN ('sync_v2_rev','sync_fail_count')`,
    `DELETE FROM sync_pushed`, `DELETE FROM sync_deletes`), restart 5001 →
    full state bootstrap (every row is un-pushed, so the first tick pushes all).
-3. PA: `git pull` → set the same relay settings (or copy the laptop's
-   `data/campusmail_ai.db` settings rows) → run `python scripts/purge_stale.py --yes`
-   → restart.
+3. PA — order matters: `git pull` → with the app **stopped**, run
+   `python scripts/purge_stale.py --yes` (deletes PA rows that are not in the
+   laptop-seeded relay set, e.g. incident-era junk) → set the same relay
+   settings → restart. Purging against an *empty* relay would delete everything,
+   so the laptop bootstrap (step 2) must be done first.
 4. Verify: both instances show 82 contacts / 102 live emails (50 sent Diwali) /
    4 campaigns / 4 batches / 3 sheets; delete a contact + campaign on one side →
    gone on the other within 2 ticks.
 5. After 24 h of clean operation: delete the old project.
 
-## Verification numbers (fill in after the soak)
-- idle KB/hour per instance:
-- relay row counts per table (flat over soak):
-- egress vs 100 MB budget:
+## Verification (mock-relay suite + app-level soak)
+Mock-relay protocol suite (all pass, this commit):
+- S1 bootstrap: 200 rows each way, zero re-push on idle ticks
+- S2/S3: add/delete/edit on both sides propagate, incl. campaign delete with
+  1 batch + 50 email children tombstoned
+- S4: stale copy of a tombstoned row does NOT resurrect; stale downgrade of a
+  live row is rejected; a genuinely newer copy wins on both sides
+- S5: relay min_version+1 → 426 on push *and* pull → client halts, no-op ticks
+- S6: instance 24h row budget → exactly 5,000 rows then **429**; per-table cap →
+  exactly 10,000 rows then **507**
+- S7: sha1 over all synced columns identical on both instances, all 6 tables
+- S8: idle pull = 87-byte response; pull without `version` → 426
+- App-level: API create → pushed + `sync_tick` logged; API delete → tombstone
+  pushed, relay row removed; `/api/sync/status` clean
+
+Soak (two full app instances, 5099/5100, mock relay, started 2026-11-14 09:00 IST,
+log `/tmp/soak-v2.log`): first 15 min — hash parity EQUAL every 4 min, chaos
+mutation converged < 100 s, fail counts 0, idle egress ≈ 420 B / 4 min
+(≈ 7 KB/h, ~1/600 of the 100 MB/24 h budget; the v1 incident ran ~36 GB/h).
