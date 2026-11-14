@@ -2,7 +2,7 @@
    zone caption, inline validation, "space them out" with a live
    first/last line, daily-limit meter. Resolves {when, staggerMin}. */
 import { el, icon, modal, api } from "../core/ui.js";
-import { fmtLong, fmtTime, toBackend, tzLabel } from "../core/format.js";
+import { fmtInt, fmtLong, fmtTime, toBackend, tzLabel } from "../core/format.js";
 
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -95,11 +95,11 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
     liveLine.textContent = n === 1
       ? "1 email at " + fmtTime(toBackend(d)) + "."
       : gap === 0
-        ? `${n} emails all at once at ${fmtTime(toBackend(d))}.`
-        : `${n} emails, one every ${gap} ${gap === 1 ? "minute" : "minutes"}. First at ${fmtTime(toBackend(d))}, last at ${fmtTime(toBackend(last))}.`;
+        ? fmtInt(n) + " emails all at once at " + fmtTime(toBackend(d)) + "."
+        : fmtInt(n) + " emails, one every " + gap + " " + (gap === 1 ? "minute" : "minutes") + ". First at " + fmtTime(toBackend(d)) + ", last at " + fmtTime(toBackend(last)) + ".";
     if (dailyCap > 0 && n > dailyCap) {
       limitLine.style.display = "";
-      limitLine.querySelector("span").textContent = `Your daily limit is ${dailyCap}. This send puts ${n} on one day. `;
+      limitLine.querySelector("span").textContent = "Your daily limit is " + fmtInt(dailyCap) + ". This send puts " + fmtInt(n) + " on one day. ";
       const a = el("a", { href: "/settings", style: "font-weight:650" }, "Change limit");
       limitLine.append(a);
     } else {
@@ -116,7 +116,7 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
   let settle = null;
   const m = modal({
     title,
-    sub: "Choose when the " + (count === 1 ? "email" : count + " emails") + " should go out.",
+    sub: "Choose when the " + (count === 1 ? "email" : fmtInt(count) + " emails") + " should go out.",
     body: el("div", {},
       el("div", { class: "field" }, el("label", { class: "field-label" }, "Quick pick"), chips),
       el("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3)" },

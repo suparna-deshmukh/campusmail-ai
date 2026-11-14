@@ -7,8 +7,11 @@ export function localToUrl(body) {
   return String(body ?? "").replace(/src=(["'])local:([A-Za-z0-9._\-]+)\1/g, "src=$1/local_img/$2$1");
 }
 
+/* Indian grouping (decision #6): 1,046 / 1,04,600 / 10,00,000. */
+const _IN = new Intl.NumberFormat("en-IN");
 export function fmtInt(n) {
-  return String(Math.round(Number(n) || 0));
+  const x = Math.round(Number(n) || 0);
+  try { return _IN.format(x); } catch { return String(x); }
 }
 
 export function fmtPct(n) {
