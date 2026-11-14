@@ -312,15 +312,20 @@ window.addEventListener("pagehide", () => {
 /* ---------------- Hold-to-confirm button ---------------- */
 export function holdToConfirm(button, { onConfirm, duration = 1200, label = "Hold to confirm" }) {
   let raf = null, start = 0, active = false;
+  // Single label: replace whatever the button already contains - callers
+  // pass the same text as the button's own text, and appending a second
+  // label used to render it twice (D-14/D-29).
+  while (button.firstChild) button.firstChild.remove();
   const fill = el("span", { class: "hold-fill" });
-  const lbl = el("span", { class: "hold-label" }, label);
+  const lbl = el("span", { class: "hold-label", "aria-live": "polite" }, label);
   button.classList.add("btn-hold");
   button.append(fill, lbl);
+  const setLabel = (t) => { lbl.textContent = t; };
   const step = (ts) => {
     if (!active) return;
     const p = Math.min(1, (ts - start) / duration);
     fill.style.transform = `scaleX(${p})`;
-    lbl.lastChild.textContent = ` ${Math.round(p * 100)}%`;
+    setLabel("Keep holding… " + Math.round(p * 100) + "%");
     if (p >= 1) { stop(true); return; }
     raf = requestAnimationFrame(step);
   };
@@ -334,7 +339,7 @@ export function holdToConfirm(button, { onConfirm, duration = 1200, label = "Hol
     active = false;
     cancelAnimationFrame(raf);
     fill.style.transform = "scaleX(0)";
-    lbl.lastChild.textContent = "";
+    setLabel(label);
     if (fired) onConfirm();
   };
   button.addEventListener("mousedown", startHold);

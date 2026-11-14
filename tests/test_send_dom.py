@@ -217,3 +217,32 @@ def test_send_flow_renders_no_null_undefined_or_nan(cdp_session):
     assert text and len(text) > 200, "step 2 did not render (len=%r)" % (len(text or ""),)
     for bad in ("null", "undefined", "NaN"):
         assert bad not in text, "literal %r rendered in step 2 DOM" % bad
+
+def test_hold_to_confirm_renders_single_label(cdp_session):
+    cdp = cdp_session["cdp"]
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    out = ev(cdp, """(async () => {
+      const { holdToConfirm } = await import("/static/js/core/ui.js");
+      const btn = document.createElement("button");
+      btn.textContent = "Hold to send 5";
+      document.body.append(btn);
+      let confirmed = 0;
+      holdToConfirm(btn, { label: "Hold to send 5", duration: 250, onConfirm: () => { confirmed++; } });
+      const settled = btn.textContent.trim();
+      let during = "";
+      btn.dispatchEvent(new MouseEvent("mousedown"));
+      const t0 = Date.now();
+      while (confirmed === 0 && Date.now() - t0 < 6000) {
+        const t = btn.textContent.trim();
+        if (/holding/i.test(t)) during = t;
+        await new Promise(r => setTimeout(r, 50));
+      }
+      btn.dispatchEvent(new MouseEvent("mouseup"));
+      await new Promise(r => setTimeout(r, 200));
+      const after = btn.textContent.trim();
+      return { settled, during, after, confirmed };
+    })()""")
+    assert out["settled"] == "Hold to send 5", "label duplicated: %r" % out["settled"]
+    assert out["confirmed"] == 1, "hold never fired (rAF throttled?)"
+    assert "holding" in out["during"].lower() and "%" in out["during"]
+    assert out["after"] == "Hold to send 5"
