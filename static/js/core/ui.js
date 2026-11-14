@@ -62,6 +62,15 @@ export function el(tag, attrs = {}, ...children) {
   return n;
 }
 
+/* Native Element.append coerces null/undefined into the text "null"/"undefined".
+   Use this when appending expressions that may be null (D-01). */
+export function appendSafe(parent, ...children) {
+  for (const c of children.flat()) {
+    if (c === null || c === undefined || c === false) continue;
+    parent.append(c.nodeType ? c : String(c));
+  }
+}
+
 export function icon(name, cls = "i") {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   s.setAttribute("class", cls);

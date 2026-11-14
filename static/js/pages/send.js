@@ -2,7 +2,7 @@
    Glossary: send/list/spacing/follow-up. Sentence case, no exclamation marks. */
 import {
   api, el, icon, toast, modal, holdToConfirm, confirmSimple,
-  emptyState, errorCard, withLoading, esc,
+  emptyState, errorCard, withLoading, esc, appendSafe,
 } from "/static/js/core/ui.js";
 import { fmtInt, fmtLong, fmtDayTime, toBackend, parseWhen, localToUrl } from "/static/js/core/format.js";
 import { openTimePicker } from "/static/js/components/timepicker.js";
@@ -242,7 +242,7 @@ function renderStep1() {
       el("button", { class: "btn btn-ghost btn-sm push", onclick: () => { S.campaignId = 0; render(); } }, "Choose")));
     return;
   }
-  panel.append(
+  appendSafe(panel,
     S.campaignId
       ? el("div", { class: "send-cap" }, "Campaign: ", el("b", {}, c.name))
       : campaignPick(),
