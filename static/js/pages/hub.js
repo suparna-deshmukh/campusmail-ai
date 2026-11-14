@@ -507,12 +507,34 @@ function renderAudience(panel) {
     { label: "Choose an existing list", icon: "library", action: chooseExisting },
   ]));
 
+  const recipients = data.recipients || [];
+  const showRecipients = !sheets.length && recipients.length > 0;
   const head = el("div", { class: "camp-toolbar" },
-    el("div", { class: "camp-note" }, "The contact lists in this campaign. Drop a CSV or Excel file anywhere here to upload."),
+    el("div", { class: "camp-note" }, showRecipients
+      ? "Everyone this campaign reached, with their current status."
+      : "The contact lists in this campaign. Drop a CSV or Excel file anywhere here to upload."),
     el("div", { class: "push" }, addBtn));
   panel.append(head);
 
-  if (!sheets.length) {
+  if (showRecipients) {
+    const table = el("table", { class: "table", "aria-label": "Recipients" },
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Company"), el("th", {}, "HR name"), el("th", {}, "HR email"), el("th", {}, "Status"))),
+      el("tbody", {}));
+    for (const rc of recipients) {
+      const badge = rc.replied
+        ? el("span", { class: "badge replied" }, "Replied")
+        : rc.bounced
+          ? el("span", { class: "badge bounced" }, "Bounced")
+          : el("span", { class: "badge sent" }, "Sent");
+      table.tBodies[0].append(el("tr", {},
+        el("td", {}, rc.company || "—"),
+        el("td", {}, rc.hr_name || "—"),
+        el("td", {}, rc.hr_email || "—"),
+        el("td", {}, badge)));
+    }
+    panel.append(el("div", { class: "table-wrap" }, table));
+  } else if (!sheets.length) {
     panel.append(emptyState({
       icon: "contacts",
       title: "No contact lists yet.",

@@ -1696,9 +1696,28 @@ def api_campaign_detail(cid):
     sheets = [dict(r) for r in c.execute("SELECT * FROM sheets WHERE campaign_id=? ORDER BY id DESC", (cid,)).fetchall()]
     for sh in sheets:
         sh["headers"] = json.loads(sh["headers"] or "[]")
+    n_sheets = c.execute("SELECT COUNT(*) n FROM sheets WHERE campaign_id=?", (cid,)).fetchone()["n"]
     n_contacts = c.execute(
         "SELECT COUNT(*) n FROM contacts ct JOIN sheets s ON ct.sheet_id=s.id WHERE s.campaign_id=?",
         (cid,)).fetchone()["n"]
+    recipients = []
+    if n_sheets == 0:
+        # no linked lists: audience = the distinct people actually emailed in
+        # this campaign (same fallback /api/home uses for its campaign cards)
+        n_contacts = c.execute(
+            "SELECT COUNT(DISTINCT e.contact_id) n FROM emails e JOIN batches b ON e.batch_id=b.id "
+            "WHERE b.campaign_id=? AND e.status != 'deleted' AND e.contact_id > 0",
+            (cid,)).fetchone()["n"]
+        recipients = [dict(r) for r in c.execute("""
+            SELECT co.id AS contact_id, co.company, co.hr_name, co.hr_email,
+                   MAX(CASE WHEN e.bounced_at IS NOT NULL AND e.bounced_at != '' THEN 1 ELSE 0 END) AS bounced,
+                   MAX(CASE WHEN e.replied_at IS NOT NULL AND e.replied_at != '' THEN 1 ELSE 0 END) AS replied
+            FROM emails e JOIN batches b ON e.batch_id = b.id
+            LEFT JOIN contacts co ON co.id = e.contact_id
+            WHERE b.campaign_id = ? AND e.status != 'deleted' AND e.contact_id > 0
+            GROUP BY co.id
+            ORDER BY COALESCE(NULLIF(co.hr_name, ''), co.company, co.hr_email)
+        """, (cid,)).fetchall()]
     # UI redesign (hub overview): derived status summary, sends per day,
     # recent replies. Additive fields only.
     srow = c.execute("""
@@ -1736,7 +1755,7 @@ def api_campaign_detail(cid):
         ORDER BY e.replied_at DESC LIMIT 5""", (cid,)).fetchall()]
     c.close()
     return jsonify({"ok": True, "campaign": dict(cam), "status_counts": st,
-                    "batches": batches, "sheets": sheets, "n_contacts": n_contacts,
+                    "batches": batches, "sheets": sheets, "n_contacts": n_contacts, "recipients": recipients,
                     "summary": summary, "per_day": per_day, "recent_replies": recent_replies,
                     "n_emailed": n_emailed})
 
