@@ -1,0 +1,24 @@
+{% extends "base_new.html" %}
+{% block title %}Library - CampusMail AI{% endblock %}
+{% block crumb %}<span>Library</span>{% endblock %}
+{% block content %}
+<div class="page-in">
+  <div class="page-head">
+    <div class="ph-main">
+      <div class="page-title">Library</div>
+      <p class="page-sub">Your templates and contact lists, ready to reuse.</p>
+    </div>
+  </div>
+
+  <div class="tabs lib-tabs" id="lib-tabs" role="tablist">
+    <a class="tab" role="tab" href="/library?tab=templates" data-tab="templates">Templates</a>
+    <a class="tab" role="tab" href="/library?tab=lists" data-tab="lists">Contact lists</a>
+  </div>
+
+  <div id="lib-view"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>window.lib_edit_id = {{ edit_id|tojson if edit_id else "null" }};</script>
+<script type="module" src="{{ '/static/js/pages/library.js' ~ sv('js/pages/library.js') }}"></script>
+{% endblock %}

@@ -240,6 +240,22 @@ def all_fields(subject, body):
     return f
 
 
+def tpl_fields(tpl):
+    """Field names for a template row. Legacy rows may store a plain count."""
+    if not isinstance(tpl, dict):
+        tpl = dict(tpl)
+    raw = tpl.get("fields")
+    if isinstance(raw, list):
+        return raw
+    try:
+        v = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        v = None
+    if isinstance(v, list):
+        return v
+    return all_fields(tpl.get("subject") or "", tpl.get("body_html") or "")
+
+
 def render_email(tpl, row, mapping):
     subject = fill_fields(tpl["subject"], mapping, dict(row))
     body = fill_fields(tpl["body_html"], mapping, dict(row))
@@ -397,6 +413,9 @@ def admin_requests():
     elif d.get("action") == "deny":
         db.set_user_status(u["id"], "denied")
         log("request_denied", u["email"])
+    elif d.get("action") == "revert":
+        db.set_user_status(u["id"], "pending")
+        log("request_reverted", u["email"])
     else:
         return api_err("Unknown action")
     return jsonify({"ok": True})
@@ -450,25 +469,39 @@ def page_home():
 @app.route("/replies")
 @login_required
 def page_replies():
-    return render_template("area_soon.html", page="replies", area_title="Replies",
-                           area_sub="Recruiters who wrote back, and emails that need fixing.",
-                           old_href="/queue", old_name="Queue and Schedule")
+    return render_template("replies_new.html", page="replies")
 
 
 @app.route("/library")
 @login_required
 def page_library():
-    return render_template("area_soon.html", page="library", area_title="Library",
-                           area_sub="Your templates and contact lists, ready to reuse.",
-                           old_href="/contacts", old_name="Contacts")
+    return render_template("library_new.html", page="library")
+
+
+@app.route("/library/templates/<int:tid>")
+@login_required
+def page_template_editor(tid):
+    return render_template("library_new.html", page="library", edit_id=tid)
 
 
 @app.route("/team")
 @login_required
 def page_team():
-    return render_template("area_soon.html", page="team", area_title="Team",
-                           area_sub="People, results and everything that happened.",
-                           old_href="/admin", old_name="Team admin")
+    return render_template("team_new.html", page="team")
+
+
+@app.route("/settings")
+@login_required
+def page_settings():
+    return redirect("/settings/gmail")
+
+
+@app.route("/settings/<sec>")
+@login_required
+def page_settings_section(sec):
+    if sec not in ("gmail", "sending", "signature", "ai", "branding", "advanced"):
+        sec = "gmail"
+    return render_template("settings_new.html", page="settings", section=sec)
 
 
 @app.route("/send")
@@ -509,10 +542,6 @@ def page_activity():
     return render_template("activity.html", page="activity")
 
 
-@app.route("/settings")
-@login_required
-def page_settings():
-    return render_template("settings.html", page="settings")
 
 
 @app.route("/guide")
@@ -584,6 +613,9 @@ def api_state():
     bounced_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
                            "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"]
     reminders_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=1").fetchone()["n"]
+    needs_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
+                        "AND replied_at IS NOT NULL AND replied_at != '' "
+                        "AND (handled_at IS NULL OR handled_at = '')").fetchone()["n"]
     c.close()
     return jsonify({
         "ok": True,
@@ -604,7 +636,7 @@ def api_state():
                       "last_error": SCHEDULER_STATE["last_error"],
                       "due_now": due,
                       "next_fire": nxt["scheduled_at"] if nxt else None},
-        "reply": {"sent": sent_n, "replied": replied_n, "bounced": bounced_n,
+        "reply": {"sent": sent_n, "replied": replied_n, "needs_reply": needs_n, "bounced": bounced_n,
                   "rate": round(100.0 * replied_n / sent_n) if sent_n else 0,
                   "reminders": reminders_n},
         "settings": {k: db.get_setting(k) for k in
@@ -640,13 +672,27 @@ def api_account_add():
         return api_err("Configure the Gmail OAuth client first (Settings, paste the client JSON).", 409)
     c = db.conn()
     c.execute("DELETE FROM gmail_accounts WHERE token_json IS NULL OR token_json=''")
-    c.execute("INSERT INTO gmail_accounts(label, owner_id, visibility, created_at) VALUES(?,?,?,?)",
-              ((d.get("label") or "").strip(), request.user["id"],
-               "private" if d.get("private") else "shared", db.now_iso()))
-    aid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
-    c.commit()
-    c.close()
-    log("gmail_account_add", "account " + str(aid))
+    existing_id = d.get("existing_id")
+    if existing_id:
+        acc = c.execute("SELECT * FROM gmail_accounts WHERE id=?", (int(existing_id),)).fetchone()
+        if not acc:
+            c.close()
+            return api_err("Account not found", 404)
+        if acc["owner_id"] != request.user["id"] and request.user["role"] != "admin":
+            c.close()
+            return api_err("Only the owner (or an admin) can reconnect this account.", 403)
+        aid = int(existing_id)
+        c.commit()
+        c.close()
+        log("gmail_account_add", "reconnect account " + str(aid))
+    else:
+        c.execute("INSERT INTO gmail_accounts(label, owner_id, visibility, created_at) VALUES(?,?,?,?)",
+                  ((d.get("label") or "").strip(), request.user["id"],
+                   "private" if d.get("private") else "shared", db.now_iso()))
+        aid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+        c.commit()
+        c.close()
+        log("gmail_account_add", "account " + str(aid))
     url, _ = gmail_client.start_auth(aid)
     return jsonify({"ok": True, "auth_url": url, "account_id": aid})
 
@@ -883,9 +929,14 @@ def api_export_contacts():
 def api_templates():
     c = db.conn()
     rows = [dict(r) for r in c.execute(
-        "SELECT id, name, type, subject, fields, is_active, created_at, body_html FROM email_templates ORDER BY id").fetchall()]
+        "SELECT id, name, type, kind, subject, fields, is_active, created_at, updated_at, body_html "
+        "FROM email_templates ORDER BY id").fetchall()]
     for r in rows:
-        r["fields"] = json.loads(r["fields"] or "[]")
+        r["fields"] = tpl_fields(r)
+        r["n_campaigns"] = c.execute(
+            "SELECT COUNT(DISTINCT campaign_id) n FROM batches "
+            "WHERE (template_id=? OR reminder_template_id=?) AND campaign_id > 0",
+            (r["id"], r["id"])).fetchone()["n"]
     c.close()
     return jsonify({"ok": True, "templates": rows})
 
@@ -949,8 +1000,8 @@ def api_template_ai():
     else:
         body = docx_convert.html_template_body(body)
     c = db.conn()
-    c.execute("INSERT INTO email_templates(name, type, subject, body_html, fields, is_active) VALUES(?,?,?,?,?,0)",
-              (name, "ai", subject, body, json.dumps(fields)))
+    c.execute("INSERT INTO email_templates(name, type, kind, subject, body_html, fields, is_active) VALUES(?,?,?,?,?,?,0)",
+              (name, "ai", (d.get("kind") or "outreach").strip()[:20], subject, body, json.dumps(fields)))
     tid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
     c.commit()
     log("template_ai", "AI template '" + name + "'")
@@ -1024,7 +1075,7 @@ def api_template_preview(tid):
     if not tpl:
         return api_err("Template not found", 404)
     mapping = {}
-    for f, col in docx_convert.suggest_mapping(json.loads(tpl["fields"] or "[]"),
+    for f, col in docx_convert.suggest_mapping(tpl_fields(tpl),
                                                 ["serial", "company", "hr_name", "hr_email"]).items():
         if col:
             mapping[f] = "column:" + col
@@ -1033,6 +1084,176 @@ def api_template_preview(tid):
     return jsonify({"ok": True, "subject": subject,
                     "body": gmail_client.inline_local_images(body),
                     "sample_row": vals, "mapping": mapping})
+
+
+# ---------------- replies / library / team (additive) ----------------
+
+ACTIVITY_TYPES = {
+    "campaigns": ("campaign_create", "campaign_update", "campaign_delete", "batch_create",
+                  "batch_reminders", "batch_attachments"),
+    "sending": ("send_now", "schedule", "drafts_create", "reply_sent", "reply_draft",
+                "emails_cancel", "emails_revert", "email_update", "email_ai_polish", "mark_replied"),
+    "contacts": ("contact_add", "contact_delete", "import", "sheet_upload", "sheet_delete",
+                 "sheet_campaign", "sheet_update", "practice_list"),
+    "templates": ("template_add", "template_ai", "template_ai_reminder", "template_ai_polish",
+                  "template_activate", "template_delete", "signature_save", "signature_image"),
+    "settings": ("settings", "gmail_account_add", "gmail_account_removed", "relay",
+                 "storage_migrate", "deploy", "account_visibility"),
+    "team": ("invite", "request_approved", "request_denied", "request_reverted",
+             "role_changed", "member_removed"),
+}
+
+
+@app.route("/api/activity")
+@login_required
+def api_activity():
+    sql = "SELECT id, ts, actor, action, detail FROM activity"
+    args = []
+    person = (request.args.get("person") or "").strip()
+    if person:
+        sql += " WHERE actor = ?"
+        args.append(person)
+    t = request.args.get("type") or ""
+    if t in ACTIVITY_TYPES:
+        acts = ACTIVITY_TYPES[t]
+        if args:
+            sql += " AND"
+        else:
+            sql += " WHERE"
+        sql += " action IN (" + ",".join("?" * len(acts)) + ")"
+        args += list(acts)
+    q = (request.args.get("q") or "").strip()
+    if q:
+        like = "%" + q + "%"
+        sql += (" AND" if args else " WHERE") + " (action LIKE ? OR detail LIKE ?)"
+        args += [like, like]
+    limit = max(1, min(int(request.args.get("limit") or 300), 300))
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    c = db.conn()
+    rows = [dict(r) for r in c.execute(sql, args).fetchall()]
+    c.close()
+    return jsonify({"ok": True, "rows": rows})
+
+
+@app.route("/api/reports/team-summary")
+@login_required
+def api_team_reports_summary():
+    where = ["e.status != 'deleted'", "b.id IS NOT NULL"]
+    args = []
+    cid = request.args.get("campaign_id")
+    if cid:
+        where.append("b.campaign_id = ?")
+        args.append(int(cid))
+    member = (request.args.get("member") or "").strip()
+    if member:
+        where.append("b.created_by = ?")
+        args.append(member)
+    period = request.args.get("period") or "all"
+    if period in ("7", "30"):
+        since = (datetime.now() - timedelta(days=int(period))).strftime("%Y-%m-%d %H:%M")
+        where.append("COALESCE(NULLIF(e.sent_at, ''), e.created_at) >= ?")
+        args.append(since)
+    c = db.conn()
+    rows = [dict(r) for r in c.execute(
+        "SELECT e.id, e.status, e.sent_at, e.replied_at, e.bounced_at, e.to_addr, "
+        "b.created_by AS member, co.company "
+        "FROM emails e JOIN batches b ON b.id = e.batch_id "
+        "LEFT JOIN contacts co ON co.id = e.contact_id WHERE " + " AND ".join(where),
+        args).fetchall()]
+    c.close()
+
+    def agg(rs):
+        sent = [r for r in rs if r["status"] == "sent"]
+        replied = [r for r in sent if r["replied_at"]]
+        bounced = [r for r in sent if r["bounced_at"]]
+        return {"n_emails": len(rs), "n_sent": len(sent), "n_replied": len(replied),
+                "n_bounced": len(bounced),
+                "rate": round(100.0 * len(replied) / len(sent), 1) if sent else 0}
+
+    by_member = []
+    for m in sorted({(r["member"] or "").strip() for r in rows if r["member"]}, key=str.lower):
+        a = agg([r for r in rows if (r["member"] or "").strip() == m])
+        a["member"] = m
+        by_member.append(a)
+    comp = {}
+    for r in rows:
+        name = (r["company"] or "").strip() or (r["to_addr"].split("@")[0] if r["to_addr"] else "") or "Unknown"
+        comp.setdefault(name, []).append(r)
+    by_company = []
+    for name, rs in sorted(comp.items(), key=lambda kv: (-agg(kv[1])["n_replied"], kv[0]))[:10]:
+        a = agg(rs)
+        a["company"] = name
+        by_company.append(a)
+    return jsonify({"ok": True, "totals": agg(rows), "by_member": by_member, "by_company": by_company})
+
+
+@app.route("/api/templates", methods=["POST"])
+@login_required
+def api_template_create():
+    d = request.get_json(force=True)
+    name = (d.get("name") or "").strip()
+    subject = (d.get("subject") or "").strip()
+    body = (d.get("body_html") or "").strip()
+    if not name:
+        return api_err("Give the template a name.")
+    if not body:
+        return api_err("Write the email body first.")
+    kind = (d.get("kind") or "outreach").strip().lower()
+    if kind not in ("outreach", "reminder"):
+        kind = "outreach"
+    fields = all_fields(subject, body)
+    c = db.conn()
+    c.execute("INSERT INTO email_templates(name, type, kind, subject, body_html, fields, is_active, created_at, updated_at) "
+              "VALUES(?,?,?,?,?,?,0,?,?)",
+              (name, (d.get("type") or "html")[:20], kind, subject, body,
+               json.dumps(fields), db.now_iso(), db.now_iso()))
+    tid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+    c.commit()
+    log("template_add", "Template '" + name + "' created")
+    c.close()
+    return jsonify({"ok": True, "id": tid, "fields": fields})
+
+
+@app.route("/api/sheets/<int:sid>", methods=["POST"])
+@login_required
+def api_sheet_rename(sid):
+    d = request.get_json(force=True)
+    c = db.conn()
+    cur = c.execute("SELECT * FROM sheets WHERE id=?", (sid,)).fetchone()
+    if not cur:
+        c.close()
+        return api_err("List not found", 404)
+    name = (d.get("name") or "").strip()
+    if not name:
+        c.close()
+        return api_err("Give the list a name.")
+    c.execute("UPDATE sheets SET name=?, updated_at=? WHERE id=?", (name, db.now_iso(), sid))
+    c.commit()
+    log("sheet_update", "List renamed to '" + name + "'")
+    c.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/emails/<int:eid>/handled", methods=["POST"])
+@login_required
+def api_email_handled(eid):
+    d = request.get_json(force=True)
+    c = db.conn()
+    r = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
+    if not r:
+        c.close()
+        return api_err("Email not found", 404)
+    if d.get("handled"):
+        c.execute("UPDATE emails SET handled_at=?, updated_at=? WHERE id=?", (db.now_iso(), db.now_iso(), eid))
+        verb = "Marked handled"
+    else:
+        c.execute("UPDATE emails SET handled_at=NULL, updated_at=? WHERE id=?", (db.now_iso(), eid))
+        verb = "Reopened"
+    c.commit()
+    log("handled", verb + " email " + str(eid))
+    c.close()
+    return jsonify({"ok": True})
 
 
 # ---------------- merge ----------------
@@ -1366,6 +1587,9 @@ def api_campaign_detail(cid):
         FROM emails e JOIN batches b ON e.batch_id=b.id
         WHERE b.campaign_id=? AND e.status='sent' AND e.sent_at IS NOT NULL AND e.sent_at != ''
         GROUP BY d""", (cid,)).fetchall()}
+    n_emailed = c.execute(
+        "SELECT COUNT(DISTINCT e.contact_id) n FROM emails e JOIN batches b ON e.batch_id=b.id "
+        "WHERE b.campaign_id=? AND e.status != 'deleted'", (cid,)).fetchone()["n"]
     recent_replies = [dict(r) for r in c.execute("""
         SELECT e.id, e.to_addr, e.replied_at, co.company, co.hr_name
         FROM emails e JOIN batches b ON e.batch_id=b.id LEFT JOIN contacts co ON co.id=e.contact_id
@@ -1374,7 +1598,8 @@ def api_campaign_detail(cid):
     c.close()
     return jsonify({"ok": True, "campaign": dict(cam), "status_counts": st,
                     "batches": batches, "sheets": sheets, "n_contacts": n_contacts,
-                    "summary": summary, "per_day": per_day, "recent_replies": recent_replies})
+                    "summary": summary, "per_day": per_day, "recent_replies": recent_replies,
+                    "n_emailed": n_emailed})
 
 
 # ---------------- sheets ----------------
@@ -1426,8 +1651,9 @@ def api_sheet_upload():
         return api_err(str(e), 400)
     if not headers:
         return api_err("No columns found - the first row should be column names.")
-    name = Path(f.filename).stem.replace("_", " ").replace("-", " ").strip() \
-        or "Sheet " + datetime.now().strftime("%Y-%m-%d %H:%M")
+    name = (request.form.get("name") or "").strip() \
+        or Path(f.filename).stem.replace("_", " ").replace("-", " ").strip() \
+        or "List " + datetime.now().strftime("%Y-%m-%d %H:%M")
     email_col = next((h for h in headers if re.search(r"email|mail", h, re.I)), "")
     comp_col = next((h for h in headers if re.search(r"company|organi[sz]ation|\\borg\\b|firm", h, re.I)), "")
     name_col = next((h for h in headers if h != comp_col and re.search(r"recruiter|hr|name|person|contact", h, re.I)), "")
@@ -1519,9 +1745,11 @@ def _email_rows(params):
     """Email list. Additive filters (UI redesign): campaign_id, q, sort, dir,
     and 'bounced' as a pseudo-status. Defaults preserve the old behaviour."""
     c = db.conn()
-    sql = "SELECT e.*, co.company, co.hr_name FROM emails e LEFT JOIN contacts co ON co.id = e.contact_id"
-    if params.get("campaign_id"):
-        sql += " JOIN batches b ON b.id = e.batch_id"
+    sql = ("SELECT e.*, co.company, co.hr_name, b.name AS batch_name, c.id AS campaign_id, "
+           "c.name AS campaign_name, b.created_by AS member "
+           "FROM emails e LEFT JOIN contacts co ON co.id = e.contact_id "
+           "LEFT JOIN batches b ON b.id = e.batch_id "
+           "LEFT JOIN campaigns c ON c.id = b.campaign_id")
     sql += " WHERE e.status != 'deleted'"
     args = []
     status = params.get("status")
@@ -2727,17 +2955,6 @@ def api_ai_chat():
     return jsonify({"ok": True, "reply": reply, "events": events})
 
 
-# ---------------- activity ----------------
-
-@app.route("/api/activity")
-@login_required
-def api_activity():
-    c = db.conn()
-    rows = [dict(r) for r in c.execute("SELECT * FROM activity ORDER BY id DESC LIMIT 300").fetchall()]
-    c.close()
-    return jsonify({"ok": True, "rows": rows})
-
-
 # ---------------- signature ----------------
 
 @app.route("/api/signature")
@@ -3077,12 +3294,30 @@ def api_email_update(eid):
     if "body_html" in d:
         sets.append("body_html = ?")
         args.append(d["body_html"])
+    if "to_addr" in d:
+        addr = (d["to_addr"] or "").strip()
+        if not CC_RE.match(addr):
+            c.close()
+            return api_err("Enter a valid email address.")
+        cur = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
+        if not cur:
+            c.close()
+            return api_err("Email not found", 404)
+        if cur["status"] != "sent" or not cur["bounced_at"]:
+            c.close()
+            return api_err("Only a bounced email can have its address corrected here.")
+        c.execute("UPDATE emails SET to_addr=?, status='pending', bounced_at=NULL, bounce_reason='', "
+                  "error='', updated_at=? WHERE id=?", (addr, db.now_iso(), eid))
+        if cur["contact_id"]:
+            c.execute("UPDATE contacts SET hr_email=?, status='new', updated_at=? WHERE id=?",
+                      (addr, db.now_iso(), cur["contact_id"]))
+        log("email_update", "Address for email " + str(eid) + " fixed to " + addr)
     if sets:
         args.append(eid)
         c.execute("UPDATE emails SET " + ", ".join(sets) + " WHERE id=?", args)
-        c.commit()
+        log("email_update", "email " + str(eid))
+    c.commit()
     c.close()
-    log("email_update", "email " + str(eid))
     return jsonify({"ok": True})
 
 

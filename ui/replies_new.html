@@ -1,0 +1,39 @@
+{% extends "base_new.html" %}
+{% block title %}Replies - CampusMail AI{% endblock %}
+{% block crumb %}<span>Replies</span>{% endblock %}
+{% block content %}
+<div class="page-in">
+  <div class="page-head">
+    <div class="ph-main">
+      <div class="page-title">Replies</div>
+      <p class="page-sub">Recruiters who wrote back, and emails that need fixing.</p>
+    </div>
+  </div>
+
+  <div class="rp-toolbar">
+    <div class="seg" id="rp-seg" role="group" aria-label="Replies filter">
+      <button class="seg-item is-active" data-tab="needs">Needs reply <span class="seg-badge" id="rp-n-needs">0</span></button>
+      <button class="seg-item" data-tab="done">Done <span class="seg-badge" id="rp-n-done">0</span></button>
+      <button class="seg-item" data-tab="bounced">Bounced <span class="seg-badge" id="rp-n-bounced">0</span></button>
+      <button class="seg-item" data-tab="all">All <span class="seg-badge" id="rp-n-all">0</span></button>
+    </div>
+    <div class="push"></div>
+    <select class="select" id="rp-campaign" aria-label="Campaign"></select>
+    <select class="select" id="rp-member" aria-label="Member" style="display:none"></select>
+  </div>
+
+  <div class="rp-layout" id="rp-layout">
+    <div class="rp-list" id="rp-list">
+      <div class="rp-list-scroll" id="rp-list-scroll"></div>
+      <div class="rp-list-foot" id="rp-list-foot" style="display:none">
+        <span><kbd>J</kbd>/<kbd>K</kbd> move</span><span><kbd>Enter</kbd> open</span>
+        <span><kbd>E</kbd> mark done</span><span><kbd>R</kbd> reply</span>
+      </div>
+    </div>
+    <div class="rp-conv" id="rp-conv"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ '/static/js/pages/replies.js' ~ sv('js/pages/replies.js') }}"></script>
+{% endblock %}

@@ -8,6 +8,7 @@ Usage:
 import argparse
 import datetime as dt
 import json
+import re
 import shutil
 import sqlite3
 import sys
@@ -15,6 +16,17 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 DB = BASE / "data" / "campusmail_ai.db"
+sys.path.insert(0, str(BASE))
+from docx_convert import detect_fields  # noqa: E402
+
+
+def template_fields(subject, body):
+    """Field names used by a template (from subject + body placeholders)."""
+    f = detect_fields(subject or "")
+    for x in detect_fields(body or ""):
+        if x.lower() not in {y.lower() for y in f}:
+            f.append(x)
+    return json.dumps(f)
 
 NOW = dt.datetime.now()
 
@@ -59,6 +71,42 @@ EXTRA = [
     ("Zoho", "सहिल देशमुख", "sahil.d@zohocorp.com"),
     ("Cognizant", "भारत कुलकर्णी", "bharat.k@cognizant.com"),
 ]
+EXTRA = [
+    ("Infosys", "प्रिया शर्मा", "priya.s.in@infosys.com"),
+    ("TCS", "राहुल पाटिल", "rahul.p@tcs.com"),
+    ("Wipro", "अनन्या जोशी", "ananya.j@wipro.com"),
+    ("Zoho", "सहिल देशमुख", "sahil.d@zohocorp.com"),
+    ("Cognizant", "भारत कुलकर्णी", "bharat.k@cognizant.com"),
+]
+
+# 25 more recruiters so the Diwali list reaches 50
+DIWALI_EXTRA = [
+    ("Persistent Systems", "Kavita Joshi", "kavita.joshi@persistent.com"),
+    ("Mphasis", "Ritesh Malhotra", "ritesh.m@mphasis.com"),
+    ("HDFC Bank", "Shalini Menon", "shalini.menon@hdfcbank.com"),
+    ("ICICI Bank", "Aditya Bhandari", "aditya.b@icicibank.com"),
+    ("Reliance Retail", "Meghna Saxena", "meghna.s@relianceretail.in"),
+    ("Bajaj Finance", "Harsh Vora", "harsh.vora@bajajfinserv.in"),
+    ("Tata Motors", "Pankaj Gokhale", "pankaj.g@tatamotors.com"),
+    ("Asian Paints", "Ritu Choudhury", "ritu.choudhury@asianpaints.com"),
+    ("Nestle India", "Sameer Kulkarni", "sameer.k@nestle.com"),
+    ("Unilever", "Farida Qureshi", "farida.q@unilever.com"),
+    ("Hindustan Unilever", "Devang Shah", "devang.shah@hindustanunilever.in"),
+    ("Maruti Suzuki", "Lakshmi Pillai", "lakshmi.p@marutisuzuki.com"),
+    ("Honda R&D", "Akshat Verma", "akshat.verma@hondardindia.com"),
+    ("Siemens", "Nikhil Deshpande", "nikhil.d@siemens.com"),
+    ("Hitachi", "Sonal Mehra", "sonal.mehra@hitachi.com"),
+    ("Ericsson", "Tanvi Naik", "tanvi.naik@ericsson.com"),
+    ("Cisco", "Rahul Bhatia", "rahul.bhatia@cisco.com"),
+    ("IBM", "Pooja Nair", "pooja.nair@ibm.com"),
+    ("ServiceNow", "Ishaan Kapoor", "ishaan.kapoor@servicenow.com"),
+    ("Intuit", "Deepa Iyer", "deepa.iyer@intuit.com"),
+    ("Adobe", "Kunal Mehta", "kunal.mehta@adobe.com"),
+    ("Uber", "Sanya Kapoor", "sanya.kapoor@uber.com"),
+    ("PayPal", "Vivek Jain", "vivek.jain@paypal.com"),
+    ("Flipkart", "Neha Bansal", "neha.bansal@flipkart.com"),
+    ("Swiggy", "Aakash Jain", "aakash.jain@swiggy.com"),
+]
 
 
 def wipe(c):
@@ -68,58 +116,72 @@ def wipe(c):
 
 def seed(c):
     now = ts(NOW)
-    # templates
-    c.execute("INSERT INTO email_templates(name, type, subject, body_html, fields, is_active, created_at, updated_at) "
-              "VALUES(?,?,?,?,1,1,?,?)",
-              ("Sem 2 placement outreach", "outreach",
-               "Recruiters from BITS Pilani Goa — campus drive in January",
-               '<p>Hi {HR Name},</p><p>We would love to invite {Company} to our campus recruitment drive at '
-               'BITS Pilani, Goa in January. 464 final-year students across CSE, ECE and ME.</p>'
-               '<p>Could we get 30 minutes to share student profiles?</p><p>— Outreach team, BITS Goa</p>',
-               '2026-09-01 10:00:00', now))
-    t1 = c.execute("SELECT last_insert_rowid() id").fetchone()[0]
-    c.execute("INSERT INTO email_templates(name, type, subject, body_html, fields, is_active, created_at, updated_at) "
-              "VALUES(?,?,?,?,0,0,?,?)",
-              ("Follow-up reminder", "reminder",
-               "Following up: campus drive in January",
-               '<p>Hi {HR Name},</p><p>Just following up on my note about the January campus drive. '
-               'Happy to share resumes of 464 students.</p><p>— Outreach team</p>',
-               '2026-09-01 10:05:00', now))
-    t2 = c.execute("SELECT last_insert_rowid() id").fetchone()[0]
-    c.execute("INSERT INTO email_templates(name, type, subject, body_html, fields, is_active, created_at, updated_at) "
-              "VALUES(?,?,?,?,0,0,?,?)",
-              ("Alumni intro", "outreach",
-               "Alumni network intro from BITS Goa",
-               '<p>Hi {HR Name},</p><p>Quick intro to our alumni network at {Company}.</p>',
-               '2026-09-10 10:00:00', now))
-    t3 = c.execute("SELECT last_insert_rowid() id").fetchone()[0]
+    # templates — fields are detected from the placeholders in subject + body
+    TEMPLATES = [
+        ("Sem 2 placement outreach", "outreach", 1, "2026-09-01 10:00:00",
+         "Recruiters from BITS Pilani Goa — campus drive in January",
+         '<p>Hi {HR Name},</p><p>We would love to invite {Company} to our campus recruitment drive at '
+         'BITS Pilani, Goa in January. 464 final-year students across CSE, ECE and ME.</p>'
+         '<p>Could we get 30 minutes to share student profiles?</p><p>— Outreach team, BITS Goa</p>'),
+        ("Follow-up reminder", "reminder", 0, "2026-09-01 10:05:00",
+         "Following up: campus drive in January",
+         '<p>Hi {HR Name},</p><p>Just following up on my note about the January campus drive. '
+         'Happy to share resumes of 464 students.</p><p>— Outreach team</p>'),
+        ("Alumni intro", "outreach", 0, "2026-09-10 10:00:00",
+         "Alumni network intro from BITS Goa",
+         '<p>Hi {HR Name},</p><p>Quick intro to our alumni network at {Company}.</p>'),
+        ("Diwali wishes to recruiters", "outreach", 0, "2026-09-25 10:00:00",
+         "Warm Diwali wishes from BITS Pilani, Goa",
+         '<p>Hi {HR Name},</p><p>From all of us at the BITS Pilani, Goa Placement Cell — a very Happy Diwali '
+         'to you and your team.</p><p>We are now planning our Sem 2 placement drive, and we would be delighted '
+         'to have {Company} on our invite list.</p><p>Warm regards,<br>Placement Cell, BITS Pilani Goa</p>'),
+        ("Winter internship request", "outreach", 0, "2026-10-20 10:00:00",
+         "Winter internships with BITS Pilani Goa — December to February",
+         '<p>Hi {HR Name},</p><p>We would like to invite {Company} to consider our final-year students for winter '
+         'internships (December to February).</p><p>Could we share the shortlist of students with you?</p>'
+         '<p>Warm regards,<br>Placement Cell, BITS Pilani Goa</p>'),
+    ]
+    for nm, kind, act, created, subj, body in TEMPLATES:
+        c.execute("INSERT INTO email_templates(name, type, kind, subject, body_html, fields, is_active, created_at, updated_at) "
+                  "VALUES(?,?,?,?,?,?,?,?,?)",
+                  (nm, "html", kind, subj, body, template_fields(subj, body), act, created, now))
+    tpl_ids = [r[0] for r in c.execute(
+        "SELECT id FROM email_templates ORDER BY id").fetchall()]
+    t1, t2, t3, t4, t5 = tpl_ids[-5:]
 
     # campaigns
     c.execute("INSERT INTO campaigns(name, description, created_by, created_at, updated_at) VALUES(?,?,?,?,?)",
-              ("Sem 2 Placement Campaign", "Placement Cell recruiters, core drive", "demo@campus.edu", add(-40), add(-1)))
+              ("Sem 2 Placement Campaign", "Placement Cell recruiters, core drive", "demo@campus.edu", add(-14), add(0, -3)))
     c1 = c.execute("SELECT last_insert_rowid() id").fetchone()[0]
     c.execute("INSERT INTO campaigns(name, description, created_by, created_at, updated_at) VALUES(?,?,?,?,?)",
-              ("Winter internships", "Internship drives, 6 weeks", "demo@campus.edu", add(-20), add(-3)))
+              ("Diwali campaign", "Festival greetings to every recruiter on our list", "demo@campus.edu", add(-40), add(-1)))
+    cd = c.execute("SELECT last_insert_rowid() id").fetchone()[0]
+    c.execute("INSERT INTO campaigns(name, description, created_by, created_at, updated_at) VALUES(?,?,?,?,?)",
+              ("Winter internships", "Internship drives, 6 weeks", "demo@campus.edu", add(-20), add(-4)))
     c2 = c.execute("SELECT last_insert_rowid() id").fetchone()[0]
     c.execute("INSERT INTO campaigns(name, description, created_by, created_at, updated_at) VALUES(?,?,?,?,?)",
               ("Alumni network", "", "demo@campus.edu", add(-6), add(-6)))
     c3 = c.execute("SELECT last_insert_rowid() id").fetchone()[0]
 
-    # sheets + contacts (campaign 1: 20 companies; campaign 2: 12)
+    # sheets + contacts (Sem 2: 20 companies; Diwali: 50; Winter: 12)
     rows1 = COMPANIES[:15] + EXTRA
-    rows2 = COMPANIES[5:17]
-    contact_ids1, contact_ids2 = [], []
-    for name, campaign_id, rows, ids_out in (("Core drive list", c1, rows1, contact_ids1), ("Internship sheet", c2, rows2, contact_ids2)):
+    rowsw = COMPANIES[5:17]
+    rowsd = COMPANIES + EXTRA + DIWALI_EXTRA
+    contact_ids1, contact_idsw, contact_idsd = [], [], []
+    for name, campaign_id, rows, ids_out, created in (
+            ("Core drive list", c1, rows1, contact_ids1, add(-10)),
+            ("Diwali list", cd, rowsd, contact_idsd, add(-10)),
+            ("Internship sheet", c2, rowsw, contact_idsw, add(-15))):
         c.execute("INSERT INTO sheets(name, campaign_id, filename, headers, rows, n_rows, created_by, created_at, updated_at) "
                   "VALUES(?,?,?,?,?,?,?,?,?)",
                   (name, campaign_id, name + ".csv",
                    json.dumps(["company", "HR name", "HR email"]),
-                   json.dumps([list(r) for r in rows]), len(rows), "demo@campus.edu", add(-30), now))
+                   json.dumps([list(r) for r in rows]), len(rows), "demo@campus.edu", created, now))
         sid = c.execute("SELECT last_insert_rowid() id").fetchone()[0]
         for i, (co, nm, em) in enumerate(rows, 1):
             c.execute("INSERT INTO contacts(serial, company, hr_name, hr_email, status, sheet_id, created_at, updated_at) "
                       "VALUES(?,?,?,?,?, ?,?,?)",
-                      (str(i), co, nm, em, "new", sid, add(-30), now))
+                      (str(i), co, nm, em, "new", sid, created, now))
             ids_out.append(c.execute("SELECT last_insert_rowid() id").fetchone()[0])
 
     mapping = json.dumps({"HR Name": "HR name", "Company": "company", "HR email": "HR email"})
@@ -134,87 +196,117 @@ def seed(c):
                    1, kw.get("created", add(-14)), "demo@campus.edu", now))
         return c.execute("SELECT last_insert_rowid() id").fetchone()[0]
 
-    b1 = batch("Sem 2 placement wave 1", c1, t1, created=add(-25), sheet=1, reminder_days=3, reminder_tpl=t2, reminder_max=2)
-    b2 = batch("Sem 2 placement wave 2", c1, t1, created=add(-10), sheet=1)
-    b3 = batch("Winter interns batch 1", c2, t1, created=add(-5), sheet=2)
-    batch_contacts = {b1: contact_ids1, b2: contact_ids1, b3: contact_ids2}
+    b1 = batch("Sem 2 placement wave 1", c1, t1, created=add(-6), sheet=1, reminder_days=3, reminder_tpl=t2, reminder_max=2)
+    b2 = batch("Sem 2 placement wave 2", c1, t1, created=add(-3), sheet=1)
+    bd = batch("Diwali greetings", cd, t4, created=add(-7), sheet=2)
+    b3 = batch("Winter interns batch 1", c2, t5, created=add(-4), sheet=3)
+    batch_contacts = {b1: contact_ids1, b2: contact_ids1, bd: contact_idsd, b3: contact_idsw}
 
-    # emails: wave 1 fully sent with replies/bounces/failures, wave 2 mixed, batch 3 scheduled
-    b1_contacts = list(rows1)
-    b2_contacts = list(rows1)
-    b3_contacts = list(rows2)
+    SEM2_SUBJECT = "Recruiters from BITS Pilani Goa — campus drive in January"
+    SEM2_BODY = ("<p>Hi %s,</p><p>We are writing to invite %s to our Sem 2 placement drive. 464 final-year students "
+                 "across CSE, ECE and ME will be available for pre-placement talks starting this week.</p>"
+                 "<p>Would you be open to a short call to schedule a slot? We would be glad to share student "
+                 "profiles in the meantime.</p><p>Warm regards,<br>Placement Cell</p>")
+    WINTER_SUBJECT = "Winter internships with BITS Pilani Goa — December to February"
+    WINTER_BODY = ("<p>Hi %s,</p><p>We would like to invite %s to consider our final-year students for winter "
+                   "internships (December to February). Students from CSE, ECE and ME are available for roles in "
+                   "software, data and hardware.</p><p>Could we share the shortlist of students with you? We would "
+                   "be glad to answer any questions.</p><p>Warm regards,<br>Placement Cell</p>")
+    DIWALI_SUBJECT = "Warm Diwali wishes from BITS Pilani, Goa"
+    DIWALI_BODY = ("<p>Hi %s,</p><p>From all of us at the BITS Pilani, Goa Placement Cell — a very Happy Diwali to "
+                   "you and your team.</p><p>We are now planning our Sem 2 placement drive, and we would be delighted "
+                   "to have %s on our invite list. We will share student profiles in the coming weeks.</p>"
+                   "<p>Warm regards,<br>Placement Cell, BITS Pilani Goa</p>")
 
-    def mk_email(batch_id, i, co, nm, em, status, **kw):
+    def mk_email(batch_id, i, co, nm, em, status, subject, body, **kw):
         c.execute("INSERT INTO emails(batch_id, contact_id, serial, to_addr, subject, body_html, status, "
                   "scheduled_at, sent_at, error, account_id, replied_at, bounced_at, bounce_reason, "
                   "reminder_count, is_reminder, created_at, updated_at) "
                   "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                   (batch_id, kw.get("contact", batch_contacts[batch_id][i - 1]), str(i), em,
-                   "Recruiters from BITS Pilani Goa — campus drive in January",
-                   "<p>Hi " + nm.split()[0] + ",</p><p>We are writing to invite " + co + " to our Sem 2 placement drive. 464 final-year students across CSE, ECE and ME will be available for pre-placement talks starting this week.</p><p>Would you be open to a short call to schedule a slot? We would be glad to share student profiles in the meantime.</p><p>Warm regards,<br>Placement Cell</p>", status,
+                   subject, body % (nm.split()[0], co), status,
                    kw.get("sched", None), kw.get("sent", None), kw.get("error", ""),
                    1, kw.get("replied", None), kw.get("bounced", None), kw.get("bounce_reason", ""),
-                   kw.get("reminder_count", 0), 0, kw.get("created", add(-25)), now))
+                   kw.get("reminder_count", 0), 0, kw.get("created", add(-6)), kw.get("updated", now)))
         return c.execute("SELECT last_insert_rowid() id").fetchone()[0]
 
-    for i, (co, nm, em) in enumerate(b1_contacts, 1):
-        if i <= 12:   # sent, some replied
-            replied = add(-(20 - i), 10, 0) if i % 3 == 0 else None
-            mk_email(b1, i, co, nm, em, "sent", sent=add(-(25 - 0), 9, 0), replied=replied)
-        elif i <= 14:  # bounced
-            mk_email(b1, i, co, nm, em, "sent", sent=add(-24, 9, 0), bounced=add(-24, 11, 0),
-                     bounce_reason="550 5.1.1 The email account that you tried to reach does not exist")
-        elif i == 15:  # failed
-            mk_email(b1, i, co, nm, em, "error", error="Gmail: daily quota exceeded, retry later", created=add(-24))
-        else:          # the rest drafted (never sent)
-            mk_email(b1, i, co, nm, em, "drafted")
+    # Sem 2: wave 1 saved as drafts, wave 2 ready — nothing sent, nothing scheduled
+    for i, (co, nm, em) in enumerate(rows1, 1):
+        mk_email(b1, i, co, nm, em, "drafted", SEM2_SUBJECT, SEM2_BODY,
+                 created=add(-6), updated=add(0, -3))
+    for i, (co, nm, em) in enumerate(rows1, 1):
+        mk_email(b2, i, co, nm, em, "pending", SEM2_SUBJECT, SEM2_BODY, created=add(-3), updated=add(-3))
 
-    for i, (co, nm, em) in enumerate(b2_contacts, 1):
-        if i <= 5:    # scheduled within 24h
-            mk_email(b2, i, co, nm, em, "scheduled", sched=add(0, 8 + i, 0))
-        elif i <= 8:  # scheduled later
-            mk_email(b2, i, co, nm, em, "scheduled", sched=add(3, 10, 0))
-        elif i <= 12: # pending
-            mk_email(b2, i, co, nm, em, "pending")
+    # Diwali: all 50 sent on 8 Nov, ten replied, two bounced
+    DIWALI_REPLIES = {5, 10, 17, 20, 25, 31, 38, 42, 47, 50}
+    for i, (co, nm, em) in enumerate(rowsd, 1):
+        sent = add(-6, h=3 + (i * 12) // 60, m=(i * 12) % 60)
+        if i == 13:
+            mk_email(bd, i, co, nm, em, "sent", DIWALI_SUBJECT, DIWALI_BODY, sent=sent,
+                     bounced=add(-6, h=5), bounce_reason="550 5.1.1 The email account that you tried to reach does not exist",
+                     created=add(-7), updated=sent)
+        elif i == 29:
+            mk_email(bd, i, co, nm, em, "sent", DIWALI_SUBJECT, DIWALI_BODY, sent=sent,
+                     bounced=add(-6, h=6), bounce_reason="552 5.2.2 The mailbox of the recipient is full",
+                     created=add(-7), updated=sent)
+        elif i in DIWALI_REPLIES:
+            mk_email(bd, i, co, nm, em, "sent", DIWALI_SUBJECT, DIWALI_BODY, sent=sent,
+                     replied=add(-(5 - (i % 3)), h=2 + (i % 5), m=i % 60),
+                     created=add(-7), updated=add(-(5 - (i % 3))))
         else:
-            mk_email(b2, i, co, nm, em, "cancelled")
+            mk_email(bd, i, co, nm, em, "sent", DIWALI_SUBJECT, DIWALI_BODY, sent=sent,
+                     created=add(-7), updated=sent)
+    for cid in contact_idsd:
+        c.execute("UPDATE contacts SET status='sent' WHERE id=?", (cid,))
 
-    for i, (co, nm, em) in enumerate(b3_contacts, 1):
-        if i <= 4:
-            mk_email(b3, i, co, nm, em, "scheduled", sched=add(1, 9, 30), created=add(-5))
-        else:
-            mk_email(b3, i, co, nm, em, "pending", created=add(-5))
+    # Winter internships: ready to go, nothing sent
+    for i, (co, nm, em) in enumerate(rowsw, 1):
+        mk_email(b3, i, co, nm, em, "pending", WINTER_SUBJECT, WINTER_BODY, created=add(-4), updated=add(-4))
+
+    # mark Sem 2 wave-1 contacts as drafted
+    for cid in contact_ids1:
+        c.execute("UPDATE contacts SET status='drafted' WHERE id=?", (cid,))
 
     # activity
     acts = [
-        (add(0, -2), "Priya", "email_draft", "12 emails saved as drafts in Diwali outreach wave 2"),
-        (add(-1), "Arjun", "email_schedule", "8 emails scheduled for tomorrow 09:30 in Winter interns batch 1"),
-        (add(-1, 3), "Priya", "email_reply", "Replied to Ananya Rao (Infosys)"),
-        (add(-2), "System", "reply_detected", "Reply detected from TCS"),
-        (add(-3), "Arjun", "contact_import", "Imported 15 contacts from Core drive list"),
-        (add(-5), "Priya", "batch_create", "Created send Winter interns batch 1"),
-        (add(-10), "Arjun", "batch_create", "Created send Diwali outreach wave 2"),
-        (add(-25), "Priya", "batch_create", "Created send Diwali outreach wave 1"),
+        (add(0, -3), "Priya", "email_draft", "20 emails saved as drafts in Sem 2 placement wave 1"),
+        (add(-1), "Arjun", "batch_create", "Created send Sem 2 placement wave 2"),
+        (add(-2, 4), "System", "reply_detected", "Reply detected from TCS"),
+        (add(-3), "Priya", "email_reply", "Replied to Vikram Shastri (Tata Consultancy Services)"),
+        (add(-4), "Arjun", "batch_create", "Created send Winter interns batch 1"),
+        (add(-5), "Priya", "contact_import", "Imported 20 contacts from Core drive list"),
+        (add(-6, 2), "System", "send", "50 emails went out in Diwali greetings"),
+        (add(-7), "Arjun", "batch_create", "Created send Diwali greetings"),
+        (add(-10), "Priya", "contact_import", "Imported 50 contacts from Diwali list"),
+        (add(-14), "Priya", "campaign_create", "Created campaign Sem 2 Placement Campaign"),
+        (add(-40), "Priya", "campaign_create", "Created campaign Diwali campaign"),
     ]
     for a in acts:
         c.execute("INSERT INTO activity(ts, actor, action, detail) VALUES(?,?,?,?)", a)
 
     # bump campaign updated_at so ordering is sensible
-    c.execute("UPDATE campaigns SET updated_at=? WHERE id=?", (add(-1), c1))
-    c.execute("UPDATE campaigns SET updated_at=? WHERE id=?", (add(-3), c2))
+    c.execute("UPDATE campaigns SET updated_at=? WHERE id=?", (add(0, -3), c1))
+    c.execute("UPDATE campaigns SET updated_at=? WHERE id=?", (add(-1), cd))
+    c.execute("UPDATE campaigns SET updated_at=? WHERE id=?", (add(-4), c2))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fresh", action="store_true", help="back up and wipe team data, then seed")
     ap.add_argument("--yes", action="store_true", help="do not ask for confirmation with --fresh")
+    ap.add_argument("--db", default=None, help="path to the database (default: data/campusmail_ai.db)")
     args = ap.parse_args()
 
-    if not DB.exists():
-        print("No database at", DB, "— start the app once first.")
+    db_path = Path(args.db).expanduser().resolve() if args.db else DB
+    if not db_path.exists():
+        print("No database at", db_path, "— start the app once first.")
         sys.exit(1)
 
-    c = sqlite3.connect(str(DB), timeout=15)
+    import db as dbmod
+    dbmod.set_tenant_db(db_path)
+    dbmod.init_db(seed=False)  # schema + migrations, so the seed always matches the app
+
+    c = sqlite3.connect(str(db_path), timeout=15)
     has_data = c.execute("SELECT COUNT(*) FROM campaigns").fetchone()[0] > 0
 
     if not args.fresh:
@@ -225,12 +317,12 @@ def main():
             sys.exit(0)
     else:
         if has_data and not args.yes:
-            ans = input("This backs up and wipes team data in %s. Continue? [y/N] " % DB)
+            ans = input("This backs up and wipes team data in %s. Continue? [y/N] " % db_path)
             if ans.strip().lower() not in ("y", "yes"):
                 print("Aborted.")
                 sys.exit(0)
-        backup = DB.with_suffix(".db.bak-" + NOW.strftime("%Y%m%d-%H%M%S"))
-        shutil.copy2(DB, backup)
+        backup = db_path.with_suffix(".db.bak-" + NOW.strftime("%Y%m%d-%H%M%S"))
+        shutil.copy2(db_path, backup)
         print("Backed up to", backup.name)
         wipe(c)
 

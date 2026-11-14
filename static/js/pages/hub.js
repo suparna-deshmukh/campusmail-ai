@@ -57,6 +57,15 @@ async function load() {
     render();
   } catch (e) {
     root.innerHTML = "";
+    if (e.status === 404) {
+      root.append(emptyState({
+        icon: "wrong",
+        title: "This campaign no longer exists",
+        text: "It may have been deleted. Everything about it is gone.",
+        primary: el("button", { class: "btn btn-primary", onclick: () => { location.href = "/campaigns"; } }, "Back to campaigns"),
+      }));
+      return;
+    }
     root.append(errorCard("Could not load this campaign. Check your connection and try again.", { onRetry: load, detail: e.message }));
   }
 }
@@ -314,7 +323,7 @@ function statTiles() {
   return el("div", { class: "stat-row" },
     tile("Sent", s.n_sent, "delivered so far", "?tab=emails&status=sent"),
     tile("Replied", s.n_replied, "people wrote back", "?tab=emails&status=replied"),
-    tile("Reply rate", rate, "of " + fmtInt(s.n_sent) + " sent", "?tab=emails&status=replied", true),
+    tile("Reply rate", rate, s.n_sent ? "of " + fmtInt(s.n_sent) + " sent" : "no sends yet", "?tab=emails&status=replied", true),
     tile("Bounced", s.n_bounced, "addresses that did not work", "?tab=emails&status=bounced"));
 }
 
@@ -322,19 +331,21 @@ function funnelCard() {
   const s = data.summary;
   const items = [
     { label: "Contacts", n: data.n_contacts, op: 1 },
-    { label: "Emailed", n: s.n_emails, op: 0.55 },
+    { label: "Emailed", n: data.n_emailed || 0, op: 0.55 },
     { label: "Replied", n: s.n_replied, op: 0.3 },
   ];
-  const max = Math.max(1, items[0].n);
+  const max = Math.max(1, ...items.map((it) => it.n));
   const rows = items.map((it, i) => {
-    const prev = i === 0 ? null : items[i - 1].n;
-    const pct = prev ? Math.round(100 * it.n / prev) : 100;
+    const prevN = i === 0 ? null : items[i - 1].n;
+    const pct = i === 0 ? "your list"
+      : prevN === 0 ? "no " + items[i - 1].label.toLowerCase() + " yet"
+      : Math.round(100 * it.n / prevN) + "% of " + items[i - 1].label.toLowerCase();
     return el("div", { class: "funnel-row" },
       el("div", { class: "funnel-label" }, it.label),
-      el("div", { class: "funnel-bar", style: "width:" + Math.max(2, 100 * it.n / max) + "%;opacity:" + it.op }),
+      el("div", { class: "funnel-bar", style: "width:" + Math.min(100, Math.max(2, 100 * it.n / max)) + "%;opacity:" + it.op }),
       el("div", {},
         el("div", { class: "funnel-val" }, fmtInt(it.n)),
-        el("div", { class: "funnel-pct" }, i === 0 ? "your list" : pct + "% of " + items[i - 1].label.toLowerCase())));
+        el("div", { class: "funnel-pct" }, pct)));
   });
   const extra = [];
   if (s.n_bounced) extra.push(fmtInt(s.n_bounced) + " bounced");
@@ -407,8 +418,10 @@ function sendsCard() {
   const color = { pending: "var(--st-ready)", drafted: "var(--st-drafted)", scheduled: "var(--st-scheduled)", sent: "var(--st-sent)", error: "var(--st-failed)", cancelled: "var(--st-stopped)" };
   for (const b of batches) {
     const n = Object.values(b.counts || {}).reduce((a, x) => a + x, 0);
-    const mix = el("div", { class: "mixbar" },
-      ...order.filter((k) => b.counts[k]).map((k) => el("span", { style: "width:" + (100 * b.counts[k] / n) + "%;background:" + color[k] })));
+    const mix = n
+      ? el("div", { class: "mixbar" },
+          ...order.filter((k) => b.counts[k]).map((k) => el("span", { style: "width:" + (100 * b.counts[k] / n) + "%;background:" + color[k] })))
+      : el("span", { class: "t-caption t-faint" }, "—");
     card.append(el("div", { class: "sendrow" },
       el("div", { style: "min-width:0" },
         el("div", { class: "sr-name" }, b.name || ("Send " + b.id)),

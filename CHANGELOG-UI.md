@@ -57,6 +57,65 @@ cross-checks for each capture.
   (19 files; campaign ids re-fetched after the reseed).
 
 
+## Third pass, 2026-11-14 (four new pages, settings rebuild, demo data fixes)
+
+- **All 50 sent demo mails are the Diwali campaign.** Reseeded demo data:
+  Diwali campaign = 50 sent (8 Nov), 10 replied, 2 bounced; Sem 2 Placement
+  Campaign, Winter internships and Alumni network have nothing sent and
+  nothing scheduled. `seed_demo.py` now auto-detects template `fields` from
+  the placeholders (they were stored as a plain count, which 500'd the
+  template preview and broke fill-in mapping).
+- **The "being redesigned" pages are built** (plan 9.1, 9.2-9.4, 10.1, 10.2):
+  - `/replies` - inbox triage with Needs reply / Done / Bounced / All
+    segments and counts, list + conversation panes, bounce fix panel
+    (reason + corrected address), J/K/Enter/E/R keys, mobile back button.
+  - `/library` - template grid with live preview thumbnails, kind filter,
+    search; create via AI / Word upload / paste / built-in examples; full
+    template editor (rich toolbar, insert fill-in pills, live preview as a
+    real contact, autosave with restore, set default, delete); contact lists
+    tab with import, open-drawer, rename, export CSV, delete.
+  - `/team` - Members (join requests with approve/decline and Undo, invite,
+    role change with confirm, remove), Results (campaign/member/period
+    filters, stat tiles, by-member table, top companies, all emails),
+    Activity (person/type/search filters, day headers, detail disclosure).
+  - `/settings/<section>` - two-column settings with six sections: Gmail
+    (with the step-by-step "How to connect your email" card, client-JSON
+    banner, account connect/reconnect/remove/sharing), Sending (drafts-only
+    vs live, daily limit, spacing, catch-up policy - all autosave),
+    Signature (editor, image upload, live preview), AI (provider, model,
+    API key with test connection), Branding, Advanced (setup assistant,
+    Google sign-in, Gmail client JSON, cloud scheduling relay pack, file
+    storage, danger zone with typed confirmation).
+- **Home**: new **Bounced** stat tile ("2 emails bounced - need fixing")
+  linking to the Bounced tab; "Fix addresses" now targets `?tab=bounced`
+  (it pointed at a no-op `?filter=` param).
+- **User menu**: the whole sidebar account row opens the menu (previously
+  only the avatar - the "three dots don't work" report), and the menu now
+  includes a Settings entry.
+- **New campaign** button opens the modal with **Name + Description
+  (optional)**; creating navigates straight into the new hub.
+- **Deleting anything makes it disappear**: campaign, email, list and
+  contact deletes propagate to home tiles, funnels, the campaigns table,
+  library and team reports. The hub of a deleted campaign now shows
+  "This campaign no longer exists" with a back button instead of a generic
+  error card.
+- **Bug fixes**: template preview 500 (count stored in `fields`; new
+  `tpl_fields()` helper + seed fix); `GET /api/activity` route was
+  registered missing (Team > Activity 404'd); `team.js` TDZ crash (`$` used
+  before its definition); `settings.js` was missing its `$` helper; the
+  library editor wired the fill-in button before it was attached to the DOM;
+  true account reconnect (`/api/accounts/add` honours `existing_id`); the
+  sidebar mode card now updates from Settings via `cm:settings-changed`
+  (was stale after a safe-mode change); replies header filters moved into a
+  toolbar row (they overflowed the right edge); activity feed gained verbs
+  for legacy seed actions (`email_draft`, `contact_import`, `send`,
+  `email_reply`, `reply_detected`).
+- **Screenshots**: `docs/screenshots/` re-captured with the current data
+  (26 files, including the four new pages). Captures now use a fresh
+  browser process per shot - a shared Chrome process was leaving stale GPU
+  layers (selects and day headers rendered from a previous page baked into
+  the capture).
+
 ## What is in
 
 - **Shell (Phase 1).** New template `ui/base_new.html`: 248 px sidebar (5 main

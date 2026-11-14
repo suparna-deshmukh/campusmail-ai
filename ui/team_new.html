@@ -1,0 +1,24 @@
+{% extends "base_new.html" %}
+{% block title %}Team - CampusMail AI{% endblock %}
+{% block crumb %}<span>Team</span>{% endblock %}
+{% block content %}
+<div class="page-in">
+  <div class="page-head">
+    <div class="ph-main">
+      <div class="page-title">Team</div>
+      <p class="page-sub">People, results and everything that happened.</p>
+    </div>
+  </div>
+
+  <div class="tabs tm-tabs" id="tm-tabs" role="tablist">
+    <a class="tab" role="tab" href="/team?tab=members" data-tab="members">Members <span class="seg-badge" id="tm-req-badge" style="display:none"></span></a>
+    <a class="tab" role="tab" href="/team?tab=results" data-tab="results">Results</a>
+    <a class="tab" role="tab" href="/team?tab=activity" data-tab="activity">Activity</a>
+  </div>
+
+  <div id="tm-view"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ '/static/js/pages/team.js' ~ sv('js/pages/team.js') }}"></script>
+{% endblock %}

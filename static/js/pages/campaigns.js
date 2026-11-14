@@ -134,7 +134,7 @@ function modal2(title, sub, body, foot) {
 
 async function deleteCampaign(cm, sent) {
   const ok = sent
-    ? await confirmTyped({ title: "Delete " + cm.name + "?", body: sent + " email" + (sent === 1 ? "" : "s") + " was " + (sent === 1 ? "sent" : "were") + " in this campaign. Type the campaign name to delete it. Gmail drafts stay untouched.", expect: cm.name, actionLabel: "Delete campaign" })
+    ? await confirmTyped({ title: "Delete " + cm.name + "?", body: sent + " email" + (sent === 1 ? "" : "s") + (sent === 1 ? " was sent" : " were sent") + " in this campaign. Type the campaign name to delete it. Gmail drafts stay untouched.", expect: cm.name, actionLabel: "Delete campaign" })
     : await confirmSimple({ title: "Delete this campaign?", body: "Its " + cm.n_emails + " email" + (cm.n_emails === 1 ? "" : "s") + " will be removed. Contact lists stay in your Library.", actionLabel: "Delete campaign" });
   if (!ok) return;
   try {
@@ -145,12 +145,12 @@ async function deleteCampaign(cm, sent) {
 }
 
 function openNewModal() {
-  const name = el("input", { class: "input", placeholder: "Summer 2027 recruiter outreach" });
-  const note = el("input", { class: "input", placeholder: "Who is this for?" });
+  const name = el("input", { class: "input", placeholder: "Diwali wishes to recruiters" });
+  const note = el("input", { class: "input", placeholder: "What is this campaign for?" });
   const m = modal2("New campaign", "A campaign holds your list, your emails and the replies you get.",
     el("div", {},
       el("div", { class: "field" }, el("label", { class: "field-label" }, "Name"), name),
-      el("div", { class: "field" }, el("label", { class: "field-label" }, "Note (optional)"), note)),
+      el("div", { class: "field" }, el("label", { class: "field-label" }, "Description (optional)"), note)),
     [el("button", { class: "btn btn-ghost" }, "Cancel"), el("button", { class: "btn btn-primary" }, "Create campaign")]);
   m.foot.querySelector(".btn-ghost").addEventListener("click", () => m.close());
   const btn = m.foot.querySelector(".btn-primary");

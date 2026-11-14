@@ -140,6 +140,26 @@ select.select {
 .seg-item.is-active .seg-badge { background: var(--primary-100); color: var(--primary-700); }
 [data-theme="dark"] .seg-item.is-active .seg-badge { background: var(--primary-200); color: var(--bg); }
 
+/* ================= Switch ================= */
+.switch { position: relative; width: 40px; height: 22px; flex: none; display: inline-block; }
+.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; z-index: 2; }
+.switch .track {
+  position: absolute; inset: 0; background: var(--surface-2);
+  border: 1px solid var(--border-strong); border-radius: var(--r-pill);
+  transition: background var(--t-base) var(--ease), border-color var(--t-base) var(--ease);
+}
+.switch .knob {
+  position: absolute; top: 50%; left: 3px; transform: translateY(-50%);
+  width: 16px; height: 16px; border-radius: 50%; background: var(--text-3);
+  transition: transform var(--t-base) var(--ease), background var(--t-base) var(--ease);
+  pointer-events: none;
+}
+.switch input:checked ~ .track { background: var(--primary-500); border-color: var(--primary-500); }
+.switch input:checked ~ .knob { transform: translate(18px, -50%); background: var(--primary-contrast); }
+.switch input:focus-visible ~ .track { outline: 2px solid var(--primary-500); outline-offset: 2px; }
+.switch:disabled { opacity: .5; }
+.switch:disabled input { cursor: not-allowed; }
+
 /* ================= Tabs (underline) ================= */
 .tabs { display: flex; gap: var(--sp-6); border-bottom: 1px solid var(--border); }
 .tab {

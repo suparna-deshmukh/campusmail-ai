@@ -92,7 +92,7 @@ function onboardCard(ob) {
 /* ---------- attention card ---------- */
 const ATTN = {
   replies: { cls: "reply", icon: "reply", text: (n) => `${n} ${n === 1 ? "reply" : "replies"} ${n === 1 ? "is" : "are"} waiting`, btn: "Open replies", href: "/replies" },
-  bounced: { cls: "bounced", icon: "mail-x", text: (n) => `${n} ${n === 1 ? "email" : "emails"} ${n === 1 ? "bounced" : "bounced"}`, btn: "Fix addresses", href: "/replies?filter=bounced" },
+  bounced: { cls: "bounced", icon: "mail-x", text: (n) => `${n} ${n === 1 ? "email" : "emails"} ${n === 1 ? "bounced" : "bounced"}`, btn: "Fix addresses", href: "/replies?tab=bounced" },
   failed: { cls: "failed", icon: "alert-triangle", text: (n) => `${n} ${n === 1 ? "email" : "emails"} ${n === 1 ? "failed" : "failed"} to send`, btn: "See why", href: "/campaigns" },
   soon: { cls: "soon", icon: "clock", text: (n) => `${n} ${n === 1 ? "email" : "emails"} go out in the next 24 hours`, btn: "Review", href: "/campaigns" },
   stale_drafts: { cls: "drafts", icon: "file-pen", text: (n) => `${n} ${n === 1 ? "draft" : "drafts"} older than 2 days have not been sent`, btn: "Open Gmail", href: "https://mail.google.com" },
@@ -273,6 +273,7 @@ async function load() {
       ["Replies", tiles.replies, "waiting: " + replyN, "/replies", true],
       ["Reply rate", null, "of " + fmtInt(tiles.sent) + " sent", null, false],
       ["Scheduled", tiles.scheduled, soon[0] ? "next " + upcomingWhen(soon[0].when).toLowerCase() : "none yet", "/campaigns", true],
+      ["Bounced", tiles.bounced, tiles.bounced ? "need fixing" : "none", "/replies?tab=bounced", true],
     ];
     for (const [label, val, sub2, href, isLink] of defs) {
       const valueNode = el("span", { class: "stat-value" }, "0");

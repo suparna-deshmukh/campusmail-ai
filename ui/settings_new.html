@@ -1,0 +1,33 @@
+{% extends "base_new.html" %}
+{% block title %}Settings - CampusMail AI{% endblock %}
+{% block crumb %}<span>Settings</span>{% endblock %}
+{% block content %}
+<div class="page-in">
+  <div class="page-head">
+    <div class="ph-main">
+      <div class="page-title">Settings</div>
+      <p class="page-sub">How CampusMail sends, signs and schedules your emails.</p>
+    </div>
+  </div>
+
+  <div class="set-layout">
+    <nav class="set-nav" aria-label="Settings sections" id="set-nav">
+      <div class="set-nav-label">Everyday</div>
+      <a href="/settings/gmail" data-sec="gmail"><svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#mail"/></svg>Gmail accounts</a>
+      <a href="/settings/sending" data-sec="sending"><svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#send"/></svg>Sending</a>
+      <a href="/settings/signature" data-sec="signature"><svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#pencil"/></svg>Signature</a>
+      <a href="/settings/ai" data-sec="ai"><svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#sparkles"/></svg>AI</a>
+      {% if me and me.role == 'admin' %}
+      <div class="set-nav-label">Admin</div>
+      <a href="/settings/branding" data-sec="branding"><svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#globe"/></svg>Team branding</a>
+      <a href="/settings/advanced" data-sec="advanced"><svg class="i i-16" aria-hidden="true"><use href="/static/icons/sprite.svg#settings"/></svg>Advanced</a>
+      {% endif %}
+    </nav>
+
+    <div class="set-col" id="set-col"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script type="module" src="{{ '/static/js/pages/settings.js' ~ sv('js/pages/settings.js') }}"></script>
+{% endblock %}

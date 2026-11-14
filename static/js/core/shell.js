@@ -41,7 +41,7 @@ async function pollState() {
 
 function renderShell(d) {
   // Replies sidebar badge
-  const needs = (d.reply && d.reply.replied) || 0;
+  const needs = (d.reply && (d.reply.needs_reply != null ? d.reply.needs_reply : d.reply.replied)) || 0;
   const b = document.getElementById("nav-replies-badge");
   if (b) { b.textContent = needs; b.classList.toggle("hot", needs > 0); b.style.display = needs ? "" : "none"; }
   // mode card
@@ -72,6 +72,15 @@ function renderModeCard() {
   );
   document.body.classList.toggle("is-live", live);
 }
+
+window.addEventListener("cm:settings-changed", (e) => {
+  const d = (e && e.detail) || {};
+  if (d.key === "safe_mode") {
+    state.safe_mode = d.value === "1";
+    renderModeCard();
+    document.dispatchEvent(new CustomEvent("cm:state"));
+  }
+});
 
 export function setSafeMode(on) {
   return api("/api/settings", { body: { safe_mode: on ? "1" : "0" } }).then(() => {
@@ -190,6 +199,9 @@ function openUserMenu(anchor) {
   const me = state.me || { email: "you" };
   closeAllMenus();
   const m = el("div", { class: "menu", style: "min-width:230px" });
+  m.append(el("button", { class: "menu-item", onclick: () => { m.remove(); location.href = "/settings"; } },
+    icon("settings", "i i-16"), "Settings"));
+  m.append(el("div", { class: "menu-sep" }));
   m.append(el("div", { class: "menu-label" }, "Theme"));
   for (const t of ["light", "dark", "auto"]) {
     const item = el("button", { class: "menu-item", onclick: () => {
@@ -310,9 +322,7 @@ export function initShell() {
   if (stBtn) stBtn.addEventListener("click", openSystemStatus);
   // user menu
   const userRow = document.getElementById("side-user");
-  if (userRow) userRow.addEventListener("click", (e) => {
-    if (e.target.closest(".avatar") || e.target.closest("button")) openUserMenu(userRow);
-  });
+  if (userRow) userRow.addEventListener("click", () => openUserMenu(userRow));
   // topbar buttons
   const askAi = document.getElementById("topbar-ask-ai");
   if (askAi) askAi.addEventListener("click", () => window.dispatchEvent(new CustomEvent("cm:ask-ai")));

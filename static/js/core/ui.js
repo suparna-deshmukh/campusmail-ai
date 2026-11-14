@@ -232,10 +232,9 @@ export function confirmSimple({ title, body, actionLabel, danger = true, onActio
     });
     btn.addEventListener("click", async () => {
       btn.classList.add("is-loading"); btn.disabled = true;
-      m.close();           // onClose settles false first; we re-settle true below
-      settled = false;
-      try { if (onAction) await onAction(); } catch (e) { /* caller handles */ }
       settle(true);
+      m.close();
+      try { if (onAction) await onAction(); } catch (e) { /* caller handles */ }
     });
   });
 }
@@ -259,8 +258,8 @@ export function confirmTyped({ title, body, expect, actionLabel }) {
     });
     btn.addEventListener("click", async () => {
       btn.classList.add("is-loading"); btn.disabled = true;
-      m.close();
       resolve(true);
+      m.close();
     });
     input.focus();
   });

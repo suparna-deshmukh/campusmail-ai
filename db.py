@@ -382,7 +382,7 @@ def _migrate(c):
             ("batches", (("created_by", "TEXT DEFAULT ''"), ("updated_at", "TEXT"))),
             ("campaigns", (("updated_at", "TEXT"),)),
             ("sheets", (("updated_at", "TEXT"),)),
-            ("email_templates", (("updated_at", "TEXT"),))):
+            ("email_templates", (("updated_at", "TEXT"), ("kind", "TEXT DEFAULT 'outreach'")))):
         tcols = {r["name"] for r in c.execute("PRAGMA table_info(%s)" % tbl).fetchall()}
         for col, decl in cols:
             if col not in tcols:
