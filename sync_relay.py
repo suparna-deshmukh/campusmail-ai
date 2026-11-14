@@ -55,7 +55,7 @@ SYNC_COLUMNS = {
 TABLE_ORDER = ["campaigns", "email_templates", "sheets", "batches", "contacts", "emails"]
 
 SYNC_STATE = {"last_run": 0, "last_pull": 0, "last_attempt": 0, "halted": False}
-PUSH_BATCH = 200
+PUSH_BATCH = 50
 PULL_MIN_INTERVAL = 90
 
 
