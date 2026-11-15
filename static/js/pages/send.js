@@ -6,6 +6,7 @@ import {
 } from "/static/js/core/ui.js";
 import { fmtInt, fmtLong, fmtDayTime, toBackend, parseWhen, localToUrl } from "/static/js/core/format.js";
 import { openTimePicker } from "/static/js/components/timepicker.js";
+import { planDelivery, sendCapSentence, scheduleCapSentence } from "/static/js/core/send-plan.js";
 
 const START_CID = window.send_campaign_id || 0;
 const root = document.getElementById("send-root");
@@ -53,11 +54,12 @@ const data = {
   sheetRows: null,       // rows of the selected list (for checks)
   allRows: null,         // all contacts (id/serial/company/hr_name/hr_email)
   last_error: "",
-  meEmail: "", defaultStagger: 0,
+  meEmail: "", defaultStagger: 0, maxCap: 0, sentToday: 0,
 };
 
 const $q = (sel, r = root) => r.querySelector(sel);
 const nPeople = () => (S.contactIds.length || data.listCount || 0);
+const planNow = () => planDelivery({ outcome: S.outcome, n: data.preview_total || nPeople(), cap: data.maxCap, sentToday: data.sentToday });
 
 /* ---------------- load ---------------- */
 async function load() {
@@ -80,6 +82,8 @@ async function load() {
       data.n_contacts = (st.onboard && st.onboard.contacts) || 0;
       data.meEmail = (st.me && st.me.email) || "";
       data.defaultStagger = Number((st.settings && st.settings.default_stagger_min) || 0);
+      data.maxCap = Number((st.settings && st.settings.max_sends_per_day) || 0);
+      data.sentToday = st.sent_today || 0;
     }
     data.last_error = "";
   } catch (e) {
@@ -886,6 +890,8 @@ function outcomeCards() {
   }
   for (const o of OUTCOMES) {
     const disabled = o.id === "send" && data.safe;
+    const pl = planDelivery({ outcome: o.id, n: nPeople(), cap: data.maxCap, sentToday: data.sentToday });
+    const capLine = o.id === "send" ? sendCapSentence(pl) : o.id === "schedule" ? scheduleCapSentence(pl) : "";
     const b = el("button", {
       class: "opt-card" + (S.outcome === o.id ? " is-selected" : "") + (disabled ? " is-disabled" : ""),
       type: "button", disabled: disabled ? "" : null,
@@ -895,7 +901,8 @@ function outcomeCards() {
       el("span", { class: "opt-ico" }, icon(o.icon, "i i-18")),
       el("div", { style: "min-width:0;flex:1" },
         el("div", { class: "opt-title" }, el("span", {}, o.title), o.tag ? badge2(o.tag) : null),
-        el("div", { class: "opt-desc" }, o.desc)),
+        el("div", { class: "opt-desc" }, o.desc),
+        capLine ? el("div", { class: "opt-desc cap-line" }, capLine) : null),
       el("span", { class: "opt-radio" }));
     stack.append(b);
   }
@@ -1069,16 +1076,19 @@ function accountEmail() {
 
 function footerSummary3() {
   const n = data.preview_total || nPeople();
-  return fmtInt(n) + " " + (n === 1 ? "email" : "emails") + " · " +
+  const pl = planNow();
+  const base = fmtInt(n) + " " + (n === 1 ? "email" : "emails") + " · " +
     { draft: "as drafts", schedule: "scheduled", send: "sent now", queue: "queued" }[S.outcome];
+  return S.outcome === "send" && pl.capped ? base + " · " + fmtInt(pl.later) + " kept for later" : base;
 }
 
 function primary3() {
   const n = data.preview_total || nPeople();
+  const pl = planNow();
   const label = {
     draft: "Create " + fmtInt(n) + " drafts",
     schedule: "Schedule " + fmtInt(n) + " " + (n === 1 ? "email" : "emails"),
-    send: "Send " + fmtInt(n) + " " + (n === 1 ? "email" : "emails") + " now",
+    send: "Send " + fmtInt(pl.today) + " " + (pl.today === 1 ? "email" : "emails") + " now",
     queue: "Queue " + fmtInt(n) + " " + (n === 1 ? "email" : "emails"),
   }[S.outcome];
   const b = el("button", { class: "btn btn-primary" }, label);
@@ -1089,21 +1099,24 @@ function primary3() {
 function confirmSendNow() {
   return new Promise((resolve) => {
     const n = data.preview_total || nPeople();
+    const pl = planNow();
+    const capNote = sendCapSentence(pl);
     let done = false;
     const m = modal({
-      title: "Send " + fmtInt(n) + " real emails?",
+      title: "Send " + fmtInt(pl.today) + " real emails now?",
       sub: "They go out from " + accountEmail() + " immediately, one after another, and can't be recalled.",
       body: el("div", {},
         el("div", { class: "banner banner-warn" }, icon("alert-triangle", "i i-16"),
           el("span", {}, "If this is the first time, 'Send me a test' is the safe move.")),
+        capNote ? el("div", { class: "field-help", style: "margin-top:10px" }, capNote) : null,
         el("div", { class: "field-help", style: "margin-top:10px" }, "Hold the button for 2 seconds to confirm.")),
-      foot: [el("button", { class: "btn btn-ghost" }, "Cancel"), el("button", { class: "btn btn-danger" }, "Hold to send " + fmtInt(n))],
+      foot: [el("button", { class: "btn btn-ghost" }, "Cancel"), el("button", { class: "btn btn-danger" }, "Hold to send " + fmtInt(pl.today))],
       onClose: () => { if (!done) resolve(false); },
     });
     const hold = m.foot.querySelector(".btn-danger");
     m.foot.querySelector(".btn-ghost").addEventListener("click", () => { done = true; m.close(); resolve(false); });
     holdToConfirm(hold, {
-      duration: 2000, label: "Hold to send " + fmtInt(n),
+      duration: 2000, label: "Hold to send " + fmtInt(pl.today),
       onConfirm: () => { done = true; m.close(); resolve(true); },
     });
   });
@@ -1241,8 +1254,10 @@ function successScreen(res) {
     sub = "Goes out " + (S.when ? fmtLong(parseWhen(S.when).toISOString()) : "at the chosen time") +
       (S.stagger ? ", spaced " + S.stagger + " minutes apart" : "") + ". You can reschedule or cancel until then.";
   } else if (S.outcome === "send") {
-    title = fmtInt(res.sent != null ? res.sent : n) + " " + ((res.sent ?? n) === 1 ? "email is" : "emails are") + " on their way";
-    sub = "Sent from " + accountEmail() + ". Replies will show up in your Replies tab.";
+    const sent = res.sent != null ? res.sent : n;
+    title = fmtInt(sent) + " " + (sent === 1 ? "email is" : "emails are") + " on their way";
+    sub = "Sent from " + accountEmail() + ". Replies will show up in your Replies tab." +
+      (res.capped ? " The other " + fmtInt(Math.max(0, n - sent)) + " stayed in your queue (Ready) - schedule them or send them tomorrow." : "");
   } else {
     title = fmtInt(res.created != null ? res.created : n) + " " + ((res.created ?? n) === 1 ? "email is" : "emails are") + " in your queue";
     sub = "They're waiting in the campaign's email list. Send or schedule them whenever you're ready.";

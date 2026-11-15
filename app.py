@@ -650,6 +650,8 @@ def api_state():
         "settings": {k: db.get_setting(k) for k in
                      ("safe_mode", "max_sends_per_day", "default_stagger_min", "catchup_policy",
                       "ai_enabled", "ai_model")},
+        "sent_today": services.sends_today(),
+        "remaining_today": max(0, int(db.get_setting("max_sends_per_day") or 100) - services.sends_today()),
         "ai_has_key": "1" if db.get_setting("ai_api_key") else "0",
         "onboard": {"gmail_connected": bool(connected), "contacts": n_contacts,
                     "templates": stats["templates"], "batches": stats["batches"],

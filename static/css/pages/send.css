@@ -112,6 +112,9 @@
 .send-step.is-done:hover { border-color: var(--primary-500); color: var(--text); }
 .send-step.is-done .send-step-n { background: var(--success-bg); color: var(--success); }
 
+/* ---- Cap-aware outcome line (D-10 / 8.1) ---- */
+.cap-line { color: var(--warn); font-weight: 550; margin-top: 2px; }
+
 /* ---- Campaign line (D-06 spacing) ---- */
 .send-cap { font-size: 13.5px; font-weight: 550; color: var(--text-2); margin-bottom: var(--sp-2); }
 .send-cap b { color: var(--text); font-weight: 650; }
