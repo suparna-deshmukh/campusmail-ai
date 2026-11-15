@@ -544,3 +544,100 @@ def test_send_now_typed_confirm_required_at_500(cdp_session, tenant):
     ev(cdp, "document.querySelector('.modal .btn-ghost').click()")
     time.sleep(0.5)
     assert ev(cdp, "document.querySelectorAll('.modal').length") == 0
+
+
+def test_review_preview_chrome_highlight_and_tpl_chip(cdp_session, tenant):
+    """D-18: preview shows From + CC chrome; D-20: highlight toggle;
+    D-23: template chip in Review."""
+    cdp = cdp_session["cdp"]
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    _open_section(cdp, "review")
+    _wait_for(cdp, "#send-root .preview-paper")
+    time.sleep(2.5)
+    src = ev(cdp, "document.querySelector('.preview-paper').srcdoc")
+    assert "From: teambox@gmail.com" in src, "preview must show the From account"
+    assert "CC:" not in src
+    assert "cm-fill" in src, "fill highlight on by default"
+    # D-23: template chip with Change action
+    chip = ev(cdp, "document.querySelector('.review-tpl-chip')?.textContent || ''")
+    assert "Template:" in chip and "Outreach" in chip and "Change" in chip
+    # D-20: toggle highlight off
+    ev(cdp, "(() => { const h = document.querySelector('.recip-hi input'); h.click(); return 1; })()")
+    time.sleep(0.8)
+    src2 = ev(cdp, "document.querySelector('.preview-paper').srcdoc")
+    assert "var fills=" not in src2, "highlight off removes the fill-marking script"
+    # D-18: CC appears in the preview after setting it (addon re-fetches)
+    _open_section(cdp, "message")
+    ev(cdp, "(() => { const h = [...document.querySelectorAll('#acc-body-message .addon-head')]"
+            ".find(x => x.textContent.includes('CC')); if (h) h.click(); return 1; })()")
+    time.sleep(0.6)
+    ev(cdp, "(() => { const i = document.querySelector('#acc-body-message input[aria-label=\"CC addresses\"]');"
+            " i.value = 'cc-check@example.com'; i.dispatchEvent(new Event('change')); return 1; })()")
+    time.sleep(2.0)
+    src3 = ev(cdp, "document.querySelector('.preview-paper').srcdoc")
+    assert "CC: cc-check@example.com" in src3, "CC must appear in the live preview"
+
+
+def test_review_recipient_search_and_issue_rows(cdp_session, tenant):
+    """D-19: preview any recipient by search, and jump to rows with issues."""
+    cdp = cdp_session["cdp"]
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    c = db.conn()
+    c.execute("INSERT INTO contacts(serial, company, hr_name, hr_email, status, sheet_id, created_at) "
+              "VALUES('99','UniqueCo','Uniqua Recruiter','uniqua@example.com','new',1,'%s')" % db.now_iso())
+    c.execute("INSERT INTO contacts(serial, company, hr_name, hr_email, status, sheet_id, created_at) "
+              "VALUES('98','NoEmailCo','No Mail Person','','new',1,'%s')" % db.now_iso())
+    c.commit(); c.close()
+    ev(cdp, "location.href = '/campaigns/1/send?theme=dark'")
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    _open_section(cdp, "review")
+    _wait_for(cdp, "#send-root .preview-paper")
+    time.sleep(2.5)
+    chip = ev(cdp, "document.querySelector('#issue-chip')?.textContent || ''")
+    assert "Rows with issues (1)" in chip, "no-email row must be flagged"
+    ev(cdp, "document.querySelector('#issue-chip').click()")
+    time.sleep(1.8)
+    cap = ev(cdp, "document.querySelector('#recip-caption').textContent")
+    assert "Issue 1 of 1" in cap and "no email" in cap
+    # back to the first 8
+    ev(cdp, "document.querySelector('#recip-caption a').click()")
+    time.sleep(0.9)
+    assert "Person 1 of" in ev(cdp, "document.querySelector('#recip-caption').textContent")
+    # search a specific person -> on-demand single preview
+    ev(cdp, "(() => { const i = document.querySelector('.recip-search');"
+            " i.value = 'uniqua'; i.dispatchEvent(new Event('input')); })()")
+    time.sleep(2.5)
+    cap2 = ev(cdp, "document.querySelector('#recip-caption').textContent")
+    assert "Previewing" in cap2 and "Uniqua" in cap2
+    src = ev(cdp, "document.querySelector('.preview-paper').srcdoc")
+    assert "uniqua@example.com" in src
+
+
+def test_template_gallery_differentiators(cdp_session, tenant):
+    """D-22: gallery cards show last-edited meta, same-subject warning and a
+    Preview action."""
+    cdp = cdp_session["cdp"]
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    c = db.conn()
+    c.execute("INSERT INTO email_templates(name, subject, body_html, kind, is_active, fields, created_at) "
+              "VALUES('Outreach v2','Hi {company}','<p>Dear {hr_name},</p>','outreach',0,'[\"company\", \"hr_name\"]','%s')"
+              % db.now_iso())
+    c.commit(); c.close()
+    ev(cdp, "location.href = '/campaigns/1/send?theme=dark'")
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    _open_section(cdp, "message")
+    ev(cdp, "document.querySelector('#sec-msg-template .tpl-main-head .btn-secondary').click()")
+    _wait_for(cdp, ".modal .modal-title")
+    time.sleep(0.8)
+    assert ev(cdp, "document.querySelectorAll('.modal .tpl-card').length") == 2
+    metas = ev(cdp, "[...document.querySelectorAll('.modal .tpl-card .tpl-meta')].map(x => x.textContent)")
+    assert any("Last edited" in m for m in metas), "cards show last-edited"
+    warns = ev(cdp, "[...document.querySelectorAll('.modal .tpl-card .tpl-warn')].map(x => x.textContent)")
+    assert len(warns) == 2 and all("Same subject as" in w for w in warns)
+    ev(cdp, "document.querySelectorAll('.modal .tpl-card .tpl-preview')[0].click()")
+    time.sleep(0.8)
+    assert ev(cdp, "document.querySelectorAll('.modal .tpl-full-frame').length") == 1
+    ev(cdp, "(() => { const b = [...document.querySelectorAll('.modal .btn-ghost')].pop(); b.click(); return 1; })()")
+    time.sleep(0.4)
+    ev(cdp, "document.querySelector('.modal .btn-ghost').click()")
+    time.sleep(0.4)

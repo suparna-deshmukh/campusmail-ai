@@ -8,7 +8,7 @@ import {
   api, el, icon, toast, modal, holdToConfirm, confirmSimple, confirmTyped,
   emptyState, errorCard, withLoading, esc, appendSafe,
 } from "/static/js/core/ui.js";
-import { fmtInt, fmtLong, fmtDayTime, toBackend, parseWhen, localToUrl } from "/static/js/core/format.js";
+import { fmtInt, fmtLong, fmtDayTime, relTime, toBackend, parseWhen, localToUrl } from "/static/js/core/format.js";
 import { openTimePicker } from "/static/js/components/timepicker.js";
 import { planDelivery, sendCapSentence, scheduleCapSentence } from "/static/js/core/send-plan.js";
 import { dedupeRows, keepFirstIds } from "/static/js/core/dedupe.js";
@@ -29,7 +29,7 @@ const OUTCOME_IDS = ["draft", "schedule", "send", "queue"];
 
 /* ---------------- state ---------------- */
 const S = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   open: [],              // expanded section keys (D-39: single page, one decision per section)
   campaignId: START_CID,
   listId: 0,             // 0 = All contacts
@@ -48,6 +48,7 @@ const S = {
   stagger: 0,
   outcome: "draft",      // draft | schedule | send | queue
   skipDupes: true,       // 8.2: skip duplicate emails, keep first
+  fillHi: true,          // D-20: highlight filled values in the preview
   touched: false,        // set by real user actions; plain visits save nothing
 };
 const K = () => "cm_send_" + (S.campaignId || "global");
@@ -76,7 +77,7 @@ function migrateSaved(raw) {
     out.open = step ? [step] : STEPS.slice();
   }
   delete out.step; delete out.visited; delete out.after;
-  out.schemaVersion = 5;
+  out.schemaVersion = 6;
   if (!Array.isArray(out.contactIds)) out.contactIds = [];
   if (typeof out.mapping !== "object" || out.mapping === null || Array.isArray(out.mapping)) out.mapping = {};
   if (typeof out.outcome !== "string" || !OUTCOME_IDS.includes(out.outcome)) out.outcome = "draft";
@@ -85,6 +86,7 @@ function migrateSaved(raw) {
   for (const k of ["when", "cc"]) if (typeof out[k] !== "string") out[k] = "";
   if (typeof out.append_signature !== "boolean") out.append_signature = true;
   if (typeof out.skipDupes !== "boolean") out.skipDupes = true;
+  if (typeof out.fillHi !== "boolean") out.fillHi = true;
   return out;
 }
 function restoreRaw() {
@@ -103,6 +105,8 @@ const data = {
   quality: null,         // {n, missing, dupes} for the current audience
   qualityFor: "",     // audience key the quality result belongs to
   dedupe: null,        // {dupes, crossCompany, groups, keepIds}
+  reviewFocus: null,     // D-19: {kind:'search'|'issues', list, idx, previews, loaded}
+  reviewIssues: [],     // D-19: rows with issues (blank fill / no email / skipped dupe)
   last_error: "",
   meEmail: "", defaultStagger: 0, maxCap: 0, sentToday: 0,
   restoreNotes: [],      // {step, text} one-line notices for stale saved ids
@@ -884,6 +888,9 @@ function templateSection() {
     fields.length
       ? el("div", { class: "opt-desc" }, fields.length + " " + (fields.length === 1 ? "field" : "fields") + " to fill in: " + fields.map(esc).join(", "))
       : el("div", { class: "opt-desc" }, "No fill-in fields - every email is identical"),
+    tplMeta(t),
+    sameSubjectWarn(t),
+    lastUsedNotice(),
     el("div", { class: "tpl-main-preview" },
       el("iframe", { class: "tpl-main-frame", srcdoc: thumbDoc(t), "aria-label": "Template preview", scrolling: "no" })),
     el("div", { class: "tpl-main-foot" },
@@ -913,6 +920,40 @@ function pickTemplate(id) {
   touch();
   autoMatch().then(() => repaint("message", "review"));
 }
+function tplMeta(t) {
+  const bits = [];
+  if (t.updated_at) bits.push("Last edited " + relTime(t.updated_at));
+  if (t.n_campaigns) bits.push("Used in " + fmtInt(t.n_campaigns) + " campaign" + (t.n_campaigns === 1 ? "" : "s"));
+  return bits.length ? el("div", { class: "opt-desc tpl-meta" }, bits.join(" \u00b7 ")) : null;
+}
+function sameSubjectOther(t) {
+  const subj = (t.subject || "").trim().toLowerCase();
+  if (!subj) return null;
+  return data.templates.find((o) => o.id !== t.id && (o.subject || "").trim().toLowerCase() === subj) || null;
+}
+function sameSubjectWarn(t) {
+  const o = sameSubjectOther(t);
+  return o ? el("div", { class: "opt-desc tpl-warn" }, "Same subject as \u2018" + esc(o.name) + "\u2018") : null;
+}
+function previewTemplate(t) {
+  const m = modal({
+    title: "Preview: " + t.name,
+    sub: "Previewed with sample data from " + data.listName + ".",
+    wide: true,
+    body: el("div", {}, el("div", { class: "tpl-full-preview" },
+      el("iframe", { class: "tpl-full-frame", srcdoc: thumbDoc(t), scrolling: "no", "aria-label": "Full template preview" }))),
+    foot: [el("button", { class: "btn btn-ghost" }, "Close")],
+  });
+  m.foot.querySelector(".btn-ghost").addEventListener("click", () => m.close());
+}
+function lastUsedNotice() {
+  const camp = data.campaigns.find((x) => x.id === S.campaignId);
+  if (!camp || !camp.last_template_id || camp.last_template_id === S.templateId) return null;
+  const lt = data.templates.find((t) => t.id === camp.last_template_id);
+  if (!lt) return null;
+  return el("div", { class: "banner banner-info", role: "status", style: "margin-top:8px" },
+    icon("info", "i i-16"), el("span", {}, "You used \u2018" + lt.name + "\u2019 last time."));
+}
 function tplCard(t, onPick) {
   const fields = Array.isArray(t.fields) ? t.fields : [];
   return el("button", {
@@ -926,7 +967,11 @@ function tplCard(t, onPick) {
         t.is_active ? badge2("Default") : null,
         t.kind === "reminder" ? badge2("Follow-up") : null),
       el("div", { class: "opt-desc" }, t.subject || "No subject"),
-      fields.length ? el("div", { class: "opt-desc" }, fields.length + " " + (fields.length === 1 ? "field" : "fields") + " to fill in") : el("div", { class: "opt-desc" }, "No fill-in fields - every email is identical")),
+      fields.length ? el("div", { class: "opt-desc" }, fields.length + " " + (fields.length === 1 ? "field" : "fields") + " to fill in") : el("div", { class: "opt-desc" }, "No fill-in fields - every email is identical"),
+      tplMeta(t),
+      sameSubjectWarn(t)),
+    el("a", { class: "btn btn-ghost btn-sm tpl-preview", href: "#", "aria-label": "Preview " + t.name,
+      onclick: (e) => { e.preventDefault(); e.stopPropagation(); previewTemplate(t); } }, "Preview"),
     el("a", { class: "btn btn-ghost btn-sm tpl-edit", href: "/library/templates/" + t.id, "aria-label": "Edit template",
       onclick: (e) => e.stopPropagation() }, icon("pencil", "i i-14"), "Edit"),
     el("span", { class: "opt-radio" }));
@@ -1165,12 +1210,15 @@ function accountSelect() {
 /* ================= Step 2: Check ================= */
 const previewHtmlEsc = (x) => String(x ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-function previewDoc(p, fills) {
+function previewDoc(p, fills, chrome = {}) {
   const fillsJson = JSON.stringify(fills).replace(/</g, "\\u003c");
+  const hi = chrome.hi !== false && fills.length > 0;
+  const atts = (chrome.atts || []).map(previewHtmlEsc).join(", ");
   return "<!doctype html><html><head><meta charset='utf-8'>" +
     "<style>" +
     "body{margin:0;padding:18px 20px;font:14px/1.55 -apple-system,'Segoe UI',Arial,sans-serif;color:#1a1a1a;background:#fff}" +
     ".cm-to{font-size:12.5px;color:#667;margin-bottom:4px}.cm-to b{color:#111}" +
+    ".cm-meta{font-size:12px;color:#889;margin-bottom:4px}" +
     ".cm-subj{font-size:14.5px;font-weight:650;margin:6px 0 12px;padding-bottom:10px;border-bottom:1px solid #ececf2}" +
     "img{max-width:100%} a{color:#4350C4}" +
     ".cm-fill{border-bottom:2px dotted #b3baff;background:#f2f3ff;padding:0 1px;border-radius:2px}" +
@@ -1178,21 +1226,35 @@ function previewDoc(p, fills) {
     "<div class='cm-to'>To: <b>" + previewHtmlEsc(p.hr_email) + "</b>" +
     (p.hr_name ? " &middot; " + previewHtmlEsc(p.hr_name) : "") +
     (p.company ? " &middot; " + previewHtmlEsc(p.company) : "") + "</div>" +
+    (chrome.from ? "<div class='cm-meta'>From: " + previewHtmlEsc(chrome.from) + "</div>" : "") +
+    (chrome.cc ? "<div class='cm-meta'>CC: " + previewHtmlEsc(chrome.cc) + "</div>" : "") +
+    (atts ? "<div class='cm-meta'>Attachment" + (chrome.atts.length === 1 ? "" : "s") + ": " + atts + "</div>" : "") +
     "<div class='cm-subj'>" + previewHtmlEsc(p.subject) + "</div>" +
     localToUrl(p.body) +
-    "<script>" +
-    "var fills=" + fillsJson + ";" +
-    "function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" +
-    "function walk(n){" +
-    "if(n.nodeType===3){var t=n.nodeValue,ch=false;" +
-    "for(var i=0;i<fills.length;i++){var v=fills[i];if(v&&t.indexOf(v)>=0){t=t.split(v).join('<span class=cm-fill>'+esc(v)+'</span>');ch=true;}}" +
-    "if(ch){var d=document.createElement('div');d.innerHTML=t;while(d.firstChild){n.parentNode.insertBefore(d.firstChild,n);}n.parentNode.removeChild(n);}}" +
-    "else if(n.nodeType===1&&n.nodeName!=='SCRIPT'&&n.nodeName!=='STYLE'){Array.prototype.slice.call(n.childNodes).forEach(walk);}}" +
-    "document.body.querySelectorAll('*').forEach(walk);" +
-    "<\/script></body></html>";
+    (hi
+      ? "<script>" +
+      "var fills=" + fillsJson + ";" +
+      "function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" +
+      "function walk(n){" +
+      "if(n.nodeType===3){var t=n.nodeValue,ch=false;" +
+      "for(var i=0;i<fills.length;i++){var v=fills[i];if(v&&t.indexOf(v)>=0){t=t.split(v).join('<span class=cm-fill>'+esc(v)+'</span>');ch=true;}}" +
+      "if(ch){var d=document.createElement('div');d.innerHTML=t;while(d.firstChild){n.parentNode.insertBefore(d.firstChild,n);}n.parentNode.removeChild(n);}}" +
+      "else if(n.nodeType===1&&n.nodeName!=='SCRIPT'&&n.nodeName!=='STYLE'){Array.prototype.slice.call(n.childNodes).forEach(walk);}}" +
+      "document.body.querySelectorAll('*').forEach(walk);" +
+        "<\/script>"
+      : "") +
+    "</body></html>";
 }
 
 function stepRecipient(dir) {
+  const f = data.reviewFocus;
+  if (f) {
+    const n = f.list.length;
+    if (!n) return;
+    f.idx = (f.idx + dir + n) % n;
+    paintFocus();
+    return;
+  }
   const n = data.previews.length;
   if (!n) return;
   data.preview_idx = (data.preview_idx + dir + n) % n;
@@ -1203,6 +1265,19 @@ function stepRecipient(dir) {
     fmtInt(data.preview_total) + " " + (data.preview_total === 1 ? "person" : "people") + " in total";
 }
 
+function fillsFor(row) {
+  const fills = [];
+  for (const f of data.fields) {
+    const m = S.mapping[f];
+    if (!m) continue;
+    const v = String(m).startsWith("column:") ? String(row[String(m).slice(7)] ?? "") : String(m);
+    if (v && !fills.includes(v)) fills.push(v);
+  }
+  return fills;
+}
+function chromeFor() {
+  return { from: accountEmail(), cc: S.cc.trim(), atts: files.map((f) => f.name), hi: S.fillHi };
+}
 function drawPreview(frame) {
   const p = data.previews[data.preview_idx];
   if (!p) {
@@ -1212,14 +1287,96 @@ function drawPreview(frame) {
   }
   const rows = (S.listId ? (data.sheetRows || []) : (data.allRows || []));
   const row = rows.find((r) => String(r.hr_email || "") === String(p.hr_email || "")) || {};
-  const fills = [];
-  for (const f of data.fields) {
-    const m = S.mapping[f];
-    if (!m) continue;
-    const v = String(m).startsWith("column:") ? String(row[String(m).slice(7)] ?? "") : String(m);
-    if (v && !fills.includes(v)) fills.push(v);
+  frame.srcdoc = previewDoc(p, fillsFor(row), chromeFor());
+}
+
+/* D-19: preview any recipient on demand (search or issue rows) via a
+   single-contact /api/merge/preview call. */
+async function paintFocus() {
+  const f = data.reviewFocus;
+  const frame = $q(".preview-paper");
+  if (!f || !frame) return;
+  const cap = $q("#recip-caption");
+  const row = f.list[f.idx];
+  if (!f.loaded) {
+    if (cap) cap.textContent = "Loading preview\u2026";
+    if (row && String(row.hr_email || "").trim()) {
+      try {
+        const d = await api("/api/merge/preview", { body: {
+          template_id: S.templateId, mapping: S.mapping, sheet_id: S.listId,
+          contact_ids: [row.id], limit: 1, append_signature: S.append_signature ? 1 : 0,
+        } });
+        if (data.reviewFocus !== f) return;
+        f.previews = d.previews || [];
+        f.loaded = true;
+      } catch (e) {
+        if (data.reviewFocus !== f) return;
+        f.loaded = true; f.previews = []; f.err = e.message;
+        if (cap) cap.textContent = "Couldn\u2019t load this preview: " + e.message;
+        return;
+      }
+    } else {
+      f.loaded = true; f.previews = [];
+    }
   }
-  frame.srcdoc = previewDoc(p, fills);
+  drawFocusFrame(frame, f);
+  capFocus(f);
+}
+function drawFocusFrame(frame, f) {
+  const row = f.list[f.idx];
+  const p = (f.previews || [])[0];
+  if (!row) {
+    frame.srcdoc = "<!doctype html><html><body style='margin:0;padding:40px;font:14px/1.5 -apple-system,'Segoe UI',Arial,sans-serif;color:#667;background:#fff'>No recipients.</body></html>";
+    return;
+  }
+  if (!p) {
+    frame.srcdoc = "<!doctype html><html><body style='margin:0;padding:40px;font:14px/1.5 -apple-system,'Segoe UI',Arial,sans-serif;color:#667;background:#fff'>" +
+      (String(row.hr_email || "").trim() ? "No preview for this row." : "This row has no email address - it will be skipped.") +
+      "</body></html>";
+    return;
+  }
+  frame.srcdoc = previewDoc(p, fillsFor(row), chromeFor());
+}
+function capFocus(f) {
+  const cap = $q("#recip-caption");
+  if (!cap) return;
+  cap.innerHTML = "";
+  const row = f.list[f.idx];
+  const who = row ? (row.hr_name || row.hr_email || ("row " + (row.serial || "?"))) : "";
+  const back = el("a", { class: "linklike", href: "#" }, "back to first 8");
+  back.addEventListener("click", (e) => { e.preventDefault(); clearFocus(); });
+  if (f.kind === "issues") {
+    cap.append("Issue " + (f.idx + 1) + " of " + f.list.length + " \u00b7 " + esc(who) +
+      (row && row.__issues && row.__issues.length ? " \u00b7 " + row.__issues.join(", ") : "") + " \u00b7 ", back);
+  } else {
+    cap.append("Previewing " + esc(who) + " \u00b7 match " + (f.idx + 1) + " of " + f.list.length + " \u00b7 ", back);
+  }
+}
+function clearFocus() {
+  data.reviewFocus = null;
+  const frame = $q(".preview-paper");
+  if (frame) drawPreview(frame);
+  const cap = $q("#recip-caption");
+  if (cap) cap.textContent = data.previews.length
+    ? "Person " + (data.preview_idx + 1) + " of " + data.previews.length + " shown \u00b7 " +
+      fmtInt(data.preview_total) + " " + (data.preview_total === 1 ? "person" : "people") + " in total"
+    : "No recipients in this selection.";
+}
+/* D-19: rows needing a look - no email, a blank fill, or a skipped duplicate. */
+function issueRows(rows) {
+  const keep = (S.skipDupes && data.dedupe && data.dedupe.keepIds) ? new Set(data.dedupe.keepIds) : null;
+  const out = [];
+  for (const r of rows) {
+    const rs = [];
+    if (!(r.hr_email || "").trim()) rs.push("no email");
+    for (const f of data.fields) {
+      const m = S.mapping[f];
+      if (m && String(m).startsWith("column:") && !(String(r[String(m).slice(7)] ?? "").trim())) { rs.push("blank \u2018" + f + "\u2019"); break; }
+    }
+    if (keep && String(r.hr_email || "").trim() && !keep.has(r.id)) rs.push("duplicate (skipped)");
+    if (rs.length) out.push(Object.assign({}, r, { __issues: rs }));
+  }
+  return out;
 }
 
 function checksCard() {
@@ -1329,15 +1486,51 @@ function viewDuplicates() {
 function renderStepReview(panel) {
   const cols = el("div", { class: "send-cols" });
   const left = el("div", { style: "min-width:0" });
+  const search = el("input", { class: "input recip-search", "aria-label": "Preview someone else", placeholder: "Preview someone else: name, company, email" });
+  const hi = el("input", { type: "checkbox", "aria-label": "Highlight filled values" });
+  hi.checked = S.fillHi;
+  hi.addEventListener("change", () => {
+    S.fillHi = hi.checked; touch();
+    if (data.reviewFocus) paintFocus();
+    else { const fr = $q(".preview-paper"); if (fr) drawPreview(fr); }
+  });
+  let sT;
+  search.addEventListener("input", () => {
+    clearTimeout(sT);
+    sT = setTimeout(async () => {
+      const q = search.value.trim().toLowerCase();
+      if (!q) { clearFocus(); return; }
+      try {
+        const rows = await checkRows();
+        const matches = rows.filter((r) => [r.company, r.hr_name, r.hr_email, r.serial]
+          .some((v) => String(v || "").toLowerCase().includes(q)));
+        if (!matches.length) {
+          const cap = $q("#recip-caption");
+          if (cap) cap.textContent = "No one matches \u2018" + search.value.trim() + "\u2019.";
+          return;
+        }
+        data.reviewFocus = { kind: "search", list: matches, idx: 0, previews: [], loaded: false };
+        paintFocus();
+      } catch { /* keep the current preview */ }
+    }, 250);
+  });
   left.append(
     el("div", { class: "recip-switch" },
       el("b", { style: "font-size:13.5px" }, "What they'll get"),
       el("span", { class: "push" }),
+      search,
+      el("label", { class: "recip-hi" }, hi, "Highlight filled values"),
+      el("button", { class: "btn btn-ghost btn-sm", id: "issue-chip", type: "button", style: "display:none" }, "Rows with issues"),
       el("button", { class: "btn btn-icon", "aria-label": "Previous person", onclick: () => stepRecipient(-1) }, icon("chevron-left", "i i-16")),
       el("button", { class: "btn btn-icon", "aria-label": "Next person", onclick: () => stepRecipient(1) }, icon("chevron-right", "i i-16"))),
     el("div", { class: "recip-caption", id: "recip-caption" }, "Loading previews…"),
     el("iframe", { class: "preview-paper", "aria-label": "Email preview", scrolling: "no" }));
-  const right = el("div", { style: "min-width:0" }, checksCard(), summaryCard());
+  const tpl = data.templates.find((t) => t.id === S.templateId);
+  const right = el("div", { style: "min-width:0" },
+    el("div", { class: "review-tpl-chip" }, icon("file-text", "i i-14"),
+      el("span", {}, "Template: "), el("b", {}, tpl ? tpl.name : "—"),
+      el("button", { class: "linklike", type: "button", onclick: templateGallery }, "Change")),
+    checksCard(), summaryCard());
   cols.append(left, right);
   panel.append(cols);
   (async () => {
@@ -1360,6 +1553,19 @@ function renderStepReview(panel) {
         ? "Person 1 of " + data.previews.length + " shown · " + fmtInt(data.preview_total) + " " + (data.preview_total === 1 ? "person" : "people") + " in total"
         : "No recipients in this selection.";
       await drawChecks();
+      data.reviewIssues = issueRows(await checkRows());
+      const chip = $q("#issue-chip");
+      if (chip) {
+        const n = data.reviewIssues.length;
+        chip.style.display = n ? "" : "none";
+        chip.textContent = "Rows with issues (" + fmtInt(n) + ")";
+        chip.addEventListener("click", () => {
+          if (!data.reviewIssues.length) return;
+          const cur = data.reviewFocus && data.reviewFocus.kind === "issues" ? data.reviewFocus.idx : -1;
+          data.reviewFocus = { kind: "issues", list: data.reviewIssues, idx: (cur + 1) % data.reviewIssues.length, previews: [], loaded: false };
+          paintFocus();
+        });
+      }
       const sum = $q(".send-sticky-foot .summary");
       if (sum) sum.textContent = fmtInt(data.preview_total) + " " + (data.preview_total === 1 ? "person" : "people") +
         " · " + (data.templates.find((t) => t.id === S.templateId) || {}).name;
@@ -1488,6 +1694,23 @@ function addOn(ico, title, stateFn, open, build) {
     updateStatuses();
     const sc = $q("#summary-card");
     if (sc && isOpen("review")) sc.replaceWith(summaryCard());
+    // keep the live preview truthful (D-18): signature/CC/attachments are
+    // baked into the server-rendered preview, so refetch for open sections.
+    if (isOpen("review")) {
+      if (data.reviewFocus) { data.reviewFocus.loaded = false; paintFocus(); }
+      else {
+        api("/api/merge/preview", { body: {
+          template_id: S.templateId, mapping: S.mapping, sheet_id: S.listId,
+          contact_ids: effContactIds(), limit: 8, append_signature: S.append_signature ? 1 : 0,
+        } }).then((d) => {
+          data.previews = d.previews || [];
+          data.preview_total = d.total || 0;
+          if (data.preview_idx >= data.previews.length) data.preview_idx = 0;
+          const fr = $q(".preview-paper");
+          if (fr && !data.reviewFocus) drawPreview(fr);
+        }).catch(() => {});
+      }
+    }
   };
   body.append(build(commit));
   wrap.append(head, body);

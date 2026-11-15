@@ -1421,7 +1421,10 @@ def api_campaigns():
                     "n_batches": c.execute("SELECT COUNT(*) n FROM batches WHERE campaign_id=?", (cam["id"],)).fetchone()["n"],
                     "n_sheets": n_sheets,
                     "n_contacts": n_contacts,
-                    "last": c.execute("SELECT MAX(created_at) t FROM batches WHERE campaign_id=?", (cam["id"],)).fetchone()["t"]})
+                    "last": c.execute("SELECT MAX(created_at) t FROM batches WHERE campaign_id=?", (cam["id"],)).fetchone()["t"],
+                    "last_template_id": (c.execute(
+                        "SELECT template_id FROM batches WHERE campaign_id=? AND template_id > 0 "
+                        "ORDER BY created_at DESC, id DESC LIMIT 1", (cam["id"],)).fetchone() or [0])[0]})
     c.close()
     return jsonify({"ok": True, "campaigns": out})
 

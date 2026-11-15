@@ -255,3 +255,19 @@
 
 /* ---- Time-picker segmented control: wrap instead of clip (D-25) ---- */
 .seg.seg-wrap { flex-wrap: wrap; }
+
+/* Phase 3: preview chrome controls (D-19/D-20), template differentiators (D-22/D-23) */
+.recip-hi { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); cursor: pointer; white-space: nowrap; }
+.recip-hi input { width: 14px; height: 14px; margin: 0; accent-color: var(--primary-500); }
+.issue-chip { white-space: nowrap; }
+.tpl-meta { color: var(--text-3); }
+.tpl-warn { color: var(--warn); }
+.tpl-preview { flex: none; margin-top: 2px; }
+.tpl-full-preview { height: 400px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; }
+.tpl-full-frame { width: 100%; height: 100%; border: 0; display: block; }
+.review-tpl-chip { display: flex; align-items: center; gap: 8px; padding: 9px 12px; margin-bottom: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface); font-size: 13px; }
+.review-tpl-chip b { font-weight: 650; }
+@media (max-width: 640px) {
+  .recip-switch { flex-wrap: wrap; }
+  .recip-search { flex: 1 1 100%; max-width: none; }
+}
