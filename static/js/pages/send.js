@@ -29,7 +29,7 @@ const OUTCOME_IDS = ["draft", "schedule", "send", "queue"];
 
 /* ---------------- state ---------------- */
 const S = {
-  schemaVersion: 6,
+  schemaVersion: 7,
   open: [],              // expanded section keys (D-39: single page, one decision per section)
   campaignId: START_CID,
   listId: 0,             // 0 = All contacts
@@ -49,6 +49,7 @@ const S = {
   outcome: "draft",      // draft | schedule | send | queue
   skipDupes: true,       // 8.2: skip duplicate emails, keep first
   fillHi: true,          // D-20: highlight filled values in the preview
+  att_meta: [],          // 8.8: {name,size} of attachments (File objects die on refresh)
   touched: false,        // set by real user actions; plain visits save nothing
 };
 const K = () => "cm_send_" + (S.campaignId || "global");
@@ -77,7 +78,7 @@ function migrateSaved(raw) {
     out.open = step ? [step] : STEPS.slice();
   }
   delete out.step; delete out.visited; delete out.after;
-  out.schemaVersion = 6;
+  out.schemaVersion = 7;
   if (!Array.isArray(out.contactIds)) out.contactIds = [];
   if (typeof out.mapping !== "object" || out.mapping === null || Array.isArray(out.mapping)) out.mapping = {};
   if (typeof out.outcome !== "string" || !OUTCOME_IDS.includes(out.outcome)) out.outcome = "draft";
@@ -87,6 +88,7 @@ function migrateSaved(raw) {
   if (typeof out.append_signature !== "boolean") out.append_signature = true;
   if (typeof out.skipDupes !== "boolean") out.skipDupes = true;
   if (typeof out.fillHi !== "boolean") out.fillHi = true;
+  if (!Array.isArray(out.att_meta) || !out.att_meta.every((x) => x && typeof x.name === "string")) out.att_meta = [];
   return out;
 }
 function restoreRaw() {
@@ -131,6 +133,16 @@ const planNow = () => planDelivery({ outcome: S.outcome, n: effN(), cap: data.ma
 const unmatchedFields = () => data.fields.filter((f) => !S.mapping[f]);
 
 /* ---------------- load ---------------- */
+function readState(st) {
+  if (!st) return;
+  data.safe = st.settings.safe_mode === "1";
+  data.ai_on = st.settings.ai_enabled === "1" && st.ai_has_key === "1";
+  data.n_contacts = (st.onboard && st.onboard.contacts) || 0;
+  data.meEmail = (st.me && st.me.email) || "";
+  data.defaultStagger = Number((st.settings && st.settings.default_stagger_min) || 0);
+  data.maxCap = Number((st.settings && st.settings.max_sends_per_day) || 0);
+  data.sentToday = st.sent_today || 0;
+}
 async function load() {
   try {
     const [camps, sheets, tpls, accs, st] = await Promise.all([
@@ -1731,33 +1743,52 @@ function messageOptions() {
       return el("div", {}, inp, el("div", { class: "field-help" }, "Copied onto every email in this batch."));
     }),
     addOn("paperclip", "Attachments",
-      () => (files.length ? fmtInt(files.length) + " file" + (files.length === 1 ? "" : "s") : "None"),
-      files.length > 0, (commit) => {
+      () => (files.length ? fmtInt(files.length) + " file" + (files.length === 1 ? "" : "s")
+            : S.att_meta.length ? fmtInt(S.att_meta.length) + " need re-selecting" : "None"),
+      files.length > 0 || S.att_meta.length > 0, (commit) => {
         const fileIn = el("input", { type: "file", multiple: true, style: "display:none" });
         const add = el("button", { class: "btn btn-ghost btn-sm", onclick: () => fileIn.click() }, icon("upload", "i i-14"), " Add files");
         const list = el("div", { style: "display:flex;flex-direction:column;gap:6px;margin-top:10px" });
+        const syncMeta = () => { S.att_meta = files.map((f) => ({ name: f.name, size: f.size })); };
+        const kb = (n) => Math.max(1, Math.round((n || 0) / 1024)) + " KB";
         const paintFiles = () => {
           list.innerHTML = "";
           files.forEach((f, i) => {
             list.append(el("div", { style: "display:flex;align-items:center;gap:10px;font-size:13px" },
               icon("paperclip", "i i-14"),
               el("span", { style: "flex:1;min-width:0" }, f.name),
-              el("span", { class: "t-caption t-faint" }, Math.max(1, Math.round(f.size / 1024)) + " KB"),
+              el("span", { class: "t-caption t-faint" }, kb(f.size)),
               el("button", { class: "btn btn-icon", "aria-label": "Remove " + f.name,
-                onclick: () => { files.splice(i, 1); commit(); paintFiles(); } }, icon("x", "i i-14"))));
+                onclick: () => { files.splice(i, 1); syncMeta(); commit(); paintFiles(); paintNotice(); } }, icon("x", "i i-14"))));
           });
         };
+        // 8.8: File objects do not survive a refresh - say what was picked and offer to re-pick.
+        const notice = el("div", { style: "display:flex;gap:10px;align-items:center;margin-top:10px" });
+        const paintNotice = () => {
+          notice.innerHTML = "";
+          if (files.length || !S.att_meta.length) { notice.style.display = "none"; return; }
+          notice.style.display = "";
+          notice.append(icon("alert-triangle", "i i-14"),
+            el("span", { class: "t-caption", style: "flex:1" },
+              fmtInt(S.att_meta.length) + " file" + (S.att_meta.length === 1 ? "" : "s") +
+              " need re-selecting: " + S.att_meta.map((m) => m.name + " (" + kb(m.size) + ")").join(", ")),
+            el("button", { class: "btn btn-ghost btn-sm", onclick: () => fileIn.click() }, "Re-select"),
+            el("button", { class: "btn btn-ghost btn-sm", onclick: () => { S.att_meta = []; commit(); paintNotice(); } }, "Remove"));
+        };
         paintFiles();
+        paintNotice();
         fileIn.addEventListener("change", () => {
           const fs = [...(fileIn.files || [])];
           if (!fs.length) return;
           const total = files.reduce((a, f) => a + f.size, 0) + fs.reduce((a, f) => a + f.size, 0);
           if (total > 15 * 1024 * 1024) { toast("Attachments must stay under 15 MB in total.", { type: "error" }); return; }
           files.push(...fs);
+          syncMeta();
           commit();
           paintFiles();
+          paintNotice();
         });
-        return el("div", {}, add, list,
+        return el("div", {}, add, list, notice,
           el("div", { class: "field-help" }, "Sent with every email in this batch. Re-select the files if you refresh the page."));
       }));
   return wrap;
@@ -2125,4 +2156,16 @@ function successScreen(res) {
 }
 
 /* ---------------- init ---------------- */
+/* Spec 14.7: safe mode and the daily cap can change elsewhere (Settings,
+   top bar). Re-evaluate the delivery cards instead of waiting for a refresh. */
+document.addEventListener("cm:state", async () => {
+  if (data.last_error || !root.querySelector(".send-sticky-foot")) return;
+  try {
+    const st = await api("/api/state");
+    readState(st);
+    if (isOpen("delivery")) paintSection("delivery");
+    updateStatuses();
+  } catch { /* keep last known state */ }
+});
+
 load();
