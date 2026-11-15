@@ -17,7 +17,7 @@
 }
 .send-sticky-foot {
   display: flex; align-items: center; gap: var(--sp-4);
-  padding: var(--sp-3) var(--content-pad);
+  padding: var(--sp-3) var(--content-pad) calc(var(--sp-3) + env(safe-area-inset-bottom, 0px));
 }
 .send-sticky-foot .summary { flex: 1; min-width: 0; font-size: 13px; color: var(--text-2); font-weight: 550; text-align: center; }
 .foot-reason { display: block; color: var(--warn); font-size: 12px; font-weight: 600; margin-top: 1px; }
@@ -270,4 +270,11 @@
 @media (max-width: 640px) {
   .recip-switch { flex-wrap: wrap; }
   .recip-search { flex: 1 1 100%; max-width: none; }
+}
+
+/* 8.10: small screens - summary above the full-width action */
+@media (max-width: 1023px) {
+  .send-sticky-foot { flex-wrap: wrap; row-gap: var(--sp-2); }
+  .send-sticky-foot .summary { order: -1; flex: 1 1 100%; text-align: left; }
+  .send-sticky-foot .btn-primary { flex: 1 1 auto; }
 }
