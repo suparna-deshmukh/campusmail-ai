@@ -30,8 +30,9 @@ const OUTCOME_IDS = ["draft", "schedule", "send", "queue"];
 
 /* ---------------- state ---------------- */
 const S = {
-  schemaVersion: 7,
-  open: [],              // expanded section keys (D-39: single page, one decision per section)
+  schemaVersion: 8,
+  step: "audience",      // D-44: sequential steps (audience | message | delivery | review)
+  visited: ["audience"], // steps visited in this draft; stepper jumps back to them
   campaignId: START_CID,
   listId: 0,             // 0 = All contacts
   contactIds: [],        // non-empty = only these contacts from the chosen list
@@ -68,18 +69,19 @@ function clearDraftKey() { try { localStorage.removeItem(K()); } catch { /* priv
 function migrateSaved(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const out = { ...raw };
-  // D-39: the 4-step "step" value becomes the one expanded section.
-  // Old numeric steps (2-step flow): 1 -> audience, 2 -> review.
+  // D-44: sequential steps. Migrate single-page "open" arrays (D-39) and
+  // old numeric steps (2-step flow: 1 -> audience, 2 -> review).
   const stepMap = { 1: "audience", 2: "review", "1": "audience", "2": "review",
     audience: "audience", message: "message", delivery: "delivery", review: "review" };
-  if (Array.isArray(out.open)) {
-    out.open = out.open.filter((k) => STEPS.includes(k));
-  } else {
-    const step = stepMap[out.step];
-    out.open = step ? [step] : STEPS.slice();
-  }
-  delete out.step; delete out.visited; delete out.after;
-  out.schemaVersion = 7;
+  let step;
+  if (Array.isArray(out.open)) step = out.open.find((k) => STEPS.includes(k));
+  else step = stepMap[out.step];
+  out.step = STEPS.includes(step) ? step : "audience";
+  const visited = Array.isArray(out.visited) ? out.visited.filter((k) => STEPS.includes(k)) : [];
+  if (!visited.length) visited.push(...STEPS.slice(0, STEPS.indexOf(out.step) + 1));
+  out.visited = Array.from(new Set(visited));
+  delete out.open; delete out.after;
+  out.schemaVersion = 8;
   if (!Array.isArray(out.contactIds)) out.contactIds = [];
   if (typeof out.mapping !== "object" || out.mapping === null || Array.isArray(out.mapping)) out.mapping = {};
   if (typeof out.outcome !== "string" || !OUTCOME_IDS.includes(out.outcome)) out.outcome = "draft";
@@ -169,10 +171,6 @@ async function load() {
   }
   const saved = migrateSaved(restoreRaw());
   if (saved) { Object.assign(S, saved); S.touched = true; }
-  if (!saved) {
-    const u = (new URLSearchParams(location.search).get("step") || "").toLowerCase();
-    S.open = STEPS.includes(u) ? [u] : STEPS.slice();
-  }
   if (S.campaignId) {
     const c = data.campaigns.find((x) => x.id === S.campaignId);
     if (!c) S.campaignId = START_CID ? 0 : S.campaignId;
@@ -204,9 +202,14 @@ async function load() {
   // mismatch came from skipping this on first visit).
   await autoMatch();
   await refreshQuality(); // footer counts and section statuses need it up front
-  if (!saved) S.open = allValid() ? [] : [firstBlocker().sec];
-  const cu = new URL(location.href); cu.searchParams.delete("step");
-  history.replaceState(null, "", cu.toString());
+  // Deep link (?step=) wins over the saved step. Fresh visits land on the
+  // first blocker; valid defaults land on Audience.
+  const u = (new URLSearchParams(location.search).get("step") || "").toLowerCase();
+  if (STEPS.includes(u)) S.step = u;
+  if (!saved && !STEPS.includes(u)) {
+    const b = firstBlocker();
+    if (b) S.step = b.sec;
+  }
   render();
 }
 
@@ -293,17 +296,17 @@ async function autoMatch(force = false) {
   S.mappedFor = key;
 }
 
-/* ---------------- shell ---------------- */
+/* ---------------- shell: sequential 4-step flow (D-44) ---------------- */
 function render() {
   root.innerHTML = "";
   root.append(el("div", { class: "send-layout" },
-    el("div", { class: "send-col" },
+    el("div", { class: "send-main" },
       pageHead(),
-      el("div", { class: "send-wrap" },
-        section("audience"), section("message"), section("delivery"), section("review")),
-      el("div", { class: "send-sticky-zone" }, footerBar()))));
-  for (const k of STEPS) paintSection(k);
-  syncWrapWide();
+      stepperStrip(),
+      el("div", { class: "send-stage" + (S.step === "review" ? " step-review" : ""), id: "send-stage" }),
+      el("div", { class: "send-sticky-zone" }, footerBar())),
+    sendRail()));
+  paintStage();
   save();
 }
 function pageHead() {
@@ -318,71 +321,141 @@ function closeFlow() {
   history.length > 2 ? history.back() : (location.href = S.campaignId ? "/campaigns/" + S.campaignId : "/campaigns");
 }
 
-/* One collapsible section per decision (D-39). */
-function isOpen(key) { return S.open.includes(key); }
-function section(key) {
-  const [title] = SEC[key];
-  const head = el("button", {
-    class: "acc-head", type: "button", "aria-expanded": String(isOpen(key)),
-    "aria-controls": "acc-body-" + key,
-    onclick: () => toggleSec(key),
-  },
-    el("span", { class: "acc-num" }, String(STEPS.indexOf(key) + 1)),
-    el("span", { class: "acc-head-txt" },
-      el("span", { class: "acc-title" }, title),
-      el("span", { class: "acc-status", id: "acc-status-" + key })),
-    el("span", { class: "acc-chev" }, icon("chevron-down", "i i-16")));
-  const body = el("div", { class: "acc-body", id: "acc-body-" + key, hidden: !isOpen(key) });
-  return el("section", { class: "send-sec", id: "sec-wrap-" + key, "aria-label": title }, head, body);
+const isOpen = (key) => S.step === key;
+
+function canJumpTo(k) {
+  if (k === S.step) return true;
+  if ((S.visited || []).includes(k)) return true;
+  const i = STEPS.indexOf(k);
+  return STEPS.slice(0, i).every((x) => statusFor(x).cls === "ok");
 }
-function toggleSec(key) {
-  const wasOpen = S.open.includes(key);
-  const i = S.open.indexOf(key);
-  if (i >= 0) S.open.splice(i, 1); else S.open.push(key);
+function stepDot(k, st, i) {
+  if (st.cls === "ok" && k !== S.step) return el("span", { class: "send-step-n is-done" }, icon("check", "i i-12"));
+  if (st.cls === "block") return el("span", { class: "send-step-n is-block" }, "!");
+  return el("span", { class: "send-step-n" }, String(i + 1));
+}
+function stepperStrip() {
+  const ol = el("ol", { class: "send-steps", "aria-label": "Send steps" });
+  STEPS.forEach((k, i) => {
+    const st = statusFor(k);
+    const label = el("span", { class: "send-step-label" }, SEC[k][0]);
+    if (canJumpTo(k)) {
+      const b = el("button", { class: "send-step-btn", type: "button",
+        "aria-current": k === S.step ? "step" : null,
+        title: k === S.step ? SEC[k][1] : "Go to \u201C" + SEC[k][0] + "\u201D",
+        onclick: () => { if (k !== S.step) showStep(k); } },
+        stepDot(k, st, i), label);
+      ol.append(el("li", { class: "send-step" + (k === S.step ? " is-current" : "") }, b));
+    } else {
+      ol.append(el("li", { class: "send-step is-locked" },
+        el("span", { class: "send-step-btn is-disabled", title: "Finish the earlier steps first" }, stepDot(k, st, i), label)));
+    }
+  });
+  return ol;
+}
+function paintStepper() {
+  const s2 = $q(".send-steps");
+  if (s2) s2.replaceWith(stepperStrip());
+}
+
+/* Rail: persistent "Your send" summary (desktop). On mobile it folds into
+   the footer summary line, which opens it as a sheet. */
+function sendRail() {
+  return el("aside", { class: "send-rail", "aria-label": "Your send" },
+    el("div", { class: "overline-label rail-title" }, "Your send"),
+    el("div", { class: "rail-card", id: "send-rail-card" }));
+}
+function railRows() {
+  const n = effN();
+  const t = (data.templates.find((x) => x.id === S.templateId) || {}).name || "";
+  const acct = accountEmail() || "";
+  const d = statusFor("delivery");
+  const rows = [
+    ["To", n ? fmtInt(n) + " \u00b7 " + data.listName : "", "audience"],
+    ["Template", t, "message"],
+    ["From", acct, "delivery"],
+    ["Delivery", d.cls === "ok" ? d.text : "Not set yet", "delivery"],
+  ];
+  return el("div", { class: "rail-rows" },
+    ...rows.map(([k, v, step]) => el("div", { class: "rail-row" },
+      el("span", { class: "rail-k" }, k),
+      el("span", { class: "rail-v", title: v }, v || "\u2014"),
+      el("button", { class: "linklike rail-change", type: "button", onclick: () => changeLink(step) }, "Change"))));
+}
+function paintRail() {
+  const box = $q("#send-rail-card");
+  if (box) { box.innerHTML = ""; box.append(railRows()); }
+}
+function railSheet() {
+  const m = modal({ title: "Your send", body: el("div", {}, railRows()),
+    foot: [el("button", { class: "btn btn-ghost" }, "Close")] });
+  m.foot.querySelector(".btn-ghost").addEventListener("click", () => m.close());
+}
+
+/* Paint the current step into the stage. Keeps the #sec-wrap-<step> and
+   #acc-body-<step> ids so existing hooks and tests keep working. */
+function paintStage() {
+  const stage = $q("#send-stage");
+  if (!stage) return;
+  stage.classList.toggle("step-review", S.step === "review");
+  stage.innerHTML = "";
+  const key = S.step;
+  const [title, sub] = SEC[key];
+  const body = el("div", { class: "acc-body step-body", id: "acc-body-" + key });
+  // Attach the panel before rendering its content: sync paint hooks
+  // (list quality cache hit, status lines) expect the nodes in the DOM.
+  stage.append(el("div", { class: "step-panel", id: "sec-wrap-" + key },
+    el("div", { class: "step-head" },
+      el("h2", { class: "step-title" }, title),
+      el("p", { class: "step-sub" }, sub)),
+    body));
+  const note = restoreNote(key);
+  if (note) body.append(note);
+  if (key === "audience") renderStepAudience(body);
+  else if (key === "message") renderStepMessage(body);
+  else if (key === "delivery") renderStepDelivery(body);
+  else renderStepReview(body);
+  paintStepper();
+  paintRail();
+  updateFooterChrome();
+}
+function showStep(key, opts = {}) {
+  if (!STEPS.includes(key)) return;
+  if (key === S.step) { paintStage(); return; }
+  data.returnTo = null;
   const secT = data._secT || (data._secT = {});
-  if (wasOpen) { if (secT[key]) { logEvent("section_time_ms", { section: key, ms: Date.now() - secT[key] }); delete secT[key]; } }
-  else { secT[key] = Date.now(); logEvent("section_viewed", { section: key }); }
+  if (secT[S.step]) { logEvent("section_time_ms", { section: S.step, ms: Date.now() - secT[S.step] }); delete secT[S.step]; }
+  S.step = key;
+  if (!S.visited.includes(key)) S.visited.push(key);
+  secT[key] = Date.now();
+  logEvent("section_viewed", { section: key });
   touch();
-  paintSection(key);
-  syncWrapWide();
-  const head = $q("#sec-wrap-" + key + " .acc-head");
-  if (head) head.scrollIntoView({ block: "nearest" });
+  const url = new URL(location.href);
+  url.searchParams.set("step", key);
+  history.pushState({ step: key }, "", url.toString());
+  paintStage();
+  window.scrollTo({ top: 0, behavior: (opts && opts.silent) ? "auto" : "smooth" });
 }
-function syncWrapWide() {
-  const w = $q(".send-wrap");
-  if (w) w.classList.toggle("review-open", isOpen("review"));
-}
-/* (Re)build an open section's body, refresh its status line and the footer. */
-function paintSection(key) {
-  const wrap = $q("#sec-wrap-" + key);
-  if (!wrap) return;
-  const head = wrap.querySelector(".acc-head");
-  const body = $q("#acc-body-" + key);
-  head.setAttribute("aria-expanded", String(isOpen(key)));
-  body.hidden = !isOpen(key);
-  if (isOpen(key)) {
-    body.innerHTML = "";
-    const note = restoreNote(key);
-    if (note) body.append(note);
-    if (key === "audience") renderStepAudience(body);
-    else if (key === "message") renderStepMessage(body);
-    else if (key === "delivery") renderStepDelivery(body);
-    else renderStepReview(body);
+window.addEventListener("popstate", (e) => {
+  const key = (e.state && e.state.step) || new URLSearchParams(location.search).get("step");
+  if (STEPS.includes(key) && key !== S.step) {
+    data.returnTo = null;
+    S.step = key;
+    paintStage();
+    window.scrollTo({ top: 0 });
   }
-  const st = statusFor(key);
-  const s = $q("#acc-status-" + key);
-  if (s) { s.textContent = st.text; s.className = "acc-status " + st.cls; }
+});
+function paintSection(key) {
+  if (key === S.step) paintStage();
+  else { paintStepper(); paintRail(); }
   updateFooterChrome();
 }
 function updateStatuses() {
-  for (const k of STEPS) {
-    const st = statusFor(k);
-    const s = $q("#acc-status-" + k);
-    if (s) { s.textContent = st.text; s.className = "acc-status " + st.cls; }
-  }
+  paintStepper();
+  paintRail();
   updateFooterChrome();
 }
-/* Targeted repaint: only the named sections (if open), statuses and footer. */
+/* Targeted repaint: only the current step, plus stepper, rail and footer. */
 function repaint(...keys) {
   for (const k of new Set(keys)) if (STEPS.includes(k) && isOpen(k)) paintSection(k);
   updateStatuses();
@@ -437,17 +510,39 @@ function firstBlocker() {
    it either names the first missing thing (and jumps there) or performs the
    outcome (D-39 / D-12). */
 function footerBar() {
-  const blocker = firstBlocker();
-  const skip = !blocker
-    ? el("button", { class: "linklike", type: "button",
-        onclick: () => { if (!isOpen("review")) toggleSec("review"); $q("#sec-wrap-review").scrollIntoView({ block: "nearest" }); } },
-      "Skip to review")
-    : el("span");
-  const primary = blocker
-    ? el("button", { class: "btn btn-primary", onclick: jumpToBlocker }, blocker.text)
-    : primary3();
-  const sum = el("div", { class: "summary" }, el("span", {}, footerSummaryAll()));
-  return el("div", { class: "send-sticky-foot" }, sum, skip, primary);
+  const i = STEPS.indexOf(S.step);
+  const back = el("button", { class: "btn btn-ghost", type: "button",
+    onclick: () => (i > 0 ? showStep(STEPS[i - 1]) : closeFlow()) }, i > 0 ? "Back" : "Campaigns");
+  const sum = el("button", { class: "summary", type: "button",
+    "aria-label": "Your send summary" + (i < 3 ? ". Tap for details on small screens" : ""),
+    onclick: () => { if (window.matchMedia("(max-width: 1023px)").matches) railSheet(); } },
+    el("span", {}, footerSummaryAll()));
+  let skip = el("span");
+  let primary;
+  if (i < 3) {
+    const nextName = { message: "Message", delivery: "Delivery", review: "Review" }[STEPS[i + 1]];
+    const st = statusFor(S.step);
+    if (st.cls === "block") {
+      primary = el("button", { class: "btn btn-primary", type: "button", disabled: "" }, "Continue to " + nextName);
+      sum.append(el("span", { class: "foot-reason" }, st.text));
+    } else {
+      primary = el("button", { class: "btn btn-primary", type: "button",
+        onclick: () => {
+          const rt = data.returnTo; data.returnTo = null;
+          if (rt && STEPS.includes(rt) && STEPS.indexOf(rt) > i) { showStep(rt); return; }
+          showStep(STEPS[i + 1]);
+        } }, "Continue to " + nextName);
+    }
+    if (allValid() && S.step !== "review")
+      skip = el("button", { class: "linklike", type: "button", onclick: () => showStep("review") }, "Skip to review");
+  } else {
+    const st = statusFor("delivery");
+    if (st.cls === "block") {
+      primary = el("button", { class: "btn btn-primary", type: "button", disabled: "" }, primaryLabel());
+      sum.append(el("span", { class: "foot-reason" }, st.text));
+    } else primary = primary3();
+  }
+  return el("div", { class: "send-sticky-foot" }, back, sum, skip, primary);
 }
 function footerSummaryAll() {
   const n = effN();
@@ -459,22 +554,11 @@ function footerSummaryAll() {
     : { draft: "as drafts", schedule: "scheduled", send: "sent now", queue: "in queue" }[S.outcome];
   return fmtInt(n) + " " + (n === 1 ? "email" : "emails") + " · " + t + " · " + outcome;
 }
-function jumpToBlocker() {
-  const b = firstBlocker();
-  if (!b) return;
-  if (!isOpen(b.sec)) { S.open.push(b.sec); touch(); paintSection(b.sec); }
-  syncWrapWide();
-  const w = $q("#sec-wrap-" + b.sec);
-  if (w) w.scrollIntoView({ block: "start", behavior: "smooth" });
-  const first = w && w.querySelector(".acc-body select, .acc-body input, .acc-body textarea, .acc-body .opt-card");
-  if (first && first.focus) first.focus({ preventScroll: true });
-}
 function changeLink(step) {
-  if (!STEPS.includes(step)) return;
-  if (!isOpen(step)) { S.open.push(step); touch(); paintSection(step); }
-  syncWrapWide();
-  const w = $q("#sec-wrap-" + step);
-  if (w) w.scrollIntoView({ block: "start", behavior: "smooth" });
+  if (!STEPS.includes(step) || step === S.step) return;
+  const from = S.step;
+  showStep(step);
+  data.returnTo = from;
 }
 function updateFooterChrome() {
   const zone = $q(".send-sticky-zone");
@@ -1858,16 +1942,18 @@ function accountEmail() {
   return (data.accounts.find((a) => a.id === S.account) || {}).email || "";
 }
 
-function primary3() {
+function primaryLabel() {
   const n = effN();
   const pl = planNow();
-  const label = {
+  return {
     draft: "Create " + fmtInt(n) + " drafts",
     schedule: "Schedule " + fmtInt(n) + " " + (n === 1 ? "email" : "emails"),
     send: "Send " + fmtInt(pl.today) + " " + (pl.today === 1 ? "email" : "emails") + " now",
     queue: "Queue " + fmtInt(n) + " " + (n === 1 ? "email" : "emails"),
   }[S.outcome];
-  const b = el("button", { class: "btn btn-primary" }, label);
+}
+function primary3() {
+  const b = el("button", { class: "btn btn-primary" }, primaryLabel());
   b.addEventListener("click", onPrimary3);
   return b;
 }

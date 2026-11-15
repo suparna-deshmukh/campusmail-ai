@@ -19,12 +19,32 @@
   display: flex; align-items: center; gap: var(--sp-4);
   padding: var(--sp-3) var(--content-pad) calc(var(--sp-3) + env(safe-area-inset-bottom, 0px));
 }
-.send-sticky-foot .summary { flex: 1; min-width: 0; font-size: 13px; color: var(--text-2); font-weight: 550; text-align: center; }
+.send-sticky-foot .summary { flex: 1; min-width: 0; font-size: 13px; color: var(--text-2); font-weight: 550; text-align: center; background: none; border: 0; padding: 2px 4px; font-family: inherit; cursor: default; }
+@media (max-width: 1023px) { .send-sticky-foot .summary { cursor: pointer; } }
+.send-sticky-foot > .btn-ghost { flex: none; }
 .foot-reason { display: block; color: var(--warn); font-size: 12px; font-weight: 600; margin-top: 1px; }
 
-/* Single page, one collapsible section per decision (D-39) */
+/* D-44: sequential 4-step flow - main column + persistent "Your send" rail */
 .send-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-6); }
-.send-col { min-width: 0; }
+@media (min-width: 1024px) {
+  .send-layout { grid-template-columns: minmax(0, 1fr) 300px; align-items: start; }
+  .send-rail { display: block; position: sticky; top: 16px; }
+}
+.send-main { min-width: 0; }
+.send-rail { display: none; }
+.rail-title { margin: 4px 0 10px; }
+.rail-card {
+  border: 1px solid var(--border); border-radius: var(--r-card);
+  background: var(--surface); box-shadow: var(--shadow-sm); padding: 4px 16px;
+}
+.rail-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.rail-row:last-child { border-bottom: 0; }
+.rail-k { color: var(--text-3); font-weight: 550; flex: none; width: 64px; }
+.rail-v { flex: 1; min-width: 0; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-change { flex: none; font-size: 12px; }
 .step-sec { margin-bottom: var(--sp-5); }
 .step-sec:last-of-type { margin-bottom: var(--sp-4); }
 
@@ -278,3 +298,34 @@
   .send-sticky-foot .summary { order: -1; flex: 1 1 100%; text-align: left; }
   .send-sticky-foot .btn-primary { flex: 1 1 auto; }
 }
+
+/* Stepper strip (D-44) */
+.send-steps { display: flex; gap: 4px; list-style: none; margin: 0 0 var(--sp-6); padding: 0; overflow-x: auto; scrollbar-width: none; }
+.send-steps::-webkit-scrollbar { display: none; }
+.send-step { flex: 1 1 0; min-width: 132px; }
+.send-step-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 12px; background: none; border: 1px solid transparent;
+  border-radius: 10px; cursor: pointer; font: inherit; color: var(--text-2); text-align: left;
+}
+.send-step-btn:hover { background: color-mix(in srgb, var(--surface) 50%, transparent); }
+.send-step.is-current > .send-step-btn { border-color: var(--border); background: var(--surface); box-shadow: var(--shadow-sm); }
+.send-step.is-locked > .send-step-btn { cursor: not-allowed; color: var(--text-3); }
+.send-step-n {
+  width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 12px; font-weight: 650; background: var(--surface-2, var(--surface));
+  color: var(--text-2); flex: none; border: 1px solid var(--border);
+}
+.send-step.is-current > .send-step-btn .send-step-n { background: var(--primary-500); border-color: var(--primary-500); color: #fff; }
+.send-step-n.is-done { background: color-mix(in srgb, var(--ok) 14%, transparent); border-color: transparent; color: var(--ok); }
+.send-step-n.is-block { background: color-mix(in srgb, var(--warn) 14%, transparent); border-color: transparent; color: var(--warn); }
+.send-step-label { font-size: 13px; font-weight: 550; min-width: 0; }
+.send-step.is-current > .send-step-btn .send-step-label { color: var(--text); font-weight: 650; }
+
+/* Stage: one decision per screen */
+.send-stage { max-width: 780px; margin: 0 auto; width: 100%; }
+.send-stage.step-review { max-width: 1120px; }
+.step-head { margin: 0 0 var(--sp-5); }
+.step-title { font-size: 20px; line-height: 28px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.step-sub { font-size: 13.5px; color: var(--text-2); margin: 4px 0 0; }
+.step-body { margin: 0; }
