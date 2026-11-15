@@ -13,6 +13,7 @@ import { openTimePicker } from "/static/js/components/timepicker.js";
 import { planDelivery, sendCapSentence, scheduleCapSentence } from "/static/js/core/send-plan.js";
 import { dedupeRows, keepFirstIds } from "/static/js/core/dedupe.js";
 import { startSendCountdown } from "/static/js/components/send-countdown.js";
+import { logEvent } from "/static/js/core/telemetry.js";
 
 const START_CID = window.send_campaign_id || 0;
 const root = document.getElementById("send-root");
@@ -157,17 +158,10 @@ async function load() {
     data.templates = tpls.templates || [];
     data.accounts = (accs.accounts || []).filter((a) => a.connected);
     data.last_account_id = accs.last_account_id || 0;
-    if (st) {
-      data.safe = st.settings.safe_mode === "1";
-      data.ai_on = st.settings.ai_enabled === "1" && st.ai_has_key === "1";
-      data.n_contacts = (st.onboard && st.onboard.contacts) || 0;
-      data.meEmail = (st.me && st.me.email) || "";
-      data.defaultStagger = Number((st.settings && st.settings.default_stagger_min) || 0);
-      data.maxCap = Number((st.settings && st.settings.max_sends_per_day) || 0);
-      data.sentToday = st.sent_today || 0;
-    }
+    readState(st);
     data.last_error = "";
   } catch (e) {
+    logEvent("error_shown", { code: "load" });
     data.last_error = e.message;
     root.innerHTML = "";
     root.append(errorCard("Could not load the send flow. Check your connection and try again.", { onRetry: load, detail: e.message }));
@@ -342,8 +336,12 @@ function section(key) {
   return el("section", { class: "send-sec", id: "sec-wrap-" + key, "aria-label": title }, head, body);
 }
 function toggleSec(key) {
+  const wasOpen = S.open.includes(key);
   const i = S.open.indexOf(key);
   if (i >= 0) S.open.splice(i, 1); else S.open.push(key);
+  const secT = data._secT || (data._secT = {});
+  if (wasOpen) { if (secT[key]) { logEvent("section_time_ms", { section: key, ms: Date.now() - secT[key] }); delete secT[key]; } }
+  else { secT[key] = Date.now(); logEvent("section_viewed", { section: key }); }
   touch();
   paintSection(key);
   syncWrapWide();
@@ -744,6 +742,7 @@ function qualityLine() {
     cb.checked = S.skipDupes;
     cb.addEventListener("change", () => {
       S.skipDupes = cb.checked; touch();
+      logEvent("dupes_toggled", { skip: cb.checked ? 1 : 0 });
       updateStatuses();
       const sc = $q("#summary-card");
       if (sc && isOpen("review")) sc.replaceWith(summaryCard());
@@ -1448,6 +1447,7 @@ async function drawChecks() {
   if (sd) sd.addEventListener("click", (e) => {
     e.preventDefault();
     S.skipDupes = true; touch();
+    logEvent("dupes_toggled", { skip: 1 });
     syncDupesToggle(); drawChecks(); updateStatuses();
     const sc = $q("#summary-card");
     if (sc) sc.replaceWith(summaryCard());
@@ -1622,7 +1622,7 @@ function outcomeCards() {
       class: "opt-card" + (S.outcome === o.id ? " is-selected" : "") + (disabled ? " is-disabled" : ""),
       type: "button", disabled: disabled ? "" : null,
       title: disabled ? "Safe mode is on. Turn it off to send immediately." : "",
-      onclick: () => { if (!disabled) { S.outcome = o.id; touch(); repaint("delivery", "review"); } },
+      onclick: () => { if (!disabled) { S.outcome = o.id; touch(); logEvent("outcome_chosen", { outcome: o.id }); repaint("delivery", "review"); } },
     },
       el("span", { class: "opt-ico" }, icon(o.icon, "i i-18")),
       el("div", { style: "min-width:0;flex:1" },
@@ -1888,7 +1888,7 @@ function confirmSendNow() {
     if (pl.capped) warns.push(sendCapSentence(pl));
     if (dd && dd.dupes && !S.skipDupes) warns.push(fmtInt(dd.dupes) + " duplicate emails will each get an email.");
     if (n > (data.previews.length || 0)) warns.push("The preview covered " + (data.previews.length || 8) + " of " + fmtInt(n) + " - the rest follow the same template.");
-    const finish = (v) => { if (done) return; done = true; m.close(); resolve(v); };
+    const finish = (v) => { if (done) return; done = true; logEvent(v ? "confirm_completed" : "confirm_cancelled", { outcome: "send" }); m.close(); resolve(v); };
     const m = modal({
       title: "Send " + fmtInt(today) + " real emails now?",
       sub: "From " + (acct || "your account") + " to " +
@@ -1902,6 +1902,7 @@ function confirmSendNow() {
       foot: [el("button", { class: "btn btn-ghost" }, "Cancel")],
       onClose: () => finish(false),
     });
+    logEvent("confirm_opened", { outcome: "send", n: today });
     m.foot.querySelector(".btn-ghost").addEventListener("click", () => finish(false));
     if (today >= 500) {
       const input = el("input", { class: "input", type: "text", inputmode: "numeric",
@@ -1942,11 +1943,12 @@ function confirmSchedule() {
       sub: when + (S.stagger ? " · spaced " + S.stagger + " minutes apart" : "") +
         ". You can reschedule or cancel until then.",
       foot: [el("button", { class: "btn btn-ghost" }, "Cancel"), el("button", { class: "btn btn-primary" }, "Schedule " + fmtInt(n) + " " + (n === 1 ? "email" : "emails"))],
-      onClose: () => { if (!done) resolve(false); },
+      onClose: () => { if (!done) { done = true; logEvent("confirm_cancelled", { outcome: "schedule" }); resolve(false); } },
     });
+    logEvent("confirm_opened", { outcome: "schedule", n });
     const ok = m.foot.querySelector(".btn-primary");
-    m.foot.querySelector(".btn-ghost").addEventListener("click", () => { done = true; m.close(); resolve(false); });
-    ok.addEventListener("click", () => { done = true; m.close(); resolve(true); });
+    m.foot.querySelector(".btn-ghost").addEventListener("click", () => { if (!done) { done = true; logEvent("confirm_cancelled", { outcome: "schedule" }); m.close(); resolve(false); } });
+    ok.addEventListener("click", () => { if (!done) { done = true; logEvent("confirm_completed", { outcome: "schedule" }); m.close(); resolve(true); } });
   });
 }
 
@@ -2025,6 +2027,7 @@ async function startCreate() {
     }
     successScreen(result);
   } catch (e) {
+    logEvent("error_shown", { code: "create" });
     // D-37: never blind-retry a send - the request is one long synchronous
     // batch, so some emails may already be out.
     root.innerHTML = "";
@@ -2055,6 +2058,7 @@ async function heldCountdown(batchId, result) {
     try {
       const u = await api("/api/batches/" + batchId + "/undo", { body: {} });
       undone = u.cancelled || 0;
+      logEvent("undo_used", { n: undone });
     } catch { /* window already over - report from the campaign */ }
     heldCancelledScreen(undone);
     return;
