@@ -1,4 +1,8 @@
-/* Send flow — one screen: who, what, from, when. Then a check step.
+/* Send flow - 4 steps, one decision per screen (D-28):
+   1 Audience  Who are you emailing?
+   2 Message   What will they read?
+   3 Delivery  How should it go out?
+   4 Review    Check before it goes.
    Glossary: send/list/spacing/follow-up. Sentence case, no exclamation marks. */
 import {
   api, el, icon, toast, modal, holdToConfirm, confirmSimple,
@@ -11,9 +15,22 @@ import { planDelivery, sendCapSentence, scheduleCapSentence } from "/static/js/c
 const START_CID = window.send_campaign_id || 0;
 const root = document.getElementById("send-root");
 
+/* ---------------- steps ---------------- */
+const STEPS = ["audience", "message", "delivery", "review"];
+const STEP_LABEL = { audience: "Audience", message: "Message", delivery: "Delivery", review: "Review" };
+const STEP_TITLE = {
+  audience: ["Who are you emailing?", "Pick the list, or choose specific people."],
+  message: ["What will they read?", "The message, and where each fill-in comes from."],
+  delivery: ["How should it go out?", "The sending account and what happens next."],
+  review: ["Check before it goes", "This is exactly what each person will get."],
+};
+const OUTCOME_IDS = ["draft", "schedule", "send", "queue"];
+
 /* ---------------- state ---------------- */
 const S = {
-  step: 1,
+  schemaVersion: 4,
+  step: "audience",
+  visited: ["audience"],
   campaignId: START_CID,
   listId: 0,             // 0 = All contacts
   contactIds: [],        // non-empty = only these contacts from the chosen list
@@ -30,6 +47,7 @@ const S = {
   when: "",
   stagger: 0,
   outcome: "draft",      // draft | schedule | send | queue
+  after: "",             // "review" when a Change link jumped out of Review
   touched: false,        // set by real user actions; plain visits save nothing
 };
 const K = () => "cm_send_" + (S.campaignId || "global");
@@ -41,10 +59,36 @@ function save() {
 }
 function touch() { S.touched = true; save(); }
 function clearDraftKey() { try { localStorage.removeItem(K()); } catch { /* private mode */ } }
-function restore() {
+
+/* Migrate any saved draft (schema 1/2/3 or corrupt) onto the 4-step shape.
+   Old step numbers: 1 -> audience, 2 -> review. */
+function migrateSaved(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out = { ...raw };
+  let step = out.step;
+  if (step === 1 || step === "1") step = "audience";
+  else if (step === 2 || step === "2") step = "review";
+  if (typeof step !== "string" || !STEPS.includes(step)) step = "audience";
+  out.step = step;
+  let visited = Array.isArray(out.visited) ? out.visited.filter((v) => STEPS.includes(v)) : null;
+  if (!visited || !visited.includes(step)) visited = STEPS.slice(0, STEPS.indexOf(step) + 1);
+  out.visited = visited;
+  out.schemaVersion = 4;
+  if (!Array.isArray(out.contactIds)) out.contactIds = [];
+  if (typeof out.mapping !== "object" || out.mapping === null || Array.isArray(out.mapping)) out.mapping = {};
+  if (typeof out.outcome !== "string" || !OUTCOME_IDS.includes(out.outcome)) out.outcome = "draft";
+  for (const k of ["listId", "templateId", "account", "reminder_days", "reminder_max", "reminder_template_id", "stagger"])
+    if (typeof out[k] !== "number" || !isFinite(out[k])) out[k] = 0;
+  for (const k of ["when", "cc"]) if (typeof out[k] !== "string") out[k] = "";
+  if (typeof out.append_signature !== "boolean") out.append_signature = true;
+  out.after = "";
+  return out;
+}
+function restoreRaw() {
   if (!START_CID) return null;
   try { return JSON.parse(localStorage.getItem(K()) || "null"); } catch { return null; }
 }
+
 const data = {
   campaigns: [], sheets: [], templates: [], accounts: [],
   safe: true, ai_on: false, n_contacts: 0, last_account_id: 0,
@@ -53,13 +97,18 @@ const data = {
   templateName: "", campaignName: "",
   sheetRows: null,       // rows of the selected list (for checks)
   allRows: null,         // all contacts (id/serial/company/hr_name/hr_email)
+  quality: null,         // {n, missing, dupes} for the current audience
+  qualityFor: "",     // audience key the quality result belongs to
   last_error: "",
   meEmail: "", defaultStagger: 0, maxCap: 0, sentToday: 0,
+  restoreNotes: [],      // {step, text} one-line notices for stale saved ids
 };
+let listEditing = false; // transient: show the radio stack for list picking
 
 const $q = (sel, r = root) => r.querySelector(sel);
 const nPeople = () => (S.contactIds.length || data.listCount || 0);
 const planNow = () => planDelivery({ outcome: S.outcome, n: data.preview_total || nPeople(), cap: data.maxCap, sentToday: data.sentToday });
+const unmatchedFields = () => data.fields.filter((f) => !S.mapping[f]);
 
 /* ---------------- load ---------------- */
 async function load() {
@@ -92,13 +141,33 @@ async function load() {
     root.append(errorCard("Could not load the send flow. Check your connection and try again.", { onRetry: load, detail: e.message }));
     return;
   }
-  const saved = restore();
+  const saved = migrateSaved(restoreRaw());
   if (saved) { Object.assign(S, saved); S.touched = true; }
+  if (!saved) {
+    const u = (new URLSearchParams(location.search).get("step") || "").toLowerCase();
+    if (STEPS.includes(u)) { S.step = u; S.visited = STEPS.slice(0, STEPS.indexOf(u) + 1); }
+  }
   if (S.campaignId) {
     const c = data.campaigns.find((x) => x.id === S.campaignId);
     if (!c) S.campaignId = START_CID ? 0 : S.campaignId;
   }
   if (!S.campaignId && data.campaigns.length === 1) S.campaignId = data.campaigns[0].id;
+  // Validate restored ids against loaded data; fall back with a one-line notice.
+  if (S.templateId && !data.templates.some((t) => t.id === S.templateId)) {
+    const def = data.templates.find((t) => t.is_active) || data.templates[0] || null;
+    data.restoreNotes.push({ step: "message", text: "Your earlier template was deleted, so we picked " + (def ? "'" + def.name + "'." : "nothing.") });
+    S.templateId = def ? def.id : 0;
+    S.mapping = {};
+  }
+  if (S.listId && !data.sheets.some((s) => s.id === S.listId)) {
+    data.restoreNotes.push({ step: "audience", text: "Your earlier list was deleted, so we picked " + (data.n_contacts ? "All contacts." : "no list.") });
+    S.listId = 0;
+    S.contactIds = [];
+  }
+  if (S.account && !data.accounts.some((a) => a.id === S.account)) {
+    data.restoreNotes.push({ step: "delivery", text: "Your earlier send account is no longer connected, so we picked " + ((data.accounts[0] && data.accounts[0].email) || "no account.") });
+    S.account = 0;
+  }
   if (!S.templateId && data.templates.length) {
     const def = data.templates.find((t) => t.is_active) || data.templates[0];
     S.templateId = def.id;
@@ -109,6 +178,7 @@ async function load() {
   // mismatch came from skipping this on first visit).
   await autoMatch();
   render();
+  history.replaceState(null, "", stepUrl());
 }
 
 async function selectList(id, { keep = false } = {}) {
@@ -128,7 +198,7 @@ async function selectList(id, { keep = false } = {}) {
   }
 }
 
-/* Rows of the current audience (dicts), for checks + picker. */
+/* Rows of the current audience (dicts), for checks + picker + quality. */
 async function audienceRows() {
   if (S.listId) {
     try {
@@ -149,6 +219,31 @@ async function checkRows() {
     rows = rows.filter((r) => set.has(r.id));
   }
   return rows;
+}
+
+/* Data-quality summary for the Audience step: no-email rows + duplicates. */
+async function refreshQuality() {
+  const key = S.listId + "|" + (S.contactIds.length ? S.contactIds.join(",") : "");
+  if (data.qualityFor === key && data.quality) { paintQuality(); return; }
+  const rows = await checkRows();
+  const missing = rows.filter((r) => !(r.hr_email || "").trim()).length;
+  const seen = new Set();
+  let dupes = 0;
+  for (const r of rows) {
+    const e = String(r.hr_email || "").trim().toLowerCase();
+    if (!e) continue;
+    if (seen.has(e)) dupes++;
+    seen.add(e);
+  }
+  data.quality = { n: rows.length, missing, dupes };
+  data.qualityFor = key;
+  paintQuality();
+}
+function paintQuality() {
+  const q = $q("#sec-aud-quality");
+  if (q) { q.innerHTML = ""; q.append(qualityLine()); }
+  const l = $q("#sec-aud-list");
+  if (l && S.step === "audience") { l.innerHTML = ""; l.append(S.campaignId ? listSection() : el("div")); }
 }
 
 /* Suggest fill-in mapping. Non-destructive: keeps choices the user made. */
@@ -176,59 +271,193 @@ async function autoMatch(force = false) {
 }
 
 /* ---------------- shell ---------------- */
+function stepUrl() {
+  const u = new URL(location.href);
+  u.searchParams.set("step", S.step);
+  return u.toString();
+}
+function go(step, opts = {}) {
+  if (!STEPS.includes(step) || step === S.step) return;
+  S.step = step;
+  if (!S.visited.includes(step)) S.visited.push(step);
+  if (!opts.fromReview) S.after = "";
+  touch();
+  render();
+  history.pushState(null, "", stepUrl());
+  window.scrollTo(0, 0);
+  const first = $q("#send-panel .opt-card, #send-panel select, #send-panel input, #send-panel textarea");
+  if (first && first.focus) first.focus({ preventScroll: true });
+}
 function render() {
   root.innerHTML = "";
-  root.append(header(), el("div", { class: "send-wrap" + (S.step === 2 ? " two-col" : ""), id: "send-panel" }));
-  if (S.step === 1) renderStep1();
-  else renderStep2();
-  syncUrl();
+  root.append(header(),
+    el("div", { class: "send-layout" },
+      el("div", { class: "send-col" },
+        el("div", { class: "send-wrap" + (S.step === "review" ? " wide" : ""), id: "send-panel" }),
+        el("div", { class: "send-sticky-zone" }, railBar(), footerBar())),
+      rail()));
+  renderStep();
+  updateRail();
   save();
 }
+function renderStep() {
+  const panel = $q("#send-panel");
+  panel.innerHTML = "";
+  if (S.step === "audience") renderStepAudience(panel);
+  else if (S.step === "message") renderStepMessage(panel);
+  else if (S.step === "delivery") renderStepDelivery(panel);
+  else renderStepReview(panel);
+}
 function header() {
-  const stepNames = ["What", "Check"];
-  const stepper = el("nav", { class: "send-stepper", "aria-label": "Send steps" },
-    stepNames.map((n, i) => {
-      const n1 = i + 1;
-      const done = n1 < S.step, cur = n1 === S.step;
-      const future = !done && !cur;
+  const stepper = el("ol", { class: "send-stepper", "aria-label": "Send steps" },
+    STEPS.map((k) => {
+      const n1 = STEPS.indexOf(k) + 1;
+      const cur = k === S.step;
+      const vis = S.visited.includes(k);
       const b = el("button", {
-        class: "send-step" + (cur ? " is-current" : "") + (done ? " is-done" : ""),
+        class: "send-step" + (cur ? " is-current" : "") + (vis && !cur ? " is-done" : "") + (!vis && !cur ? " is-future" : ""),
         type: "button",
         "aria-current": cur ? "step" : null,
-        "aria-disabled": future ? "true" : null,
-        title: future ? "Finish this step first" : null,
-        onclick: () => { if (done) { S.step = n1; render(); } },
-      },
-        el("span", { class: "send-step-n" }, done ? icon("check", "i i-14") : String(n1)), n);
-      return b;
+        "aria-disabled": !vis && !cur ? "true" : null,
+        title: !vis && !cur ? "Finish this step first" : null,
+        onclick: () => { if (vis && !cur) go(k); },
+      }, el("span", { class: "send-step-n" }, cur || !vis ? String(n1) : icon("check", "i i-14")), STEP_LABEL[k]);
+      return el("li", {}, b);
     }));
+  const [title, sub] = STEP_TITLE[S.step];
   return el("div", { class: "page-head send-head" },
     el("div", { class: "ph-main" },
-      el("div", { class: "send-step-title" }, S.step === 1 ? "What are you sending?" : "Check the emails"),
-      el("p", { class: "send-step-sub" },
-        S.step === 1 ? "Pick who to email, what to say, and what happens next."
-          : "This is exactly what each person will get.")),
+      el("div", { class: "send-step-title" }, title),
+      el("p", { class: "send-step-sub" }, sub)),
     el("div", { class: "push", style: "display:flex;gap:12px;align-items:center;flex:none" }, stepper,
       el("button", { class: "btn btn-icon", "aria-label": "Close", onclick: closeFlow }, icon("x", "i i-16"))));
 }
 function closeFlow() {
   history.length > 2 ? history.back() : (location.href = S.campaignId ? "/campaigns/" + S.campaignId : "/campaigns");
 }
-function footer(left, summary, primary, primaryDisabled, reason) {
-  const bar = el("div", { class: "send-sticky-foot" }, left,
-    el("div", { class: "summary", title: reason || "" }, summary),
-    primary);
-  if (primaryDisabled) { primary.disabled = true; if (reason) primary.title = reason; }
-  return bar;
+
+/* Footer: Back (ghost) + one-line summary + one primary. The disabled reason
+   is visible text, not a hover title (D-12 / D-28). */
+function gateFor(step) {
+  if (step === "audience") {
+    if (!S.campaignId) return ["Continue to Message", true, "Pick a campaign to continue"];
+    const n = nPeople();
+    return [S.after === "review" ? "Back to Review" : "Continue to Message", !n, !n ? "Pick some contacts to continue" : ""];
+  }
+  if (step === "message") {
+    if (!S.templateId) return ["Continue to Delivery", true, "Pick a template to continue"];
+    const bad = unmatchedFields();
+    if (bad.length) return ["Continue to Delivery", true, "Match '" + bad[0] + "' to continue"];
+    return ["Continue to Delivery", false, ""];
+  }
+  if (step === "delivery") {
+    if (!S.account) return ["Continue to Review", true, "Pick a send account first"];
+    if (S.outcome === "schedule" && !S.when) return ["Continue to Review", true, "Pick a time to schedule"];
+    if (S.outcome === "send" && data.safe) return ["Continue to Review", true, "Safe mode is on - live sending is blocked"];
+    return ["Continue to Review", false, ""];
+  }
+  return ["", false, ""];
 }
-function syncUrl() {
-  const url = new URL(location.href);
-  url.searchParams.set("step", String(S.step));
-  history.replaceState(null, "", url);
+function footerSummary() {
+  const n = nPeople();
+  if (S.step === "audience") return fmtInt(n) + " " + (n === 1 ? "person" : "people") + " · " + data.listName;
+  if (S.step === "message") return (data.templates.find((t) => t.id === S.templateId) || {}).name + " · " + fmtInt(n) + " " + (n === 1 ? "email" : "emails");
+  if (S.step === "delivery") return footerSummaryDelivery();
+  return "Checking\u2026";
 }
+function footerSummaryDelivery() {
+  const n = nPeople();
+  const pl = planNow();
+  const base = fmtInt(n) + " " + (n === 1 ? "email" : "emails") + " · " +
+    { draft: "as drafts", schedule: "scheduled", send: "sent now", queue: "queued" }[S.outcome];
+  return S.outcome === "send" && pl.capped ? base + " · " + fmtInt(pl.later) + " kept for later" : base;
+}
+function onContinue() {
+  const [label, disabled, reason] = gateFor(S.step);
+  if (disabled) return;
+  if (S.after === "review") { S.after = ""; go("review"); return; }
+  go(STEPS[STEPS.indexOf(S.step) + 1]);
+}
+function footerBar() {
+  const back = S.step === "audience" ? el("span")
+    : el("button", { class: "btn btn-ghost", onclick: () => go(STEPS[STEPS.indexOf(S.step) - 1]) }, icon("chevron-left", "i i-14"), " Back");
+  const skip = (S.step === "audience" && allValid())
+    ? el("button", { class: "linklike", onclick: () => go("review") }, "Skip to review")
+    : el("span");
+  const [label, disabled, reason] = gateFor(S.step);
+  const primary = S.step === "review" ? primary3()
+    : el("button", { class: "btn btn-primary", onclick: onContinue }, S.after === "review" ? "Back to Review" : label);
+  if (S.step !== "review" && disabled) primary.disabled = true;
+  const sum = el("div", { class: "summary" },
+    el("span", {}, footerSummary()),
+    (S.step !== "review" && disabled && reason) ? el("span", { class: "foot-reason", role: "status" }, reason) : null);
+  return el("div", { class: "send-sticky-foot" }, back, skip, sum, primary);
+}
+function updateFooterChrome() {
+  const zone = $q(".send-sticky-zone");
+  if (!zone) return;
+  const foot = $q(".send-sticky-foot");
+  if (foot) foot.replaceWith(footerBar());
+}
+function allValid() {
+  if (!nPeople()) return false;
+  if (!S.templateId) return false;
+  if (unmatchedFields().length) return false;
+  if (!S.account) return false;
+  if (S.outcome === "schedule" && !S.when) return false;
+  if (S.outcome === "send" && data.safe) return false;
+  return true;
+}
+
+/* ---------------- "Your send" rail ---------------- */
+function railFrom() { return (data.accounts.find((a) => a.id === S.account) || {}).email || "No account picked"; }
+function railTo() {
+  const n = nPeople();
+  return (S.contactIds.length ? fmtInt(S.contactIds.length) + " of " : "") + fmtInt(data.listCount) + " in " + data.listName;
+}
+function railTemplate() { return (data.templates.find((t) => t.id === S.templateId) || {}).name || "No template picked"; }
+function railDelivery() {
+  if (S.outcome === "draft") return "Drafts (safest)";
+  if (S.outcome === "queue") return "Keep in queue";
+  if (S.outcome === "send") return "Send now";
+  return S.when ? "Scheduled " + fmtLong(parseWhen(S.when).toISOString()) : "Scheduled - pick a time";
+}
+const RAIL_ROWS = [["send", "From", railFrom], ["users", "To", railTo], ["file-text", "Template", railTemplate], ["clock", "Delivery", railDelivery]];
+function railLine([ic, k, fn]) {
+  return el("div", { class: "rail-line" }, icon(ic, "i"),
+    el("span", { class: "rail-k" }, k),
+    el("span", { class: "rail-v", "data-rail": k }, fn()));
+}
+function rail() {
+  return el("aside", { class: "send-rail", "aria-label": "Your send" },
+    el("div", { class: "rail-card", id: "send-rail" },
+      el("div", { class: "rail-title" }, "Your send"),
+      ...RAIL_ROWS.map(railLine)));
+}
+function updateRail() {
+  const r = $q("#send-rail");
+  if (r) for (const [ic, k, fn] of RAIL_ROWS) { const v = r.querySelector('[data-rail="' + k + '"]'); if (v) v.textContent = fn(); }
+  const bar = $q("#rail-bar-text");
+  if (bar) bar.textContent = railTo() + " · " + railTemplate() + " · " + railDelivery();
+}
+function railBar() {
+  return el("button", { class: "rail-bar", type: "button", onclick: railSheet },
+    el("span", { class: "rail-bar-text", id: "rail-bar-text" }, railTo() + " · " + railTemplate() + " · " + railDelivery()),
+    icon("chevron-down", "i i-14"));
+}
+function railSheet() {
+  const m = modal({
+    title: "Your send",
+    body: el("div", {}, ...RAIL_ROWS.map(railLine)),
+    foot: [el("button", { class: "btn btn-ghost" }, "Close")],
+    onClose: () => {},
+  });
+  m.foot.querySelector(".btn-ghost").addEventListener("click", () => m.close());
+}
+
 window.addEventListener("popstate", () => {
-  const p = Number(new URLSearchParams(location.search).get("step") || 1);
-  if (p < S.step && p >= 1) { S.step = p; render(); }
+  const p = (new URLSearchParams(location.search).get("step") || "").toLowerCase();
+  if (STEPS.includes(p) && p !== S.step && S.visited.includes(p)) { S.step = p; S.after = ""; render(); }
 });
 document.addEventListener("keydown", (e) => {
   const t = e.target;
@@ -239,9 +468,20 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-/* ================= Step 1: What (one screen) ================= */
-function renderStep1() {
-  const panel = $q("#send-panel");
+function sec(id, ...nodes) {
+  const d = el("div", { class: "step-sec", id: "sec-" + id });
+  appendSafe(d, ...nodes);
+  return d;
+}
+function restoreNote(step) {
+  const notes = data.restoreNotes.filter((n) => n.step === step);
+  if (!notes.length) return null;
+  return el("div", { class: "banner banner-info", role: "status" }, icon("info", "i i-16"),
+    ...notes.map((n) => el("span", {}, n.text)));
+}
+
+/* ================= Step 1: Audience ================= */
+function renderStepAudience(panel) {
   const c = data.campaigns.find((x) => x.id === S.campaignId);
   if (S.campaignId && !c) {
     panel.append(el("div", { class: "banner banner-danger", role: "alert" },
@@ -250,33 +490,20 @@ function renderStep1() {
       el("button", { class: "btn btn-ghost btn-sm push", onclick: () => { S.campaignId = 0; render(); } }, "Choose")));
     return;
   }
+  if (!S.campaignId) {
+    panel.append(campaignPick(),
+      el("div", { class: "field-help", style: "margin-top:8px" }, "Pick a campaign to choose who to email."));
+    return;
+  }
   appendSafe(panel,
-    S.campaignId
-      ? el("div", { class: "send-cap" }, "Campaign: ", el("b", {}, c.name))
-      : campaignPick(),
-    el("div", { class: "overline-label" }, "Who to email"),
-    listCards(),
-    contactTools(),
-    el("div", { class: "overline-label" }, "What to say"),
-    templateCards(),
-    matchReassurance(),
-    el("div", { class: "overline-label" }, "Send from"),
-    accountSelect(),
-    el("div", { class: "overline-label" }, "What happens next"),
-    outcomeCards(),
-    S.outcome === "schedule" ? whenBlock() : null,
-    el("div", { class: "overline-label" }, "Extras"),
-    addOns(),
-    footer(
-      el("span"),
-      footerSummary1(),
-      el("button", { class: "btn btn-primary", onclick: () => { S.step = 2; render(); } }, "Check the " + fmtInt(nPeople()) + " emails"),
-      !nPeople() || !S.templateId || matchBlocking() || (S.outcome === "schedule" && !S.when),
-      matchBlocking() ? "Resolve the highlighted fields first"
-        : !S.templateId ? "Pick a template to continue"
-        : (S.outcome === "schedule" && !S.when) ? "Pick a time to schedule"
-        : !nPeople() ? "Pick some contacts to continue" : ""));
+    el("div", { class: "send-cap" }, "Campaign: ", el("b", {}, c.name)),
+    restoreNote("audience"),
+    sec("aud-list", listSection()),
+    sec("aud-tools", contactTools()),
+    sec("aud-quality", el("div", { class: "match-note" }, icon("loader", "i i-16 spin"), el("span", {}, "Checking list quality\u2026"))));
+  refreshQuality();
 }
+
 function campaignPick() {
   const sel = el("select", { class: "select", style: "max-width:380px", "aria-label": "Campaign" },
     el("option", { value: "" }, "Choose a campaign"),
@@ -314,29 +541,67 @@ async function newCampaignModal() {
     input.focus();
   });
 }
-function footerSummary1() {
-  const n = nPeople();
-  const c = data.campaigns.find((x) => x.id === S.campaignId);
-  const who = (S.contactIds.length ? fmtInt(S.contactIds.length) + " of " : "") +
-    fmtInt(data.listCount) + " in " + data.listName;
-  return n + " " + (n === 1 ? "person" : "people") + " · " + who +
-    (c ? " · " + c.name : "") + (S.templateId ? " · " + (data.templates.find((t) => t.id === S.templateId) || {}).name : "");
-}
 
 /* ---- list (who) ---- */
-function listCards() {
+function listInfo() {
+  const sheet = data.sheets.find((s) => s.id === S.listId);
+  if (S.listId && !sheet) return null;
+  return {
+    id: S.listId,
+    name: sheet ? sheet.name : "All contacts",
+    count: sheet ? sheet.n_rows : data.n_contacts,
+    columns: sheet ? (sheet.headers || []) : ["company", "hr_name", "hr_email"],
+  };
+}
+function listSection() {
+  const wrap = el("div", {});
+  const total = data.sheets.length + 1;
+  if (!data.n_contacts && !data.sheets.length) {
+    wrap.append(el("div", { class: "banner banner-info" }, icon("info", "i i-16"),
+      el("span", {}, "No contact lists yet. Paste a table or upload a list below.")));
+    return wrap;
+  }
+  if (listEditing && total <= 3) {
+    wrap.append(listRadioCards());
+  } else {
+    wrap.append(listCompactCard());
+  }
+  return wrap;
+}
+function listCompactCard() {
+  const li = listInfo();
+  if (!li) return el("div", { class: "banner banner-info" }, icon("info", "i i-16"), el("span", {}, "Pick a list to get started."));
+  return el("div", { class: "list-card" },
+    el("span", { class: "opt-ico" }, icon("users", "i i-18")),
+    el("div", { style: "min-width:0;flex:1" },
+      el("div", { class: "opt-title" }, el("span", {}, li.name),
+        el("span", { class: "opt-count" }, fmtInt(li.count) + " " + (li.count === 1 ? "contact" : "contacts"))),
+      el("div", { class: "opt-cols" },
+        ...li.columns.slice(0, 4).map((h) => el("code", { class: "mono-chip" }, h)),
+        li.columns.length > 4 ? el("code", { class: "mono-chip" }, "+" + (li.columns.length - 4)) : null,
+        data.quality && data.quality.missing ? el("span", { class: "list-warn" }, fmtInt(data.quality.missing) + " rows have no email") : null)),
+    el("button", { class: "btn btn-secondary btn-sm", onclick: changeList }, "Change list"));
+}
+function changeList() {
+  const total = data.sheets.length + 1;
+  if (total <= 3) { listEditing = true; render(); }
+  else listPickModal();
+}
+function listRadioCards() {
   const stack = el("div", { class: "opt-stack" });
   const mk = (id, name, count, headers, note) => {
     const b = el("button", {
       class: "opt-card" + (S.listId === id ? " is-selected" : ""), type: "button",
-      onclick: () => { S.listId = id; S.contactIds = []; touch(); selectList(id).then(() => { autoMatch(); render(); }); },
+      onclick: () => pickList(id),
     },
       el("span", { class: "opt-ico" }, icon("users", "i i-18")),
       el("div", { style: "min-width:0;flex:1" },
         el("div", { class: "opt-title" }, el("span", {}, name),
           el("span", { class: "opt-count" }, fmtInt(count) + " " + (count === 1 ? "contact" : "contacts"))),
         headers && headers.length
-          ? el("div", { class: "opt-cols" }, ...headers.slice(0, 6).map((h) => el("code", { class: "mono-chip" }, h)))
+          ? el("div", { class: "opt-cols" },
+              ...headers.slice(0, 4).map((h) => el("code", { class: "mono-chip" }, h)),
+              headers.length > 4 ? el("code", { class: "mono-chip" }, "+" + (headers.length - 4)) : null)
           : el("div", { class: "opt-desc" }, note || "Every contact in your main list.")),
       el("span", { class: "opt-radio" }));
     return b;
@@ -345,15 +610,53 @@ function listCards() {
     const camp = data.campaigns.find((x) => x.id === s.campaign_id);
     stack.append(mk(s.id, s.name, s.n_rows, s.headers || [], camp ? "List for " + camp.name : "Uploaded list"));
   }
-  stack.append(mk(0, "All contacts", data.n_contacts, ["company", "hr_name", "hr_email"]));
+  stack.append(mk(0, "All contacts", data.n_contacts, ["company", "hr_name", "hr_email"], "Every contact in your main list."));
+  stack.append(el("button", { class: "linklike", style: "align-self:flex-start", onclick: () => { listEditing = false; render(); } }, "Done"));
   return stack;
 }
+function listPickModal() {
+  const q = el("input", { class: "input", placeholder: "Search lists", "aria-label": "Search lists" });
+  const sel = el("select", { class: "select", style: "width:100%", "aria-label": "Contact list" });
+  const paint = () => {
+    const t = q.value.trim().toLowerCase();
+    sel.innerHTML = "";
+    const opts = data.sheets.map((s) => ({ id: s.id, name: s.name, count: s.n_rows }))
+      .concat([{ id: 0, name: "All contacts", count: data.n_contacts }]);
+    for (const o of opts) {
+      if (t && !o.name.toLowerCase().includes(t)) continue;
+      sel.append(el("option", { value: String(o.id), selected: String(S.listId) === String(o.id) ? "" : null },
+        o.name + " - " + fmtInt(o.count) + " " + (o.count === 1 ? "contact" : "contacts")));
+    }
+  };
+  q.addEventListener("input", paint);
+  const m = modal({
+    title: "Choose a list",
+    sub: "Or paste or upload a new list from the tools below.",
+    body: el("div", { style: "display:flex;flex-direction:column;gap:10px" }, q, sel),
+    foot: [el("button", { class: "btn btn-ghost" }, "Cancel"), el("button", { class: "btn btn-primary" }, "Use this list")],
+    onClose: () => {},
+  });
+  m.foot.querySelector(".btn-ghost").addEventListener("click", () => m.close());
+  m.foot.querySelector(".btn-primary").addEventListener("click", () => {
+    const id = sel.value === "" ? 0 : +sel.value;
+    m.close();
+    if (id !== S.listId) pickList(id);
+  });
+  paint();
+}
+function pickList(id) {
+  S.listId = id;
+  S.contactIds = [];
+  listEditing = false;
+  touch();
+  selectList(id).then(() => { autoMatch().then(render); });
+}
 
-/* Choose contacts / paste a table */
+/* Choose contacts / paste a table / upload */
 function contactTools() {
   const wrap = el("div", { class: "ct-tools" });
   const pickBtn = el("button", { class: "btn btn-secondary btn-sm" }, icon("check-square", "i i-14"),
-    S.contactIds.length ? "Chosen: " + fmtInt(S.contactIds.length) + " · change" : "Choose who to email");
+    S.contactIds.length ? "Chosen: " + fmtInt(S.contactIds.length) + " of " + fmtInt(data.listCount) + " - change" : "Choose specific contacts");
   pickBtn.addEventListener("click", () => contactPicker());
   const pasteBtn = el("button", { class: "btn btn-ghost btn-sm" }, icon("clipboard", "i i-14"), "Paste a table");
   pasteBtn.addEventListener("click", () => pasteTableModal());
@@ -385,6 +688,21 @@ function contactTools() {
     });
   });
   wrap.append(pickBtn, pasteBtn, drop);
+  return wrap;
+}
+
+/* Data-quality line: counts + a way in to review the rows. */
+function qualityLine() {
+  const n = data.quality ? data.quality.n : nPeople();
+  const wrap = el("div", { class: "match-note" + (data.quality && (data.quality.missing || data.quality.dupes) ? " warn" : " ok") });
+  wrap.append(icon(data.quality && (data.quality.missing || data.quality.dupes) ? "alert-triangle" : "check-circle-2", "i i-16"));
+  const parts = [fmtInt(n) + " " + (n === 1 ? "contact" : "contacts")];
+  if (data.quality) {
+    if (data.quality.missing) parts.push(fmtInt(data.quality.missing) + " with no email");
+    if (data.quality.dupes) parts.push(fmtInt(data.quality.dupes) + " " + (data.quality.dupes === 1 ? "duplicate email" : "duplicate emails"));
+  }
+  wrap.append(el("span", {}, parts.join(", ")));
+  if (data.quality) wrap.append(el("button", { class: "linklike", onclick: () => contactPicker() }, "Review"));
   return wrap;
 }
 
@@ -420,14 +738,13 @@ async function contactPicker() {
       cb.checked = state.sel.has(r.id);
       cb.addEventListener("change", () => {
         if (cb.checked) state.sel.add(r.id); else state.sel.delete(r.id);
-        countLbl.textContent = fmtInt(state.sel.size) + " of " + fmt(total) + " chosen";
+        countLbl.textContent = fmtInt(state.sel.size) + " of " + fmtInt(total) + " chosen";
       });
       list.append(el("label", { class: "pick-row" },
         cb,
-        el("span", { class: "pick-no" }, r.serial || "—"),
+        el("span", { class: "pick-no" }, r.serial || "\u2014"),
         el("span", { class: "pick-co" }, r.company || ""),
-        el("span", { class: "pick-who" }, [r.hr_name, r.hr_email].filter(Boolean).join(" · ")),
-      ));
+        el("span", { class: "pick-who" }, [r.hr_name, r.hr_email].filter(Boolean).join(" \u00b7 "))));
     }
     if (vis.length > 500) list.append(el("div", { class: "t-caption", style: "padding:10px" },
       "Showing the first 500 matches - narrow the search to pick more."));
@@ -442,7 +759,7 @@ async function contactPicker() {
   const cancel = el("button", { class: "btn btn-ghost" }, "Cancel");
   const m = modal({
     title: "Choose who to email",
-    sub: data.listName + " · " + fmtInt(total) + " contacts. Leave nothing selected to email everyone.",
+    sub: data.listName + " \u00b7 " + fmtInt(total) + " contacts. Leave nothing selected to email everyone.",
     wide: true,
     body: el("div", { class: "pick-wrap" },
       el("div", { class: "pick-tools" }, qInp, el("span", { class: "push" }), selAll, clear, countLbl),
@@ -468,7 +785,7 @@ function pasteTableModal() {
   const ta = el("textarea", { class: "textarea", rows: "9", style: "width:100%", "aria-label": "Pasted table",
     placeholder: "Paste straight from Excel or Google Sheets - the first row is the column names.\n\nCompany\tRecruiter name\tHR email\nAccolite\tGenevieve Dsouza\tgen.dsouza@accoliteindia.com" });
   const btn = el("button", { class: "btn btn-primary" }, "Add this list");
-  const camp = data.campaigns.find((x) => x.id === S.campaignId);
+  const camp = data.campaigns.find((c) => c.id === S.campaignId);
   const m = modal({
     title: "Paste a table",
     sub: (camp ? "It joins " + camp.name + " as a contact list. " : "") +
@@ -497,32 +814,91 @@ function pasteTableModal() {
   setTimeout(() => ta.focus(), 50);
 }
 
+/* ================= Step 2: Message ================= */
+function renderStepMessage(panel) {
+  appendSafe(panel,
+    restoreNote("message"),
+    sec("msg-template", templateSection()),
+    sec("msg-match", matchSection()),
+    sec("msg-options", messageOptions()),
+  );
+}
+
 /* ---- template (what) ---- */
-function templateCards() {
-  const stack = el("div", { class: "opt-stack" });
+function templateSection() {
+  const t = data.templates.find((x) => x.id === S.templateId);
   if (!data.templates.length) {
-    stack.append(el("div", { class: "banner banner-info" }, icon("info", "i i-16"),
-      el("span", {}, "No templates yet. Write one with AI or upload an HTML file.")));
+    return el("div", { class: "tpl-main-card" },
+      el("div", { class: "banner banner-info" }, icon("info", "i i-16"),
+        el("span", {}, "No templates yet. Write one with AI or upload an HTML file.")),
+      uploadAiRow());
   }
-  for (const t of data.templates) {
-    const fields = Array.isArray(t.fields) ? t.fields : [];
-    const b = el("button", {
-      class: "opt-card tpl-card" + (S.templateId === t.id ? " is-selected" : ""), type: "button",
-      onclick: () => { S.templateId = t.id; touch(); autoMatch().then(render); },
-    },
-      el("div", { class: "tpl-thumb", "data-tid": String(t.id) },
-        el("iframe", { class: "tpl-thumb-frame", srcdoc: thumbDoc(t), "aria-hidden": "true", scrolling: "no" })),
-      el("div", { style: "min-width:0;flex:1" },
-        el("div", { class: "opt-title" }, el("span", {}, t.name),
-          t.is_active ? badge2("Default") : null,
-          t.kind === "reminder" ? badge2("Follow-up") : null),
-        el("div", { class: "opt-desc" }, t.subject || "No subject"),
-        fields.length ? el("div", { class: "opt-desc" }, fields.length + " " + (fields.length === 1 ? "field" : "fields") + " to fill in") : el("div", { class: "opt-desc" }, "No fill-in fields - every email is identical")),
-      el("a", { class: "btn btn-ghost btn-sm tpl-edit", href: "/library/templates/" + t.id, "aria-label": "Edit template",
-        onclick: (e) => e.stopPropagation() }, icon("pencil", "i i-14"), "Edit"),
-      el("span", { class: "opt-radio" }));
-    stack.append(b);
+  if (!t) {
+    return el("div", { class: "tpl-main-card" },
+      el("div", { class: "banner banner-info" }, icon("info", "i i-16"),
+        el("span", {}, "No template selected.")),
+      el("div", {}, el("button", { class: "btn btn-secondary", onclick: templateGallery }, "Choose a template")));
   }
+  const fields = Array.isArray(t.fields) ? t.fields : [];
+  return el("div", { class: "tpl-main-card" },
+    el("div", { class: "tpl-main-head" },
+      el("div", { class: "tpl-main-title" }, el("b", {}, t.name),
+        t.is_active ? badge2("Default") : null,
+        t.kind === "reminder" ? badge2("Follow-up") : null),
+      el("span", { class: "push" }),
+      el("button", { class: "btn btn-secondary btn-sm", onclick: templateGallery }, "Change template")),
+    el("div", { class: "opt-desc" }, t.subject || "No subject"),
+    fields.length
+      ? el("div", { class: "opt-desc" }, fields.length + " " + (fields.length === 1 ? "field" : "fields") + " to fill in: " + fields.map(esc).join(", "))
+      : el("div", { class: "opt-desc" }, "No fill-in fields - every email is identical"),
+    el("div", { class: "tpl-main-preview" },
+      el("iframe", { class: "tpl-main-frame", srcdoc: thumbDoc(t), "aria-label": "Template preview", scrolling: "no" })),
+    el("div", { class: "tpl-main-foot" },
+      el("a", { class: "linklike", href: "/library/templates/" + t.id }, "Edit in Library"),
+      el("span", { class: "t-caption t-faint" }, "Previewed with sample data from " + data.listName)));
+}
+function templateGallery() {
+  const m = modal({
+    title: "Change template",
+    sub: "Pick the message every person gets.",
+    wide: true,
+    body: el("div", {},
+      data.templates.length
+        ? el("div", { class: "opt-stack" }, ...data.templates.map((t) => tplCard(t, () => { pickTemplate(t.id); m.close(); })))
+        : el("div", { class: "banner banner-info" }, icon("info", "i i-16"),
+            el("span", {}, "No templates yet. Write one with AI or upload an HTML file.")),
+      uploadAiRow()),
+    foot: [el("button", { class: "btn btn-ghost" }, "Cancel")],
+    onClose: () => {},
+  });
+  m.foot.querySelector(".btn-ghost").addEventListener("click", () => m.close());
+}
+function pickTemplate(id) {
+  if (S.templateId === id) return;
+  S.templateId = id;
+  S.matchOpen = false;
+  touch();
+  autoMatch().then(render);
+}
+function tplCard(t, onPick) {
+  const fields = Array.isArray(t.fields) ? t.fields : [];
+  return el("button", {
+    class: "opt-card tpl-card" + (S.templateId === t.id ? " is-selected" : ""), type: "button",
+    onclick: () => onPick(t),
+  },
+    el("div", { class: "tpl-thumb", "data-tid": String(t.id) },
+      el("iframe", { class: "tpl-thumb-frame", srcdoc: thumbDoc(t), "aria-hidden": "true", scrolling: "no" })),
+    el("div", { style: "min-width:0;flex:1" },
+      el("div", { class: "opt-title" }, el("span", {}, t.name),
+        t.is_active ? badge2("Default") : null,
+        t.kind === "reminder" ? badge2("Follow-up") : null),
+      el("div", { class: "opt-desc" }, t.subject || "No subject"),
+      fields.length ? el("div", { class: "opt-desc" }, fields.length + " " + (fields.length === 1 ? "field" : "fields") + " to fill in") : el("div", { class: "opt-desc" }, "No fill-in fields - every email is identical")),
+    el("a", { class: "btn btn-ghost btn-sm tpl-edit", href: "/library/templates/" + t.id, "aria-label": "Edit template",
+      onclick: (e) => e.stopPropagation() }, icon("pencil", "i i-14"), "Edit"),
+    el("span", { class: "opt-radio" }));
+}
+function uploadAiRow() {
   const row = el("div", { style: "display:flex;gap:8px;margin-top:10px;flex-wrap:wrap" });
   const fileIn = el("input", { type: "file", accept: ".html,.htm,.txt", style: "display:none" });
   row.append(el("button", { class: "btn btn-ghost", onclick: () => fileIn.click() }, "Upload a template"));
@@ -543,7 +919,7 @@ function templateCards() {
       } catch (e) { toast(e.message, { type: "error" }); }
     });
   });
-  return stack;
+  return row;
 }
 function badge2(label) { return el("span", { class: "badge neutral" }, label); }
 function thumbDoc(t) {
@@ -586,36 +962,95 @@ function aiTemplateModal() {
   }));
 }
 
-/* ---- matching ---- */
-function matchBlocking() {
-  if (!data.fields.length) return false;
-  return data.fields.some((f) => !S.mapping[f]);
+
+/* ---- field matching (Message step) ---- */
+function rebuildWithFocus(host, build) {
+  const f = document.activeElement;
+  const key = f && host.contains(f) && f.dataset ? (f.dataset.focusKey || null) : null;
+  let selStart = null, selEnd = null;
+  if (f && f.setSelectionRange) { try { selStart = f.selectionStart; selEnd = f.selectionEnd; } catch { /* read-only */ } }
+  host.innerHTML = "";
+  appendSafe(host, build());
+  if (key) {
+    const nf = host.querySelector('[data-focus-key="' + key + '"]');
+    if (nf) {
+      nf.focus();
+      if (selStart != null && nf.setSelectionRange) { try { nf.setSelectionRange(selStart, selEnd); } catch { /* range out of bounds */ } }
+    }
+  }
 }
-function matchReassurance() {
+function paintMatchSection() {
+  const host = $q("#sec-msg-match");
+  if (host) rebuildWithFocus(host, matchSection());
+  updateFooterChrome();
+}
+function matchSection() {
+  const t = data.templates.find((x) => x.id === S.templateId);
+  if (!t) return el("div", { class: "match-note" }, icon("info", "i i-16"),
+    el("span", {}, "Pick a template to see field matching."));
   if (!data.fields.length) {
-    return el("div", { class: "match-note info" }, icon("info", "i i-16"), "This template has no fill-in fields, so every email is identical.");
+    return el("div", { class: "match-note ok" }, icon("check-circle-2", "i i-16"),
+      el("span", {}, "No fill-in fields - every email is identical."));
   }
   const unmatched = data.fields.filter((f) => !S.mapping[f]);
-  const wrap = el("div", { class: "match-note " + (unmatched.length ? "warn" : "ok") });
-  if (unmatched.length === 0) {
-    wrap.append(icon("check-circle-2", "i i-16"),
-      el("span", {}, "We matched all " + data.fields.length + " fields automatically."));
-    const d = el("details", { class: "match-disc" },
-      el("summary", {}, "See how"), el("div", { id: "match-panel" }));
-    d.addEventListener("toggle", () => { if (d.open) buildMatchPanel($q("#match-panel")); });
+  const wrap = el("div", {});
+  if (!unmatched.length) {
+    wrap.append(el("div", { class: "match-note ok" }, icon("check-circle-2", "i i-16"),
+      el("span", {}, "All " + data.fields.length + " " + (data.fields.length === 1 ? "field" : "fields") + " matched")));
+    const d = el("details", { class: "match-disc", style: "display:flex;margin-top:6px" },
+      el("summary", {}, "Review matches"));
+    const body = el("div", { class: "match-readonly" });
+    d.append(body);
+    d.addEventListener("toggle", () => { if (d.open && !body.children.length) buildMatchReadonly(body); });
     wrap.append(d);
   } else {
-    wrap.append(icon("alert-triangle", "i i-16"),
-      el("span", {}, unmatched.length + " " + (unmatched.length === 1 ? "field needs" : "fields need") + " your help."),
-      el("button", { class: "linklike", onclick: () => { S.matchOpen = !S.matchOpen; touch(); render(); } }, S.matchOpen ? "Hide" : "Fix now"));
-    if (S.matchOpen) {
-      const host = el("div", { id: "match-panel", style: "margin-top:10px" });
-      buildMatchPanel(host);
-      wrap.append(host);
-    }
+    wrap.append(el("div", { class: "match-note warn" }, icon("alert-triangle", "i i-16"),
+      el("span", {}, unmatched.length + " " + (unmatched.length === 1 ? "field needs" : "fields need") + " your help: " + unmatched.map((f) => esc(f)).join(", ")),
+      el("button", { class: "linklike", onclick: () => { S.matchOpen = !S.matchOpen; touch(); render(); } }, S.matchOpen ? "Hide" : "Fix now")));
+    if (S.matchOpen) { const host = el("div", { id: "match-panel" }); buildMatchPanel(host); wrap.append(host); }
   }
   return wrap;
 }
+function buildMatchReadonly(host) {
+  host.innerHTML = "";
+  for (const f of data.fields) {
+    const m = S.mapping[f] || "";
+    const isCol = String(m).startsWith("column:");
+    const from = isCol ? String(m).slice(7) : "your text";
+    host.append(el("div", { class: "mr-row" },
+      el("code", { class: "mono-chip" }, f),
+      icon("arrow-right", "i i-14"),
+      el("span", {}, "Filled from " + (isCol ? from : "'" + esc(m) + "'")),
+      isCol ? (sampleFor(from, f) ? el("span", { class: "mr-sample" }, sampleFor(from, f)) : null) : null));
+  }
+  host.append(el("button", { class: "linklike", style: "align-self:flex-start;margin-top:4px", onclick: () => {
+    host.innerHTML = "";
+    const panel = el("div", { id: "match-panel" });
+    buildMatchPanel(panel);
+    host.append(panel);
+  } }, "Edit matches"));
+}
+
+/* ================= Step 3: Delivery ================= */
+function renderStepDelivery(panel) {
+  appendSafe(panel,
+    restoreNote("delivery"),
+    sec("del-account", accountSelectSec()),
+    sec("del-outcome", outcomeSection()),
+    sec("del-followup", followUpWrap()),
+  );
+}
+function accountSelectSec() {
+  return el("div", { class: "field" }, el("label", { class: "field-label" }, "Send from"), accountSelect());
+}
+function outcomeSection() {
+  const wrap = el("div", {});
+  wrap.append(outcomeCards());
+  if (S.outcome === "schedule") wrap.append(whenBlock());
+  return wrap;
+}
+
+/* ---- matching ---- */
 function buildMatchPanel(host) {
   if (!host) return;
   host.innerHTML = "";
@@ -629,7 +1064,7 @@ function buildMatchPanel(host) {
       el("option", { value: "" }, "Leave blank"));
     if (S.mapping[f] && String(S.mapping[f]).startsWith("column:")) sel.value = S.mapping[f].slice(7);
     else if (S.mapping[f]) { sel.value = "__text__"; }
-    const textIn = el("input", { class: "input", style: "max-width:260px;display:none", placeholder: "Fixed text, e.g. Campus Placement Cell" });
+    const textIn = el("input", { class: "input", style: "max-width:260px;display:none", placeholder: "Fixed text, e.g. Campus Placement Cell", "data-focus-key": "match-" + f });
     if (S.mapping[f] === "__text__") textIn.style.display = "";
     const row = el("tr", { class: S.mapping[f] ? "" : "is-unmatched" },
       el("td", {}, el("code", { class: "mono-chip" }, f)),
@@ -644,7 +1079,7 @@ function buildMatchPanel(host) {
       S.mappedFor = S.templateId + ":" + S.listId;  // user's choice is authoritative
       touch();
       row.classList.toggle("is-unmatched", !S.mapping[f]);
-      setTimeout(() => render(), 350);
+      paintMatchSection();
     };
     sel.addEventListener("change", () => {
       textIn.style.display = sel.value === "__text__" ? "" : "none";
@@ -671,9 +1106,13 @@ function buildMatchPanel(host) {
   }
   host.append(table);
 }
+function audRows() {
+  return S.listId ? (data.sheetRows || []) : (data.allRows || []);
+}
 function sampleFor(col, field) {
-  if (!data.sheetRows) return "";
-  const r = data.sheetRows.find((r) => r[col]);
+  const rows = audRows();
+  if (!rows.length) return "";
+  const r = rows.find((r) => r[col]);
   return r ? ", e.g. " + String(r[col]).slice(0, 24) : "";
 }
 
@@ -815,8 +1254,7 @@ async function drawChecks() {
   }));
 }
 
-function renderStep2() {
-  const panel = $q("#send-panel");
+function renderStepReview(panel) {
   const cols = el("div", { class: "send-cols" });
   const left = el("div", { style: "min-width:0" });
   left.append(
@@ -829,12 +1267,7 @@ function renderStep2() {
     el("iframe", { class: "preview-paper", "aria-label": "Email preview", scrolling: "no" }));
   const right = el("div", { style: "min-width:0" }, checksCard(), summaryCard());
   cols.append(left, right);
-  panel.append(cols,
-    footer(
-      el("button", { class: "btn btn-ghost", onclick: () => { S.step = 1; render(); } }, icon("chevron-left", "i i-14"), " Back"),
-      "Checking…",
-      primary3(),
-      false, ""));
+  panel.append(cols);
   (async () => {
     try {
       const [d] = await Promise.all([
@@ -969,78 +1402,60 @@ function whenBlock() {
 
 const files = [];
 
-function addOn(ico, title, stateText, open, build) {
+function addOn(ico, title, stateFn, open, build) {
   const wrap = el("div", { class: "addon" + (open ? " open" : "") });
-  const body = el("div", { class: "addon-body" }, build());
-  wrap.append(el("button", { class: "addon-head", type: "button" },
+  const head = el("button", { class: "addon-head", type: "button" },
     icon(ico, "i i-16"),
     el("span", {}, title),
-    el("span", { class: "addon-state" }, stateText),
-    el("span", { class: "chev" }, icon("chevron-down", "i i-14"))),
-    body);
-  wrap.querySelector(".addon-head").addEventListener("click", () => wrap.classList.toggle("open"));
+    el("span", { class: "addon-state" }, stateFn()),
+    el("span", { class: "chev" }, icon("chevron-down", "i i-14")));
+  head.addEventListener("click", () => wrap.classList.toggle("open"));
+  const body = el("div", { class: "addon-body" });
+  const commit = () => { touch(); head.querySelector(".addon-state").textContent = stateFn(); updateRail(); };
+  body.append(build(commit));
+  wrap.append(head, body);
   return wrap;
 }
 
-function addOns() {
+function messageOptions() {
   const wrap = el("div", { class: "card", style: "padding:4px 16px" });
-  const rtpls = data.templates.filter((t) => (t.kind || "outreach") === "reminder");
   wrap.append(
-    addOn("pencil", "Signature", S.append_signature ? "On" : "Off", S.append_signature, () =>
+    addOn("pencil", "Signature", () => (S.append_signature ? "On" : "Off"), false, (commit) =>
       el("label", { style: "display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer" },
         el("input", { type: "checkbox", checked: S.append_signature ? "" : null,
-          onchange: (e) => { S.append_signature = e.target.checked; touch(); render(); } }),
+          onchange: (e) => { S.append_signature = e.target.checked; commit(); } }),
         "Append your saved signature to every email")),
-    addOn("mail", "CC", S.cc.trim() ? S.cc.trim() : "None", !!S.cc.trim(), () => {
-      const inp = el("input", { class: "input", style: "width:100%", value: S.cc, placeholder: "name@company.com, another@company.com", "aria-label": "CC addresses" });
-      inp.addEventListener("change", () => { S.cc = inp.value; touch(); render(); });
+    addOn("mail", "CC", () => (S.cc.trim() ? S.cc.trim() : "None"), !!S.cc.trim(), (commit) => {
+      const inp = el("input", { class: "input", style: "width:100%", value: S.cc, placeholder: "name@company.com, another@company.com", "aria-label": "CC addresses", "data-focus-key": "cc" });
+      inp.addEventListener("change", () => { S.cc = inp.value; commit(); });
       return el("div", {}, inp, el("div", { class: "field-help" }, "Copied onto every email in this batch."));
     }),
-    addOn("bell", "Follow-up reminder", S.reminder_days > 0 ? "Every " + S.reminder_days + "d" : "Off", S.reminder_days > 0, () => {
-      const daysIn = el("input", { class: "input", type: "number", min: "1", max: "90", value: String(S.reminder_days || 3), style: "width:70px" });
-      const maxSel = el("select", { class: "select", style: "max-width:130px" },
-        [1, 2, 3].map((n) => el("option", { value: String(n), selected: S.reminder_max === n ? "" : null }, String(n) + "×")));
-      maxSel.addEventListener("change", () => { S.reminder_max = +maxSel.value; touch(); render(); });
-      const tplSel = el("select", { class: "select", style: "max-width:300px" },
-        el("option", { value: "0" }, "No reminder template"),
-        ...rtpls.map((t) => el("option", { value: String(t.id), selected: String(S.reminder_template_id) === String(t.id) ? "" : null }, t.name)));
-      tplSel.addEventListener("change", () => { S.reminder_template_id = +tplSel.value; touch(); render(); });
-      const on = S.reminder_days > 0;
-      return el("div", { style: "display:flex;flex-direction:column;gap:10px" },
-        el("label", { style: "display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer" },
-          el("input", { type: "checkbox", checked: on ? "" : null,
-            onchange: (e) => {
-              S.reminder_days = e.target.checked ? (Math.max(1, Math.min(90, +daysIn.value || 3)) || 3) : 0;
-              touch(); render();
-            } }),
-          "Follow up with people who don't reply"),
-        el("div", { style: "display:flex;gap:10px;align-items:center;flex-wrap:wrap" },
-          el("span", { class: "t-caption t-faint" }, "Every"), daysIn,
-          el("span", { class: "t-caption t-faint" }, "day(s),"), maxSel),
-        el("div", { style: "display:flex;gap:10px;align-items:center;flex-wrap:wrap" },
-          el("span", { class: "t-caption t-faint" }, "Using"), tplSel));
-    }),
     addOn("paperclip", "Attachments",
-      files.length ? fmtInt(files.length) + " file" + (files.length === 1 ? "" : "s") : "None",
-      files.length > 0, () => {
+      () => (files.length ? fmtInt(files.length) + " file" + (files.length === 1 ? "" : "s") : "None"),
+      files.length > 0, (commit) => {
         const fileIn = el("input", { type: "file", multiple: true, style: "display:none" });
         const add = el("button", { class: "btn btn-ghost btn-sm", onclick: () => fileIn.click() }, icon("upload", "i i-14"), " Add files");
         const list = el("div", { style: "display:flex;flex-direction:column;gap:6px;margin-top:10px" });
-        files.forEach((f, i) => {
-          list.append(el("div", { style: "display:flex;align-items:center;gap:10px;font-size:13px" },
-            icon("paperclip", "i i-14"),
-            el("span", { style: "flex:1;min-width:0" }, f.name),
-            el("span", { class: "t-caption t-faint" }, Math.max(1, Math.round(f.size / 1024)) + " KB"),
-            el("button", { class: "btn btn-icon", "aria-label": "Remove " + f.name,
-              onclick: () => { files.splice(i, 1); touch(); render(); } }, icon("x", "i i-14"))));
-        });
+        const paintFiles = () => {
+          list.innerHTML = "";
+          files.forEach((f, i) => {
+            list.append(el("div", { style: "display:flex;align-items:center;gap:10px;font-size:13px" },
+              icon("paperclip", "i i-14"),
+              el("span", { style: "flex:1;min-width:0" }, f.name),
+              el("span", { class: "t-caption t-faint" }, Math.max(1, Math.round(f.size / 1024)) + " KB"),
+              el("button", { class: "btn btn-icon", "aria-label": "Remove " + f.name,
+                onclick: () => { files.splice(i, 1); commit(); paintFiles(); } }, icon("x", "i i-14"))));
+          });
+        };
+        paintFiles();
         fileIn.addEventListener("change", () => {
           const fs = [...(fileIn.files || [])];
           if (!fs.length) return;
           const total = files.reduce((a, f) => a + f.size, 0) + fs.reduce((a, f) => a + f.size, 0);
           if (total > 15 * 1024 * 1024) { toast("Attachments must stay under 15 MB in total.", { type: "error" }); return; }
           files.push(...fs);
-          touch(); render();
+          commit();
+          paintFiles();
         });
         return el("div", {}, add, list,
           el("div", { class: "field-help" }, "Sent with every email in this batch. Re-select the files if you refresh the page."));
@@ -1048,42 +1463,72 @@ function addOns() {
   return wrap;
 }
 
+function followUpWrap() {
+  const wrap = el("div", { class: "card", style: "padding:4px 16px" });
+  const rtpls = data.templates.filter((t) => (t.kind || "outreach") === "reminder");
+  wrap.append(addOn("bell", "Follow-up reminders", () => (S.reminder_days > 0 ? "Every " + S.reminder_days + "d" : "Off"), S.reminder_days > 0, (commit) => {
+    const daysIn = el("input", { class: "input", type: "number", min: "1", max: "90", value: String(S.reminder_days || 3), style: "width:70px", "data-focus-key": "reminder-days" });
+    const maxSel = el("select", { class: "select", style: "max-width:130px" },
+      [1, 2, 3].map((n) => el("option", { value: String(n), selected: S.reminder_max === n ? "" : null }, String(n) + "\u00d7")));
+    maxSel.addEventListener("change", () => { S.reminder_max = +maxSel.value; commit(); });
+    const tplSel = el("select", { class: "select", style: "max-width:300px" },
+      el("option", { value: "0" }, "No reminder template"),
+      ...rtpls.map((t) => el("option", { value: String(t.id), selected: String(S.reminder_template_id) === String(t.id) ? "" : null }, t.name)));
+    tplSel.addEventListener("change", () => { S.reminder_template_id = +tplSel.value; commit(); });
+    const on = S.reminder_days > 0;
+    return el("div", { style: "display:flex;flex-direction:column;gap:10px" },
+      el("label", { style: "display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer" },
+        el("input", { type: "checkbox", checked: on ? "" : null,
+          onchange: (e) => {
+            S.reminder_days = e.target.checked ? (Math.max(1, Math.min(90, +daysIn.value || 3)) || 3) : 0;
+            commit();
+          } }),
+        "Follow up with people who don't reply"),
+      el("div", { style: "display:flex;gap:10px;align-items:center;flex-wrap:wrap" },
+        el("span", { class: "t-caption t-faint" }, "Every"), daysIn,
+        el("span", { class: "t-caption t-faint" }, "day(s),"), maxSel),
+      el("div", { style: "display:flex;gap:10px;align-items:center;flex-wrap:wrap" },
+        el("span", { class: "t-caption t-faint" }, "Using"), tplSel));
+  }));
+  return wrap;
+}
+
+function changeLink(step) {
+  S.after = "review";
+  touch();
+  go(step, { fromReview: true });
+}
 function summaryCard() {
-  const camp = data.campaigns.find((x) => x.id === S.campaignId);
+  const camp = data.campaigns.find((c) => c.id === S.campaignId);
   const tpl = data.templates.find((t) => t.id === S.templateId);
   const n = data.preview_total || nPeople();
-  const L = (ic, label, val) => el("div", { class: "summary-line" }, icon(ic, "i i-16"),
-    el("span", { style: "flex:1;color:var(--text-2)" }, label), el("b", {}, val));
+  const L = (ic, label, val, step) => el("div", { class: "summary-line" }, icon(ic, "i i-16"),
+    el("span", { style: "flex:1;color:var(--text-2)" }, label),
+    el("b", {}, val),
+    el("button", { class: "linklike summary-change", onclick: () => changeLink(step) }, "Change"));
   const when = parseWhen(S.when);
   const outcomeLabel = {
     draft: "Saved as Gmail drafts - nothing is sent",
-    schedule: S.when ? "Scheduled for " + fmtLong(when.toISOString()) + (S.stagger ? " · spaced " + S.stagger + " min apart" : "") : "Scheduled (pick a time first)",
+    schedule: S.when ? "Scheduled for " + fmtLong(when.toISOString()) + (S.stagger ? " \u00b7 spaced " + S.stagger + " min apart" : "") : "Scheduled (pick a time first)",
     send: "Sent immediately, one after another",
     queue: "Kept in your email queue",
   }[S.outcome];
   return el("div", { class: "summary-card", style: "margin-top:14px" },
     el("h3", {}, "Summary"),
-    L("users", "To", (S.contactIds.length ? fmtInt(S.contactIds.length) + " of " : "") + data.listName + (camp ? " · " + camp.name : "")),
-    L("file-text", "Template", tpl ? tpl.name : "—"),
-    L("send", "From", (data.accounts.find((a) => a.id === S.account) || {}).email || "No account picked"),
-    S.append_signature ? L("pencil", "Signature", "appended") : null,
-    S.cc.trim() ? L("mail", "CC", S.cc.trim()) : null,
-    S.reminder_days > 0 ? L("bell", "Follow-up", "every " + S.reminder_days + " day(s), up to " + S.reminder_max + "×") : null,
-    files.length ? L("paperclip", "Attachments", fmtInt(files.length) + " file" + (files.length === 1 ? "" : "s")) : null,
-    el("div", { class: "summary-outcome" }, outcomeLabel));
+    L("users", "To", (S.contactIds.length ? fmtInt(S.contactIds.length) + " of " : "") + data.listName + (camp ? " \u00b7 " + camp.name : ""), "audience"),
+    L("file-text", "Template", tpl ? tpl.name : "\u2014", "message"),
+    L("send", "From", (data.accounts.find((a) => a.id === S.account) || {}).email || "No account picked", "delivery"),
+    S.append_signature ? L("pencil", "Signature", "appended", "message") : null,
+    S.cc.trim() ? L("mail", "CC", S.cc.trim(), "message") : null,
+    S.reminder_days > 0 ? L("bell", "Follow-up", "every " + S.reminder_days + " day(s), up to " + S.reminder_max + "\u00d7", "delivery") : null,
+    files.length ? L("paperclip", "Attachments", fmtInt(files.length) + " file" + (files.length === 1 ? "" : "s"), "message") : null,
+    el("div", { class: "summary-outcome" }, outcomeLabel,
+      el("button", { class: "linklike summary-change", style: "margin-left:8px", onclick: () => changeLink("delivery") }, "Change")));
 }
 
 /* ================= Final CTA + create ================= */
 function accountEmail() {
   return (data.accounts.find((a) => a.id === S.account) || {}).email || "";
-}
-
-function footerSummary3() {
-  const n = data.preview_total || nPeople();
-  const pl = planNow();
-  const base = fmtInt(n) + " " + (n === 1 ? "email" : "emails") + " · " +
-    { draft: "as drafts", schedule: "scheduled", send: "sent now", queue: "queued" }[S.outcome];
-  return S.outcome === "send" && pl.capped ? base + " · " + fmtInt(pl.later) + " kept for later" : base;
 }
 
 function primary3() {
