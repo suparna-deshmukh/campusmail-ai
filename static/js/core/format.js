@@ -99,12 +99,14 @@ export function upcomingWhen(s) {
   return fmtDayTime(s);
 }
 
+const TZ_ALIASES = { "Asia/Calcutta": "Asia/Kolkata" };
 export function tzLabel() {
   try {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+    const raw = Intl.DateTimeFormat().resolvedOptions().timeZone || "local time";
+    const tz = (TZ_ALIASES[raw] || raw).replace(/_/g, " ");
     const abbr = new Date().toLocaleTimeString("en-US", { timeZoneName: "short" })
       .split(" ").pop();
-    return tz.replace(/_/g, " ") + (abbr && abbr !== "GMT" ? ` (${abbr})` : "");
+    return tz + (abbr && abbr !== "GMT" ? ` (${abbr})` : "");
   } catch { return "local time"; }
 }
 

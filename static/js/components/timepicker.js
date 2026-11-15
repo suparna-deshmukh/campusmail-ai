@@ -3,6 +3,7 @@
    first/last line, daily-limit meter. Resolves {when, staggerMin}. */
 import { el, icon, modal, api } from "../core/ui.js";
 import { fmtInt, fmtLong, fmtTime, toBackend, tzLabel } from "../core/format.js";
+import { planDelivery, scheduleCapSentence } from "../core/send-plan.js";
 
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -36,6 +37,7 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
   ].filter((c) => c.at().getTime() > now.getTime() + 10 * 60e3);
 
   const dateIn = el("input", { type: "date", class: "input", "aria-label": "Date" });
+  dateIn.min = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
   const timeSel = el("select", { class: "select", "aria-label": "Time" });
   for (let m = 0; m < 24 * 4; m++) {
     const v = pad(Math.floor(m / 4)) + ":" + pad((m % 4) * 15);
@@ -80,10 +82,11 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
   const zoneLine = el("div", { class: "field-help", style: "display:flex;align-items:center;gap:6px" });
   const errLine = el("div", { class: "field-error", style: "display:none" },
     icon("alert-triangle"), "Pick a time at least 5 minutes from now.");
+  const warnLine = el("div", { class: "field-help", style: "color:var(--warn);display:none" });
   const liveLine = el("div", { class: "field-help" });
   const limitLine = el("div", { class: "field-error", style: "display:none" },
     icon("alert-triangle"), el("span", {}, "limit-text"));
-  const goBtn = el("button", { class: "btn btn-primary" }, "Choose time");
+  const goBtn = el("button", { class: "btn btn-primary" }, "Use this time");
   let capToday = Number(dailyCap) || 0;
 
   function isPast() { return d <= new Date(Date.now() + 5 * 60e3); }
@@ -98,6 +101,16 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
     dateIn.classList.toggle("invalid", past);
     timeSel.classList.toggle("invalid", past);
     goBtn.disabled = past;
+    const day = d.getDay();
+    const offHours = d.getHours() < 9 || d.getHours() >= 18 || day === 0 || day === 6;
+    if (offHours) {
+      warnLine.style.display = "";
+      warnLine.textContent = (day === 0 || day === 6)
+        ? "That's a weekend - recruiters are likelier to read mail on a weekday."
+        : "That's outside office hours (09:00-18:00) - recruiters are likelier to read mail during the workday.";
+    } else {
+      warnLine.style.display = "none";
+    }
     const n = Math.max(1, count);
     const gap = staggerMin();
     const last = new Date(d.getTime() + gap * (n - 1) * 60e3);
@@ -108,7 +121,8 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
         : fmtInt(n) + " emails, one every " + gap + " " + (gap === 1 ? "minute" : "minutes") + ". First at " + fmtTime(toBackend(d)) + ", last at " + fmtTime(toBackend(last)) + ".";
     if (capToday > 0 && n > capToday) {
       limitLine.style.display = "";
-      limitLine.querySelector("span").textContent = "Your daily limit is " + fmtInt(capToday) + ". This send puts " + fmtInt(n) + " on one day. ";
+      const plan = planDelivery({ outcome: "schedule", n, cap: capToday, sentToday: 0 });
+      limitLine.querySelector("span").textContent = scheduleCapSentence(plan) + " ";
       const a = el("a", { href: "/settings", style: "font-weight:650" }, "Change limit");
       limitLine.append(a);
     } else {
@@ -131,7 +145,7 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
       el("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3)" },
         el("div", { class: "field", style: "margin-bottom:0" }, el("label", { class: "field-label" }, "Date"), dateIn),
         el("div", { class: "field", style: "margin-bottom:0" }, el("label", { class: "field-label" }, "Time"), timeSel)),
-      zoneLine, errLine,
+      zoneLine, errLine, warnLine,
       el("div", { class: "field", style: "margin-top:var(--sp-4)" },
         el("label", { class: "field-label" }, "Space them out"),
         el("div", { style: "display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap" }, staggerSeg, customIn),
