@@ -7,6 +7,7 @@ import {
   api, el, icon, toast, modal, drawer, menu, confirmSimple, undoable,
   holdToConfirm, statusBadge, badge, errorCard, emptyState, withLoading,
 } from "/static/js/core/ui.js";
+import { startSendCountdown } from "/static/js/components/send-countdown.js";
 import { STATUS, MSG, plural, statusOf, bounceReason } from "/static/js/core/copy.js";
 import { fmtInt, fmtDayTime, relTime, upcomingWhen, fmtLong, toBackend, localToUrl } from "/static/js/core/format.js";
 import { openTimePicker } from "/static/js/components/timepicker.js";
@@ -553,27 +554,11 @@ export function initEmailsTab(host, ctx) {
   }
 
   function startCancelCountdown(m, rows, accountId) {
-    const n = rows.length;
-    let left = 10;
-    m.body.innerHTML = "";
-    const count = el("div", { style: "font-size:26px;font-weight:650;text-align:center;padding:18px 0 6px" }, "Sending " + n + " " + plural(n, "email") + " in " + left);
-    const sub = el("div", { style: "text-align:center;font-size:13px;color:var(--text-2)" }, "You can still change your mind.");
-    const cancel = el("button", { class: "btn btn-secondary", style: "display:block;margin:14px auto 0" }, "Cancel");
-    m.body.append(count, sub, cancel);
-    const timer = setInterval(() => {
-      left -= 1;
-      if (left <= 0) {
-        clearInterval(timer);
-        m.close();
-        fireSendNow(rows, accountId);
-        return;
-      }
-      count.textContent = "Sending " + n + " " + plural(n, "email") + " in " + left;
-    }, 1000);
-    cancel.addEventListener("click", () => {
-      clearInterval(timer);
+    // Shared undo-window component (D-15): same pattern as the send flow.
+    startSendCountdown(m, { n: rows.length, seconds: 10 }).then(({ cancelled }) => {
       m.close();
-      toast("Send cancelled. Nothing went out.", { type: "info" });
+      if (cancelled) toast("Send cancelled. Nothing went out.", { type: "info" });
+      else fireSendNow(rows, accountId);
     });
   }
 

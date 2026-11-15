@@ -5,13 +5,14 @@
    4 Review    Check before it goes.
    Glossary: send/list/spacing/follow-up. Sentence case, no exclamation marks. */
 import {
-  api, el, icon, toast, modal, holdToConfirm, confirmSimple,
+  api, el, icon, toast, modal, holdToConfirm, confirmSimple, confirmTyped,
   emptyState, errorCard, withLoading, esc, appendSafe,
 } from "/static/js/core/ui.js";
 import { fmtInt, fmtLong, fmtDayTime, toBackend, parseWhen, localToUrl } from "/static/js/core/format.js";
 import { openTimePicker } from "/static/js/components/timepicker.js";
 import { planDelivery, sendCapSentence, scheduleCapSentence } from "/static/js/core/send-plan.js";
 import { dedupeRows, keepFirstIds } from "/static/js/core/dedupe.js";
+import { startSendCountdown } from "/static/js/components/send-countdown.js";
 
 const START_CID = window.send_campaign_id || 0;
 const root = document.getElementById("send-root");
@@ -1617,29 +1618,63 @@ function primary3() {
   return b;
 }
 
+/* Send-now confirmation (8.4): states the real numbers and only the
+   warnings that apply. 8.9 (decision #9): 100+ gets a typed alternative,
+   500+ must type the number. */
 function confirmSendNow() {
   return new Promise((resolve) => {
-    const n = data.preview_total || nPeople();
+    const n = effN();
     const pl = planNow();
-    const capNote = sendCapSentence(pl);
+    const today = Math.min(pl.today, n);
+    const acct = accountEmail();
+    const tpl = (data.templates.find((t) => t.id === S.templateId) || {}).name || "";
+    const dd = data.dedupe;
     let done = false;
+    const warns = [];
+    if (pl.capped) warns.push(sendCapSentence(pl));
+    if (dd && dd.dupes && !S.skipDupes) warns.push(fmtInt(dd.dupes) + " duplicate emails will each get an email.");
+    if (n > (data.previews.length || 0)) warns.push("The preview covered " + (data.previews.length || 8) + " of " + fmtInt(n) + " - the rest follow the same template.");
+    const finish = (v) => { if (done) return; done = true; m.close(); resolve(v); };
     const m = modal({
-      title: "Send " + fmtInt(pl.today) + " real emails now?",
-      sub: "They go out from " + accountEmail() + " immediately, one after another, and can't be recalled.",
+      title: "Send " + fmtInt(today) + " real emails now?",
+      sub: "From " + (acct || "your account") + " to " +
+        (S.contactIds.length ? fmtInt(S.contactIds.length) + " of " : "") + data.listName +
+        (tpl ? " with \u2018" + tpl + "\u2019" : "") +
+        ". They go out one after another and can't be recalled.",
       body: el("div", {},
         el("div", { class: "banner banner-warn" }, icon("alert-triangle", "i i-16"),
           el("span", {}, "If this is the first time, 'Send me a test' is the safe move.")),
-        capNote ? el("div", { class: "field-help", style: "margin-top:10px" }, capNote) : null,
-        el("div", { class: "field-help", style: "margin-top:10px" }, "Hold the button for 2 seconds to confirm.")),
-      foot: [el("button", { class: "btn btn-ghost" }, "Cancel"), el("button", { class: "btn btn-danger" }, "Hold to send " + fmtInt(pl.today))],
-      onClose: () => { if (!done) resolve(false); },
+        ...warns.map((w) => el("div", { class: "field-help", style: "margin-top:10px" }, w))),
+      foot: [el("button", { class: "btn btn-ghost" }, "Cancel")],
+      onClose: () => finish(false),
     });
-    const hold = m.foot.querySelector(".btn-danger");
-    m.foot.querySelector(".btn-ghost").addEventListener("click", () => { done = true; m.close(); resolve(false); });
-    holdToConfirm(hold, {
-      duration: 2000, label: "Hold to send " + fmtInt(pl.today),
-      onConfirm: () => { done = true; m.close(); resolve(true); },
-    });
+    m.foot.querySelector(".btn-ghost").addEventListener("click", () => finish(false));
+    if (today >= 500) {
+      const input = el("input", { class: "input", type: "text", inputmode: "numeric",
+        style: "margin-top:14px;max-width:220px", placeholder: fmtInt(today),
+        "aria-label": "Type the number of emails to confirm" });
+      const ok = el("button", { class: "btn btn-danger", style: "margin-top:10px", disabled: true },
+        "Send " + fmtInt(today) + " emails");
+      m.body.append(el("div", { class: "field-help", style: "margin-top:14px" },
+        "This is a big send - type the number to confirm."), input, ok);
+      input.addEventListener("input", () => { ok.disabled = input.value.replace(/[,\s]/g, "") !== String(today); });
+      ok.addEventListener("click", () => finish(true));
+      input.focus();
+    } else {
+      const hold = el("button", { class: "btn btn-danger" }, "Hold to send " + fmtInt(today));
+      m.body.append(el("div", { class: "field-help", style: "margin-top:10px" }, "Hold the button for 2 seconds to confirm."));
+      m.foot.append(hold);
+      holdToConfirm(hold, { duration: 2000, label: "Hold to send " + fmtInt(today), onConfirm: () => finish(true) });
+      if (today >= 100) {
+        const alt = el("button", { class: "linklike", style: "display:block;margin-top:10px" }, "Type the number to confirm instead");
+        m.body.append(alt);
+        alt.addEventListener("click", () => confirmTyped({
+          title: "Send " + fmtInt(today) + " real emails now?",
+          body: "Type the number to confirm.",
+          expect: today, actionLabel: "Send " + fmtInt(today) + " emails",
+        }).then((v) => finish(v)));
+      }
+    }
   });
 }
 
@@ -1687,6 +1722,7 @@ function genBody(action) {
     stagger: S.stagger,
     cc: S.cc,
     append_signature: S.append_signature ? 1 : 0,
+    hold: action === "send" ? true : undefined,
   };
 }
 
@@ -1715,6 +1751,7 @@ async function startCreate() {
       } catch (e) { prog.fail(it2, "Attachment upload failed: " + e.message); }
       result = await api("/api/batches/" + batchId + "/send-as", { body: {
         action: S.outcome, at: S.when, stagger: S.stagger, account_id: S.account,
+        hold: S.outcome === "send" ? true : undefined,
       } });
       prog.done(prog.add("Finishing…"), outcomeDoneText(result));
     }
@@ -1728,14 +1765,78 @@ async function startCreate() {
       } catch (e) { prog.fail(it4, "Reminders not set: " + e.message); }
     }
     files.length = 0;
+    if (S.outcome === "send" && result.holding) {
+      await heldCountdown(batchId, result);
+      return;
+    }
     successScreen(result);
   } catch (e) {
+    // D-37: never blind-retry a send - the request is one long synchronous
+    // batch, so some emails may already be out.
     root.innerHTML = "";
+    const canRetry = S.outcome !== "send";
     root.append(
-      errorCard("Couldn't finish. " + e.message, { onRetry: startCreate }),
+      errorCard(canRetry ? "Couldn't finish. " + e.message : "Something went wrong while sending.",
+        { onRetry: canRetry ? startCreate : null, detail: e.message }),
+      canRetry ? null : el("div", { style: "margin-top:12px;font-size:13px;color:var(--text-2);max-width:560px" },
+        el("span", {}, "Sending is one long request, so some emails may have gone out before the problem. Check the campaign to see exactly what happened before trying again.")),
       el("div", { style: "margin-top:12px" },
         el("button", { class: "btn btn-ghost", onclick: () => location.href = "/campaigns" }, "Back to campaigns")));
   }
+}
+
+/* 8.3: after a held send, show the shared undo countdown. Cancelling calls
+   the idempotent batch undo endpoint (B2). */
+async function heldCountdown(batchId, result) {
+  const heldN = result.scheduled != null ? result.scheduled : effN();
+  const cm = modal({
+    title: "You can still change your mind",
+    sub: "Sending " + fmtInt(heldN) + (heldN === 1 ? " email" : " emails") + " from " + (accountEmail() || "your account") + ".",
+    body: el("div", {}),
+  });
+  const r = await startSendCountdown(cm, { n: heldN, releaseAt: result.release_at });
+  cm.close();
+  if (r.cancelled) {
+    let undone = 0;
+    try {
+      const u = await api("/api/batches/" + batchId + "/undo", { body: {} });
+      undone = u.cancelled || 0;
+    } catch { /* window already over - report from the campaign */ }
+    heldCancelledScreen(undone);
+    return;
+  }
+  heldSuccessScreen(result);
+}
+function successIllustration() {
+  return el("div", { class: "empty-illust" }, `<svg viewBox="0 0 96 96" width="96" height="96" aria-hidden="true"><circle cx="48" cy="48" r="26" fill="var(--success-bg)" stroke="none"/><path d="M36 49l9 9 17-19" fill="none" stroke="var(--success)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`);
+}
+function heldSuccessScreen(result) {
+  try { localStorage.removeItem(K()); } catch { /* private mode */ }
+  const heldN = result.scheduled != null ? result.scheduled : effN();
+  const whenTxt = result.release_at ? fmtLong(result.release_at) : "momentarily";
+  const cid = S.campaignId || 0;
+  root.innerHTML = "";
+  root.append(el("div", { class: "send-success" },
+    successIllustration(),
+    el("div", { class: "ss-title" }, fmtInt(heldN) + (heldN === 1 ? " email will go out" : " emails will go out") + " " + whenTxt),
+    el("p", { class: "ss-sub" }, "From " + (accountEmail() || "your account") + ", one after another. You can cancel from the Emails tab until then - once sent, they can't be recalled."),
+    el("div", { class: "ss-actions" },
+      el("a", { class: "btn btn-primary", href: cid ? "/campaigns/" + cid + "?tab=emails" : "/campaigns" }, "Watch them go (Emails tab)"),
+      el("button", { class: "btn btn-ghost", onclick: () => location.href = "/campaigns" }, "Back to campaigns"))));
+}
+function heldCancelledScreen(undone) {
+  try { localStorage.removeItem(K()); } catch { /* private mode */ }
+  const n = effN();
+  root.innerHTML = "";
+  root.append(el("div", { class: "send-success" },
+    successIllustration(),
+    el("div", { class: "ss-title" }, undone ? "Send cancelled - nothing went out" : "The undo window was already over"),
+    el("p", { class: "ss-sub" }, undone
+      ? fmtInt(undone) + (undone === 1 ? " email went" : " emails went") + " back to your queue (Ready). Schedule or send them when you're ready."
+      : "Check the campaign to see exactly what was sent."),
+    el("div", { class: "ss-actions" },
+      el("a", { class: "btn btn-primary", href: (S.campaignId || 0) ? "/campaigns/" + S.campaignId + "?tab=emails" : "/campaigns" }, "Open the Emails tab"),
+      el("button", { class: "btn btn-ghost", onclick: () => location.href = "/campaigns" }, "Back to campaigns"))));
 }
 
 function progressPanel(title) {
@@ -1756,6 +1857,7 @@ function progressPanel(title) {
 }
 
 function outcomeDoneText(result) {
+  if (result.holding) return fmtInt(result.scheduled) + " held for the undo window";
   if (result.created_drafts != null) return fmtInt(result.created_drafts) + " draft" + (result.created_drafts === 1 ? "" : "s") + " created";
   if (result.scheduled != null) return fmtInt(result.scheduled) + " scheduled";
   if (result.sent != null) return fmtInt(result.sent) + " sent";

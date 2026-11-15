@@ -436,3 +436,111 @@ def test_duplicate_skip_default_on(cdp_session, tenant):
     assert ev(cdp, "document.querySelectorAll('.modal .match-table tbody tr').length") == 2
     assert "different companies!" in ev(cdp, "document.querySelector('.modal').textContent")
     ev(cdp, "document.querySelector('.modal .btn-ghost').click()")
+
+
+def test_send_now_undo_window(cdp_session, tenant, mock_gmail):
+    """8.3/D-15: send now -> 2 s hold -> undo countdown synced to the
+    server's release_at -> Cancel undoes the batch. Zero Gmail calls."""
+    cdp = cdp_session["cdp"]
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    ev(cdp, 'fetch("/api/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({send_undo_seconds: "10"})})')
+    ev(cdp, "location.href = '/campaigns/1/send?theme=dark'")
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    time.sleep(0.6)
+    _open_section(cdp, "delivery")
+    ev(cdp, """(() => {
+      const c = [...document.querySelectorAll('#acc-body-delivery .opt-card')]
+        .find(x => x.querySelector('.opt-title').textContent.includes('Send now'));
+      c.click();
+    })()""")
+    time.sleep(0.6)
+    ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').click()")
+    _wait_for(cdp, ".modal-title")
+    title = ev(cdp, "document.querySelector('.modal-title').textContent")
+    assert title == "Send 12 real emails now?", title
+    sub = ev(cdp, "document.querySelector('.modal-sub').textContent")
+    assert "one after another" in sub and "can't be recalled" in sub, sub
+    # 2 s hold (pointer)
+    btn = ev(cdp, "!!document.querySelector('.modal-foot .btn-danger')")
+    assert btn, "hold button expected for < 100 emails"
+    ev(cdp, "document.querySelector('.modal-foot .btn-danger').dispatchEvent(new MouseEvent('mousedown'))")
+    time.sleep(2.4)
+    ev(cdp, "document.querySelector('.modal-foot .btn-danger').dispatchEvent(new MouseEvent('mouseup'))")
+    # progress panel, then the undo countdown modal (a second modal replaces
+    # the confirm one once the batch is held)
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        subs = ev(cdp, "[...document.querySelectorAll('.modal-sub')].map(x => x.textContent)")
+        if any(str(x).startswith("Sending 12 emails from") for x in subs):
+            break
+        time.sleep(0.4)
+    else:
+        pytest.fail("countdown modal never appeared: %r" % subs)
+    big = ev(cdp, "[...document.querySelectorAll('.modal-body > div')].map(x => x.textContent).join('|')")
+    assert "Sending 12 emails in " in big, big
+    # cancel within the window (the countdown modal's Cancel button)
+    ev(cdp, """(() => {
+      const m = [...document.querySelectorAll('.modal')].pop();
+      m.querySelector('.modal-body button.btn-secondary').click();
+    })()""")
+    deadline = time.time() + 12
+    t = ""
+    while time.time() < deadline:
+        t = ev(cdp, "document.querySelector('.send-success .ss-title')?.textContent || ''")
+        if "cancelled" in t.lower() or "undo window" in t.lower():
+            break
+        time.sleep(0.4)
+    assert "Send cancelled" in t, t
+    sub = ev(cdp, "document.querySelector('.send-success .ss-sub').textContent")
+    assert "went back to your queue" in sub, sub
+    assert mock_gmail.sends == [], "zero Gmail calls before undo"
+    c = db.conn()
+    st = {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM emails GROUP BY status")}
+    holds = c.execute("SELECT COUNT(*) n FROM undo_holds").fetchone()["n"]
+    c.close()
+    assert st.get("cancelled") == 12 and holds == 0, (st, holds)
+
+
+def test_send_now_typed_confirm_required_at_500(cdp_session, tenant):
+    """8.9 (decision #9): 500+ real emails require typing the number; no
+    hold button is offered."""
+    cdp = cdp_session["cdp"]
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    # raise the daily cap so the whole audience fits today (cap honesty is
+    # tested separately); otherwise the modal would truthfully show 100.
+    ev(cdp, 'fetch("/api/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({max_sends_per_day: "1000"})})')
+    c = db.conn()
+    for i in range(15, 513):  # 498 more rows -> 510 contacts total (12 + 498)
+        c.execute("INSERT INTO contacts(serial, company, hr_name, hr_email, status, sheet_id, created_at) "
+                  "VALUES(?, ?, ?, ?, 'new', 1, '%s')" % db.now_iso(),
+                  (str(i), "Company" + str(i % 9), "Recruiter" + str(i), "bulk%d@example.com" % i))
+    c.commit(); c.close()
+    ev(cdp, "location.href = '/campaigns/1/send?theme=dark'")
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    time.sleep(0.8)
+    _open_section(cdp, "delivery")
+    ev(cdp, """(() => {
+      const c = [...document.querySelectorAll('#acc-body-delivery .opt-card')]
+        .find(x => x.querySelector('.opt-title').textContent.includes('Send now'));
+      c.click();
+    })()""")
+    time.sleep(0.6)
+    ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').click()")
+    _wait_for(cdp, ".modal-title")
+    assert ev(cdp, "document.querySelector('.modal-title').textContent") == "Send 510 real emails now?"
+    assert ev(cdp, "!!document.querySelector('.modal-foot .btn-danger')") is False, "no hold button at 500+"
+    inp = ev(cdp, "document.querySelector('.modal input[aria-label*=number]')?.placeholder || ''")
+    assert inp == "510", "typed-number input expected"
+    ok = ev(cdp, "document.querySelector('.modal input[aria-label*=number] + .btn-danger, .modal .btn-danger')?.disabled")
+    # wrong number keeps it disabled
+    ev(cdp, """(() => { const i = document.querySelector('.modal input[aria-label*=number]');
+      i.value = "999"; i.dispatchEvent(new Event('input'));
+      return document.querySelectorAll('.modal .btn-danger')[0].disabled; })()""")
+    assert ev(cdp, "document.querySelectorAll('.modal .btn-danger')[0].disabled") is True
+    ev(cdp, """(() => { const i = document.querySelector('.modal input[aria-label*=number]');
+      i.value = "510"; i.dispatchEvent(new Event('input')); })()""")
+    time.sleep(0.3)
+    assert ev(cdp, "document.querySelectorAll('.modal .btn-danger')[0].disabled") is False
+    ev(cdp, "document.querySelector('.modal .btn-ghost').click()")
+    time.sleep(0.5)
+    assert ev(cdp, "document.querySelectorAll('.modal').length") == 0
