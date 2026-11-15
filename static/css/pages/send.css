@@ -1,5 +1,6 @@
 /* Send flow */
-.send-wrap { max-width: 720px; margin: 0 auto; }
+.send-wrap { max-width: 860px; margin: 0 auto; }
+.send-wrap.review-open { max-width: none; }
 .send-wrap.two-col { max-width: none; }
 .send-step-title { font-size: 24px; line-height: 32px; font-weight: 650; letter-spacing: -0.015em; }
 .send-step-sub { color: var(--text-2); margin: 4px 0 var(--sp-6); }
@@ -21,35 +22,45 @@
 .send-sticky-foot .summary { flex: 1; min-width: 0; font-size: 13px; color: var(--text-2); font-weight: 550; text-align: center; }
 .foot-reason { display: block; color: var(--warn); font-size: 12px; font-weight: 600; margin-top: 1px; }
 
-/* 4-step layout (D-28): main column + persistent "Your send" rail */
+/* Single page, one collapsible section per decision (D-39) */
 .send-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-6); }
 .send-col { min-width: 0; }
-.send-wrap.wide { max-width: none; }
 .step-sec { margin-bottom: var(--sp-5); }
 .step-sec:last-of-type { margin-bottom: var(--sp-4); }
 
-.send-rail { display: none; }
-@media (min-width: 1024px) {
-  .send-layout { grid-template-columns: minmax(0, 1fr) 280px; align-items: start; max-width: 1080px; margin: 0 auto; }
-  .send-rail { display: block; position: sticky; top: calc(var(--topbar-h) + 20px); }
-  .rail-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-sm); padding: var(--sp-4) var(--sp-5); }
-  .rail-title { font-size: 11px; line-height: 16px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: var(--sp-2); }
-}
-.rail-line { display: flex; gap: 8px; font-size: 12.5px; line-height: 18px; padding: 4px 0; }
-.rail-line .i { width: 15px; height: 15px; color: var(--text-3); margin-top: 2px; flex: none; }
-.rail-line .rail-k { color: var(--text-3); width: 66px; flex: none; }
-.rail-line .rail-v { flex: 1; min-width: 0; font-weight: 550; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Mobile: rail collapses into a one-line bar above the footer */
-.rail-bar {
-  display: flex; align-items: center; gap: 8px; width: 100%;
+.send-sec {
   border: 1px solid var(--border); border-radius: var(--r-card);
-  background: var(--surface); padding: 10px 14px; margin: var(--sp-4) 0 var(--sp-2);
-  font-size: 13px; font-weight: 550; color: var(--text-2); cursor: pointer; text-align: left;
+  background: var(--surface); margin-bottom: var(--sp-3);
+  box-shadow: var(--shadow-sm);
 }
-.rail-bar:hover { border-color: var(--border-strong); color: var(--text); }
-.rail-bar .rail-bar-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (min-width: 1024px) { .rail-bar { display: none; } }
+.acc-head {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 13px 16px; background: none; border: 0; cursor: pointer;
+  text-align: left; font: inherit; color: var(--text); border-radius: var(--r-card);
+}
+.acc-head:hover { background: var(--surface-2); }
+.acc-head:focus-visible { outline: 2px solid var(--primary-500); outline-offset: -2px; }
+.acc-num {
+  width: 24px; height: 24px; border-radius: 50%; flex: none;
+  display: grid; place-items: center;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface); color: var(--text-3);
+  font-size: 12px; font-weight: 650;
+}
+.acc-head-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.acc-title { font-size: 15px; font-weight: 600; line-height: 20px; }
+.acc-status {
+  font-size: 12.5px; line-height: 17px; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.acc-status.ok { color: var(--success); }
+.acc-status.warn { color: var(--warn); }
+.acc-status.block { color: var(--danger); font-weight: 550; }
+.acc-chev { color: var(--text-3); flex: none; transition: transform var(--t-fast) var(--ease); }
+.acc-head[aria-expanded="true"] .acc-chev { transform: rotate(180deg); }
+.acc-body { padding: 2px 16px 16px; border-top: 1px solid var(--border); }
+.acc-body[hidden] { display: none; }
+.acc-body .step-sec:last-of-type { margin-bottom: 0; }
 
 /* Compact selected-list card (D-28) */
 .list-card {
@@ -158,27 +169,7 @@
 .progress-item.err .p-ico { color: var(--danger); }
 .progress-item.err { color: var(--danger); }
 
-/* ---- Stepper (D-02) ---- */
-.send-stepper { display: flex; gap: 8px; flex: none; }
-.send-step {
-  display: inline-flex; align-items: center; gap: 8px;
-  height: 30px; padding: 0 12px 0 8px;
-  border-radius: 999px; border: 1px solid var(--border);
-  background: var(--surface); color: var(--text-3);
-  font-size: 13px; font-weight: 550; cursor: default;
-  transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
-}
-.send-step-n {
-  width: 20px; height: 20px; border-radius: 50%;
-  display: grid; place-items: center;
-  background: var(--surface-2); color: var(--text-3);
-  font-size: 12px; font-weight: 650;
-}
-.send-step.is-current { border-color: var(--primary-500); background: var(--primary-50); color: var(--text); font-weight: 650; }
-.send-step.is-current .send-step-n { background: var(--primary-500); color: #fff; }
-.send-step.is-done { cursor: pointer; color: var(--text-2); border-color: var(--border-strong); }
-.send-step.is-done:hover { border-color: var(--primary-500); color: var(--text); }
-.send-step.is-done .send-step-n { background: var(--success-bg); color: var(--success); }
+/* (stepper removed in D-39: single page with collapsible sections) */
 
 /* ---- Cap-aware outcome line (D-10 / 8.1) ---- */
 .cap-line { color: var(--warn); font-weight: 550; margin-top: 2px; }

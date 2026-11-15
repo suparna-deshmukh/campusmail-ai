@@ -204,16 +204,6 @@ def cdp_session(tenant, mock_gmail, monkeypatch):
         proc.kill()
 
 
-def _wait_step(cdp, title, timeout=15.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if ev(cdp, "document.querySelector('.send-step-title')?.textContent") == title:
-            return
-        time.sleep(0.25)
-    pytest.fail("timed out waiting for step %r (title=%r)" % (
-        title, ev(cdp, "document.querySelector('.send-step-title')?.textContent")))
-
-
 def _wait_checks(cdp, timeout=15.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -231,93 +221,142 @@ def _assert_no_null(cdp, step):
         assert bad not in text, "literal %r rendered on step %r" % (bad, step)
 
 
-def test_send_flow_walks_all_four_steps_clean(cdp_session):
-    """Journey A (structure): all four steps render, no literal nulls, and
-    each step shows at most 3 sections (D-28 progressive disclosure)."""
+def _section(cdp, key):
+    return ev(cdp, """(() => {
+      const w = document.querySelector('#sec-wrap-%s');
+      if (!w) return null;
+      const st = w.querySelector('.acc-status');
+      return {
+        expanded: w.querySelector('.acc-head').getAttribute('aria-expanded') === 'true',
+        hidden: w.querySelector('.acc-body').hidden,
+        status: st ? st.textContent : "",
+        statusCls: st ? st.className : "",
+        sections: w.querySelectorAll('.acc-body .step-sec').length,
+      };
+    })()""" % key)
+
+
+def _open_section(cdp, key, wait=0.7):
+    ev(cdp, "document.querySelector('#sec-wrap-%s .acc-head').click()" % key)
+    time.sleep(wait)
+
+
+def test_single_page_structure_and_default_state(cdp_session):
+    """Journey A (structure): one page, four collapsible sections, no literal
+    nulls, each section shows at most 3 subsections (D-39)."""
     cdp = cdp_session["cdp"]
     _wait_for(cdp, "#send-root .send-sticky-foot")
-    steps = [
-        ("audience", "Who are you emailing?"),
-        ("message", "What will they read?"),
-        ("delivery", "How should it go out?"),
-        ("review", "Check before it goes"),
-    ]
-    for i, (key, title) in enumerate(steps):
-        _wait_step(cdp, title)
-        assert ev(cdp, "new URLSearchParams(location.search).get('step')") == key
-        sections = ev(cdp, "document.querySelectorAll('#send-panel .step-sec').length")
-        assert sections <= 3, "step %r shows %r sections (> 3)" % (key, sections)
+    _wait_for(cdp, "#send-root #sec-wrap-audience")
+    _wait_for(cdp, "#send-root #sec-wrap-review")
+    keys = ("audience", "message", "delivery", "review")
+    for key in keys:
         _assert_no_null(cdp, key)
-        if i < len(steps) - 1:
-            ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').click()")
-    # Review shows the preview and the real action (not clicked - no email is
-    # ever created or sent by these tests).
+    # valid defaults -> everything opens collapsed, footer is the action
+    secs = {k: _section(cdp, k) for k in keys}
+    assert all(s and not s["expanded"] and s["hidden"] for s in secs.values()), secs
+    primary = ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').textContent")
+    assert "draft" in primary.lower(), primary
+    # open each decision section: <= 3 subsections, status line present
+    for key in ("audience", "message", "delivery"):
+        _open_section(cdp, key)
+        s = _section(cdp, key)
+        assert s["expanded"] and not s["hidden"], s
+        assert s["sections"] <= 3, "section %r shows %r subsections" % (key, s["sections"])
+        assert s["status"], "no status line in %r" % key
+        _assert_no_null(cdp, key)
+    # review: preview + checks + summary, real action in footer (never clicked)
+    _open_section(cdp, "review")
     _wait_for(cdp, "#send-root .summary-card")
     _wait_checks(cdp)
     assert ev(cdp, "document.querySelectorAll('#checks-card .check-line').length") >= 2
+    _assert_no_null(cdp, "review")
     primary = ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').textContent")
     assert "draft" in primary.lower() or "Schedule" in primary or "Send" in primary
 
 
-def test_stepper_states_and_future_steps_disabled(cdp_session):
+def test_schedule_gate_and_time_picker(cdp_session):
+    """Schedule without a time: the footer primary names the missing thing
+    (D-12); clicking it jumps to Delivery; picking a time unblocks (D-39)."""
     cdp = cdp_session["cdp"]
     _wait_for(cdp, "#send-root .send-sticky-foot")
-    _wait_step(cdp, "Who are you emailing?")
-    state = ev(cdp, """[...document.querySelectorAll('.send-step')].map(b => ({
-      cur: b.classList.contains('is-current'),
-      future: b.classList.contains('is-future'),
-      disabled: b.getAttribute('aria-disabled'),
-    }))""")
-    assert state[0]["cur"] is True
-    for future in state[1:]:
-        assert future["future"] is True and future["disabled"] == "true"
-    # visited steps become clickable
+    _open_section(cdp, "delivery")
+    ev(cdp, """(() => {
+      const c = [...document.querySelectorAll('#acc-body-delivery .opt-card')]
+        .find(x => x.querySelector('.opt-title') && x.querySelector('.opt-title').textContent.includes('Schedule'));
+      c.click();
+    })()""")
+    time.sleep(0.7)
+    primary = ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').textContent")
+    assert primary == "Pick a time to schedule", primary
+    st = _section(cdp, "delivery")
+    assert "block" in st["statusCls"] and st["status"] == "Pick a time to schedule", st
+    # primary jumps to the delivery section (already open) and focuses it
     ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').click()")
-    _wait_step(cdp, "What will they read?")
-    state = ev(cdp, """[...document.querySelectorAll('.send-step')].map(b => b.classList.contains('is-done'))""")
-    assert state[0] is True and state[1] is False
+    time.sleep(0.5)
+    assert _section(cdp, "delivery")["expanded"]
+    # open the inline time block's picker and accept the valid default
+    ev(cdp, "document.querySelector('#acc-body-delivery .card button.btn-ghost').click()")
+    _wait_for(cdp, ".modal-foot .btn-primary")
+    ev(cdp, "document.querySelector('.modal-foot .btn-primary').click()")
+    time.sleep(0.7)
+    st = _section(cdp, "delivery")
+    assert st["status"].startswith("Scheduled"), st
+    primary = ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').textContent")
+    assert primary.startswith("Schedule"), primary
+    # collapse it again: state persists, section hides
+    _open_section(cdp, "delivery", wait=0.3)
+    assert _section(cdp, "delivery")["hidden"]
 
 
-def test_old_saved_state_migrates_to_new_steps(cdp_session):
-    """schemaVersion migration: step 1 -> audience, step 2 -> review, and a
-    corrupt draft never breaks the page (Journey G)."""
+def test_old_saved_state_migrates_to_single_page(cdp_session):
+    """schemaVersion migration: old step values 1/2 (2-step flow) and the
+    4-step string steps map to one expanded section; a corrupt draft never
+    breaks the page (Journey G)."""
     cdp = cdp_session["cdp"]
     _wait_for(cdp, "#send-root .send-sticky-foot")
-    for saved, title in [
-        ('{"step": 2, "campaignId": 1, "outcome": "draft"}', "Check before it goes"),
-        ('{"step": 1, "campaignId": 1, "outcome": "draft"}', "Who are you emailing?"),
-        ("{'step': 2, broken json", "Who are you emailing?"),
+    for saved, expected in [
+        ('{"step": 2, "campaignId": 1, "outcome": "draft"}', "review"),
+        ('{"step": 1, "campaignId": 1, "outcome": "draft"}', "audience"),
+        ('{"step": "delivery", "campaignId": 1, "outcome": "draft", "schemaVersion": 4}', "delivery"),
+        ("{'step': 2, broken json", None),
     ]:
         ev(cdp, "localStorage.setItem('cm_send_1', %r)" % saved)
         ev(cdp, "location.href = '/campaigns/1/send?theme=dark'")
-        _wait_step(cdp, title)
-    # restored review state must land on the review step with the action ready
-    ev(cdp, "localStorage.setItem('cm_send_1', JSON.stringify({step: 2, campaignId: 1, outcome: 'draft', schemaVersion: 4, visited: ['audience','message','delivery','review']}))")
+        _wait_for(cdp, "#send-root .send-sticky-foot")
+        time.sleep(0.5)
+        secs = {k: _section(cdp, k) for k in ("audience", "message", "delivery", "review")}
+        assert all(v is not None for v in secs.values()), "page failed to render for %r" % saved
+        if expected:
+            assert secs[expected]["expanded"], (saved, secs)
+        _assert_no_null(cdp, "migrate")
+    # v5 round-trip: an explicit open list survives a reload
+    ev(cdp, "localStorage.setItem('cm_send_1', JSON.stringify({schemaVersion: 5, campaignId: 1, outcome: 'draft', open: ['message'], listId: 0, templateId: 1, account: 1, mapping: {}, contactIds: []}))")
     ev(cdp, "location.href = '/campaigns/1/send?theme=dark'")
-    _wait_step(cdp, "Check before it goes")
-    assert ev(cdp, "document.querySelectorAll('.send-step.is-done').length") == 3
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    time.sleep(0.5)
+    assert _section(cdp, "message")["expanded"]
+    assert not _section(cdp, "audience")["expanded"]
 
 
-def test_review_change_link_returns_to_review(cdp_session):
+def test_review_change_links_open_sections(cdp_session):
+    """Review 'Change' links expand the matching section in place; Review
+    stays open so the user lands back on the review after adjusting."""
     cdp = cdp_session["cdp"]
     _wait_for(cdp, "#send-root .send-sticky-foot")
-    _wait_step(cdp, "Who are you emailing?")
-    for title in ("What will they read?", "How should it go out?", "Check before it goes"):
-        ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').click()")
-        _wait_step(cdp, title)
+    _open_section(cdp, "review")
     _wait_for(cdp, "#send-root .summary-card")
     _wait_checks(cdp)
-    # jump to Message via the Template row's Change link
-    ev(cdp, """(() => {
-      const b = [...document.querySelectorAll('.summary-change')]
-        .find(x => x.closest('.summary-line')?.children[1]?.textContent === 'Template');
-      if (b) b.click();
-    })()""")
-    _wait_step(cdp, "What will they read?")
-    # the primary now returns to Review
-    assert ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').textContent") == "Back to Review"
-    ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').click()")
-    _wait_step(cdp, "Check before it goes")
+    for label, key in (("Template", "message"), ("To", "audience")):
+        ev(cdp, """(() => {
+          const b = [...document.querySelectorAll('.summary-change')]
+            .find(x => x.closest('.summary-line') && x.closest('.summary-line').children[1] &&
+                       x.closest('.summary-line').children[1].textContent === %r);
+          if (b) b.click();
+        })()""" % label)
+        time.sleep(0.6)
+        assert _section(cdp, key)["expanded"], key
+        assert not _section(cdp, "review")["hidden"], "review must stay open"
+        _assert_no_null(cdp, key)
 
 
 def test_hold_to_confirm_renders_single_label(cdp_session):

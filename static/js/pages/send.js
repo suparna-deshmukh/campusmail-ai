@@ -17,8 +17,7 @@ const root = document.getElementById("send-root");
 
 /* ---------------- steps ---------------- */
 const STEPS = ["audience", "message", "delivery", "review"];
-const STEP_LABEL = { audience: "Audience", message: "Message", delivery: "Delivery", review: "Review" };
-const STEP_TITLE = {
+const SEC = {
   audience: ["Who are you emailing?", "Pick the list, or choose specific people."],
   message: ["What will they read?", "The message, and where each fill-in comes from."],
   delivery: ["How should it go out?", "The sending account and what happens next."],
@@ -28,9 +27,8 @@ const OUTCOME_IDS = ["draft", "schedule", "send", "queue"];
 
 /* ---------------- state ---------------- */
 const S = {
-  schemaVersion: 4,
-  step: "audience",
-  visited: ["audience"],
+  schemaVersion: 5,
+  open: [],              // expanded section keys (D-39: single page, one decision per section)
   campaignId: START_CID,
   listId: 0,             // 0 = All contacts
   contactIds: [],        // non-empty = only these contacts from the chosen list
@@ -47,7 +45,6 @@ const S = {
   when: "",
   stagger: 0,
   outcome: "draft",      // draft | schedule | send | queue
-  after: "",             // "review" when a Change link jumped out of Review
   touched: false,        // set by real user actions; plain visits save nothing
 };
 const K = () => "cm_send_" + (S.campaignId || "global");
@@ -65,15 +62,18 @@ function clearDraftKey() { try { localStorage.removeItem(K()); } catch { /* priv
 function migrateSaved(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const out = { ...raw };
-  let step = out.step;
-  if (step === 1 || step === "1") step = "audience";
-  else if (step === 2 || step === "2") step = "review";
-  if (typeof step !== "string" || !STEPS.includes(step)) step = "audience";
-  out.step = step;
-  let visited = Array.isArray(out.visited) ? out.visited.filter((v) => STEPS.includes(v)) : null;
-  if (!visited || !visited.includes(step)) visited = STEPS.slice(0, STEPS.indexOf(step) + 1);
-  out.visited = visited;
-  out.schemaVersion = 4;
+  // D-39: the 4-step "step" value becomes the one expanded section.
+  // Old numeric steps (2-step flow): 1 -> audience, 2 -> review.
+  const stepMap = { 1: "audience", 2: "review", "1": "audience", "2": "review",
+    audience: "audience", message: "message", delivery: "delivery", review: "review" };
+  if (Array.isArray(out.open)) {
+    out.open = out.open.filter((k) => STEPS.includes(k));
+  } else {
+    const step = stepMap[out.step];
+    out.open = step ? [step] : STEPS.slice();
+  }
+  delete out.step; delete out.visited; delete out.after;
+  out.schemaVersion = 5;
   if (!Array.isArray(out.contactIds)) out.contactIds = [];
   if (typeof out.mapping !== "object" || out.mapping === null || Array.isArray(out.mapping)) out.mapping = {};
   if (typeof out.outcome !== "string" || !OUTCOME_IDS.includes(out.outcome)) out.outcome = "draft";
@@ -145,7 +145,7 @@ async function load() {
   if (saved) { Object.assign(S, saved); S.touched = true; }
   if (!saved) {
     const u = (new URLSearchParams(location.search).get("step") || "").toLowerCase();
-    if (STEPS.includes(u)) { S.step = u; S.visited = STEPS.slice(0, STEPS.indexOf(u) + 1); }
+    S.open = STEPS.includes(u) ? [u] : STEPS.slice();
   }
   if (S.campaignId) {
     const c = data.campaigns.find((x) => x.id === S.campaignId);
@@ -177,8 +177,10 @@ async function load() {
   // Always resolve field mapping on load (the "no fields mapped -> 2 mapped"
   // mismatch came from skipping this on first visit).
   await autoMatch();
+  if (!saved) S.open = allValid() ? [] : [firstBlocker().sec];
+  const cu = new URL(location.href); cu.searchParams.delete("step");
+  history.replaceState(null, "", cu.toString());
   render();
-  history.replaceState(null, "", stepUrl());
 }
 
 async function selectList(id, { keep = false } = {}) {
@@ -243,7 +245,7 @@ function paintQuality() {
   const q = $q("#sec-aud-quality");
   if (q) { q.innerHTML = ""; q.append(qualityLine()); }
   const l = $q("#sec-aud-list");
-  if (l && S.step === "audience") { l.innerHTML = ""; l.append(S.campaignId ? listSection() : el("div")); }
+  if (l && isOpen("audience")) { l.innerHTML = ""; l.append(S.campaignId ? listSection() : el("div")); }
 }
 
 /* Suggest fill-in mapping. Non-destructive: keeps choices the user made. */
@@ -271,133 +273,189 @@ async function autoMatch(force = false) {
 }
 
 /* ---------------- shell ---------------- */
-function stepUrl() {
-  const u = new URL(location.href);
-  u.searchParams.set("step", S.step);
-  return u.toString();
-}
-function go(step, opts = {}) {
-  if (!STEPS.includes(step) || step === S.step) return;
-  S.step = step;
-  if (!S.visited.includes(step)) S.visited.push(step);
-  if (!opts.fromReview) S.after = "";
-  touch();
-  render();
-  history.pushState(null, "", stepUrl());
-  window.scrollTo(0, 0);
-  const first = $q("#send-panel .opt-card, #send-panel select, #send-panel input, #send-panel textarea");
-  if (first && first.focus) first.focus({ preventScroll: true });
-}
 function render() {
   root.innerHTML = "";
-  root.append(header(),
-    el("div", { class: "send-layout" },
-      el("div", { class: "send-col" },
-        el("div", { class: "send-wrap" + (S.step === "review" ? " wide" : ""), id: "send-panel" }),
-        el("div", { class: "send-sticky-zone" }, railBar(), footerBar())),
-      rail()));
-  renderStep();
-  updateRail();
+  root.append(el("div", { class: "send-layout" },
+    el("div", { class: "send-col" },
+      pageHead(),
+      el("div", { class: "send-wrap" },
+        section("audience"), section("message"), section("delivery"), section("review")),
+      el("div", { class: "send-sticky-zone" }, footerBar()))));
+  for (const k of STEPS) paintSection(k);
+  syncWrapWide();
   save();
 }
-function renderStep() {
-  const panel = $q("#send-panel");
-  panel.innerHTML = "";
-  if (S.step === "audience") renderStepAudience(panel);
-  else if (S.step === "message") renderStepMessage(panel);
-  else if (S.step === "delivery") renderStepDelivery(panel);
-  else renderStepReview(panel);
-}
-function header() {
-  const stepper = el("ol", { class: "send-stepper", "aria-label": "Send steps" },
-    STEPS.map((k) => {
-      const n1 = STEPS.indexOf(k) + 1;
-      const cur = k === S.step;
-      const vis = S.visited.includes(k);
-      const b = el("button", {
-        class: "send-step" + (cur ? " is-current" : "") + (vis && !cur ? " is-done" : "") + (!vis && !cur ? " is-future" : ""),
-        type: "button",
-        "aria-current": cur ? "step" : null,
-        "aria-disabled": !vis && !cur ? "true" : null,
-        title: !vis && !cur ? "Finish this step first" : null,
-        onclick: () => { if (vis && !cur) go(k); },
-      }, el("span", { class: "send-step-n" }, cur || !vis ? String(n1) : icon("check", "i i-14")), STEP_LABEL[k]);
-      return el("li", {}, b);
-    }));
-  const [title, sub] = STEP_TITLE[S.step];
+function pageHead() {
   return el("div", { class: "page-head send-head" },
     el("div", { class: "ph-main" },
-      el("div", { class: "send-step-title" }, title),
-      el("p", { class: "send-step-sub" }, sub)),
-    el("div", { class: "push", style: "display:flex;gap:12px;align-items:center;flex:none" }, stepper,
+      el("div", { class: "send-step-title" }, "Send"),
+      el("p", { class: "send-step-sub" }, "Set up your send, then check it before it goes.")),
+    el("div", { class: "push", style: "display:flex;gap:12px;align-items:center;flex:none" },
       el("button", { class: "btn btn-icon", "aria-label": "Close", onclick: closeFlow }, icon("x", "i i-16"))));
 }
 function closeFlow() {
   history.length > 2 ? history.back() : (location.href = S.campaignId ? "/campaigns/" + S.campaignId : "/campaigns");
 }
 
-/* Footer: Back (ghost) + one-line summary + one primary. The disabled reason
-   is visible text, not a hover title (D-12 / D-28). */
-function gateFor(step) {
-  if (step === "audience") {
-    if (!S.campaignId) return ["Continue to Message", true, "Pick a campaign to continue"];
+/* One collapsible section per decision (D-39). */
+function isOpen(key) { return S.open.includes(key); }
+function section(key) {
+  const [title] = SEC[key];
+  const head = el("button", {
+    class: "acc-head", type: "button", "aria-expanded": String(isOpen(key)),
+    "aria-controls": "acc-body-" + key,
+    onclick: () => toggleSec(key),
+  },
+    el("span", { class: "acc-num" }, String(STEPS.indexOf(key) + 1)),
+    el("span", { class: "acc-head-txt" },
+      el("span", { class: "acc-title" }, title),
+      el("span", { class: "acc-status", id: "acc-status-" + key })),
+    el("span", { class: "acc-chev" }, icon("chevron-down", "i i-16")));
+  const body = el("div", { class: "acc-body", id: "acc-body-" + key, hidden: !isOpen(key) });
+  return el("section", { class: "send-sec", id: "sec-wrap-" + key, "aria-label": title }, head, body);
+}
+function toggleSec(key) {
+  const i = S.open.indexOf(key);
+  if (i >= 0) S.open.splice(i, 1); else S.open.push(key);
+  touch();
+  paintSection(key);
+  syncWrapWide();
+  const head = $q("#sec-wrap-" + key + " .acc-head");
+  if (head) head.scrollIntoView({ block: "nearest" });
+}
+function syncWrapWide() {
+  const w = $q(".send-wrap");
+  if (w) w.classList.toggle("review-open", isOpen("review"));
+}
+/* (Re)build an open section's body, refresh its status line and the footer. */
+function paintSection(key) {
+  const wrap = $q("#sec-wrap-" + key);
+  if (!wrap) return;
+  const head = wrap.querySelector(".acc-head");
+  const body = $q("#acc-body-" + key);
+  head.setAttribute("aria-expanded", String(isOpen(key)));
+  body.hidden = !isOpen(key);
+  if (isOpen(key)) {
+    body.innerHTML = "";
+    const note = restoreNote(key);
+    if (note) body.append(note);
+    if (key === "audience") renderStepAudience(body);
+    else if (key === "message") renderStepMessage(body);
+    else if (key === "delivery") renderStepDelivery(body);
+    else renderStepReview(body);
+  }
+  const st = statusFor(key);
+  const s = $q("#acc-status-" + key);
+  if (s) { s.textContent = st.text; s.className = "acc-status " + st.cls; }
+  updateFooterChrome();
+}
+function updateStatuses() {
+  for (const k of STEPS) {
+    const st = statusFor(k);
+    const s = $q("#acc-status-" + k);
+    if (s) { s.textContent = st.text; s.className = "acc-status " + st.cls; }
+  }
+  updateFooterChrome();
+}
+/* Targeted repaint: only the named sections (if open), statuses and footer. */
+function repaint(...keys) {
+  for (const k of new Set(keys)) if (STEPS.includes(k) && isOpen(k)) paintSection(k);
+  updateStatuses();
+}
+/* One-line status per section; block = the primary action cannot fire yet. */
+function statusFor(key) {
+  if (key === "audience") {
     const n = nPeople();
-    return [S.after === "review" ? "Back to Review" : "Continue to Message", !n, !n ? "Pick some contacts to continue" : ""];
+    if (!S.campaignId) return { text: "Pick a campaign to continue", cls: "block" };
+    if (!n) return { text: "Pick a list to continue", cls: "block" };
+    const q = data.quality;
+    let extra = "";
+    if (q) {
+      const bits = [];
+      if (q.missing) bits.push(fmtInt(q.missing) + " without an email");
+      if (q.dupes) bits.push(fmtInt(q.dupes) + " duplicate" + (q.dupes === 1 ? "" : "s"));
+      if (bits.length) extra = " · " + bits.join(" · ");
+    }
+    return { text: fmtInt(n) + (n === 1 ? " contact" : " contacts") + " · " + data.listName + extra, cls: (q && (q.missing || q.dupes)) ? "warn" : "ok" };
   }
-  if (step === "message") {
-    if (!S.templateId) return ["Continue to Delivery", true, "Pick a template to continue"];
+  if (key === "message") {
+    const t = data.templates.find((x) => x.id === S.templateId);
+    if (!t) return { text: "Pick a template to continue", cls: "block" };
     const bad = unmatchedFields();
-    if (bad.length) return ["Continue to Delivery", true, "Match '" + bad[0] + "' to continue"];
-    return ["Continue to Delivery", false, ""];
+    if (bad.length) return { text: "Match \u2018" + bad[0] + "\u2019 to continue", cls: "block" };
+    return { text: t.name + (data.fields.length ? " · all " + data.fields.length + " fields matched" : ""), cls: "ok" };
   }
-  if (step === "delivery") {
-    if (!S.account) return ["Continue to Review", true, "Pick a send account first"];
-    if (S.outcome === "schedule" && !S.when) return ["Continue to Review", true, "Pick a time to schedule"];
-    if (S.outcome === "send" && data.safe) return ["Continue to Review", true, "Safe mode is on - live sending is blocked"];
-    return ["Continue to Review", false, ""];
+  if (key === "delivery") {
+    if (!S.account) return { text: "Pick a send account to continue", cls: "block" };
+    if (S.outcome === "schedule") {
+      if (!S.when) return { text: "Pick a time to schedule", cls: "block" };
+      return { text: "Scheduled " + fmtLong(S.when) + (S.stagger ? " · " + S.stagger + " min apart" : ""), cls: "ok" };
+    }
+    if (S.outcome === "send") {
+      if (data.safe) return { text: "Safe mode is on - live sending is blocked", cls: "block" };
+      const pl = planNow();
+      return { text: "Send now" + (pl.capped ? " · " + fmtInt(pl.later) + " kept for later" : ""), cls: "ok" };
+    }
+    return { text: S.outcome === "draft" ? "Save as drafts (safest)" : "Keep in queue", cls: "ok" };
   }
-  return ["", false, ""];
+  return { text: data.preview_total ? "Ready to review" : "Checking\u2026", cls: "ok" };
 }
-function footerSummary() {
-  const n = nPeople();
-  if (S.step === "audience") return fmtInt(n) + " " + (n === 1 ? "person" : "people") + " · " + data.listName;
-  if (S.step === "message") return (data.templates.find((t) => t.id === S.templateId) || {}).name + " · " + fmtInt(n) + " " + (n === 1 ? "email" : "emails");
-  if (S.step === "delivery") return footerSummaryDelivery();
-  return "Checking\u2026";
+function firstBlocker() {
+  for (const k of ["audience", "message", "delivery"]) {
+    const st = statusFor(k);
+    if (st.cls === "block") return { sec: k, text: st.text };
+  }
+  return null;
 }
-function footerSummaryDelivery() {
-  const n = nPeople();
-  const pl = planNow();
-  const base = fmtInt(n) + " " + (n === 1 ? "email" : "emails") + " · " +
-    { draft: "as drafts", schedule: "scheduled", send: "sent now", queue: "queued" }[S.outcome];
-  return S.outcome === "send" && pl.capped ? base + " · " + fmtInt(pl.later) + " kept for later" : base;
-}
-function onContinue() {
-  const [label, disabled, reason] = gateFor(S.step);
-  if (disabled) return;
-  if (S.after === "review") { S.after = ""; go("review"); return; }
-  go(STEPS[STEPS.indexOf(S.step) + 1]);
-}
+
+/* Footer: one-line summary + one primary. The primary is always actionable:
+   it either names the first missing thing (and jumps there) or performs the
+   outcome (D-39 / D-12). */
 function footerBar() {
-  const back = S.step === "audience" ? el("span")
-    : el("button", { class: "btn btn-ghost", onclick: () => go(STEPS[STEPS.indexOf(S.step) - 1]) }, icon("chevron-left", "i i-14"), " Back");
-  const skip = (S.step === "audience" && allValid())
-    ? el("button", { class: "linklike", onclick: () => go("review") }, "Skip to review")
+  const blocker = firstBlocker();
+  const skip = !blocker
+    ? el("button", { class: "linklike", type: "button",
+        onclick: () => { if (!isOpen("review")) toggleSec("review"); $q("#sec-wrap-review").scrollIntoView({ block: "nearest" }); } },
+      "Skip to review")
     : el("span");
-  const [label, disabled, reason] = gateFor(S.step);
-  const primary = S.step === "review" ? primary3()
-    : el("button", { class: "btn btn-primary", onclick: onContinue }, S.after === "review" ? "Back to Review" : label);
-  if (S.step !== "review" && disabled) primary.disabled = true;
-  const sum = el("div", { class: "summary" },
-    el("span", {}, footerSummary()),
-    (S.step !== "review" && disabled && reason) ? el("span", { class: "foot-reason", role: "status" }, reason) : null);
-  return el("div", { class: "send-sticky-foot" }, back, skip, sum, primary);
+  const primary = blocker
+    ? el("button", { class: "btn btn-primary", onclick: jumpToBlocker }, blocker.text)
+    : primary3();
+  const sum = el("div", { class: "summary" }, el("span", {}, footerSummaryAll()));
+  return el("div", { class: "send-sticky-foot" }, sum, skip, primary);
+}
+function footerSummaryAll() {
+  const n = nPeople();
+  if (!n) return "Set up your send";
+  const t = (data.templates.find((x) => x.id === S.templateId) || {}).name || "no template";
+  const pl = planNow();
+  const outcome = S.outcome === "send" && pl.capped
+    ? "send now (" + fmtInt(pl.today) + " today)"
+    : { draft: "as drafts", schedule: "scheduled", send: "sent now", queue: "in queue" }[S.outcome];
+  return fmtInt(n) + " " + (n === 1 ? "email" : "emails") + " · " + t + " · " + outcome;
+}
+function jumpToBlocker() {
+  const b = firstBlocker();
+  if (!b) return;
+  if (!isOpen(b.sec)) { S.open.push(b.sec); touch(); paintSection(b.sec); }
+  syncWrapWide();
+  const w = $q("#sec-wrap-" + b.sec);
+  if (w) w.scrollIntoView({ block: "start", behavior: "smooth" });
+  const first = w && w.querySelector(".acc-body select, .acc-body input, .acc-body textarea, .acc-body .opt-card");
+  if (first && first.focus) first.focus({ preventScroll: true });
+}
+function changeLink(step) {
+  if (!STEPS.includes(step)) return;
+  if (!isOpen(step)) { S.open.push(step); touch(); paintSection(step); }
+  syncWrapWide();
+  const w = $q("#sec-wrap-" + step);
+  if (w) w.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 function updateFooterChrome() {
   const zone = $q(".send-sticky-zone");
   if (!zone) return;
-  const foot = $q(".send-sticky-foot");
-  if (foot) foot.replaceWith(footerBar());
+  zone.innerHTML = "";
+  zone.append(footerBar());
 }
 function allValid() {
   if (!nPeople()) return false;
@@ -409,56 +467,6 @@ function allValid() {
   return true;
 }
 
-/* ---------------- "Your send" rail ---------------- */
-function railFrom() { return (data.accounts.find((a) => a.id === S.account) || {}).email || "No account picked"; }
-function railTo() {
-  const n = nPeople();
-  return (S.contactIds.length ? fmtInt(S.contactIds.length) + " of " : "") + fmtInt(data.listCount) + " in " + data.listName;
-}
-function railTemplate() { return (data.templates.find((t) => t.id === S.templateId) || {}).name || "No template picked"; }
-function railDelivery() {
-  if (S.outcome === "draft") return "Drafts (safest)";
-  if (S.outcome === "queue") return "Keep in queue";
-  if (S.outcome === "send") return "Send now";
-  return S.when ? "Scheduled " + fmtLong(parseWhen(S.when).toISOString()) : "Scheduled - pick a time";
-}
-const RAIL_ROWS = [["send", "From", railFrom], ["users", "To", railTo], ["file-text", "Template", railTemplate], ["clock", "Delivery", railDelivery]];
-function railLine([ic, k, fn]) {
-  return el("div", { class: "rail-line" }, icon(ic, "i"),
-    el("span", { class: "rail-k" }, k),
-    el("span", { class: "rail-v", "data-rail": k }, fn()));
-}
-function rail() {
-  return el("aside", { class: "send-rail", "aria-label": "Your send" },
-    el("div", { class: "rail-card", id: "send-rail" },
-      el("div", { class: "rail-title" }, "Your send"),
-      ...RAIL_ROWS.map(railLine)));
-}
-function updateRail() {
-  const r = $q("#send-rail");
-  if (r) for (const [ic, k, fn] of RAIL_ROWS) { const v = r.querySelector('[data-rail="' + k + '"]'); if (v) v.textContent = fn(); }
-  const bar = $q("#rail-bar-text");
-  if (bar) bar.textContent = railTo() + " · " + railTemplate() + " · " + railDelivery();
-}
-function railBar() {
-  return el("button", { class: "rail-bar", type: "button", onclick: railSheet },
-    el("span", { class: "rail-bar-text", id: "rail-bar-text" }, railTo() + " · " + railTemplate() + " · " + railDelivery()),
-    icon("chevron-down", "i i-14"));
-}
-function railSheet() {
-  const m = modal({
-    title: "Your send",
-    body: el("div", {}, ...RAIL_ROWS.map(railLine)),
-    foot: [el("button", { class: "btn btn-ghost" }, "Close")],
-    onClose: () => {},
-  });
-  m.foot.querySelector(".btn-ghost").addEventListener("click", () => m.close());
-}
-
-window.addEventListener("popstate", () => {
-  const p = (new URLSearchParams(location.search).get("step") || "").toLowerCase();
-  if (STEPS.includes(p) && p !== S.step && S.visited.includes(p)) { S.step = p; S.after = ""; render(); }
-});
 document.addEventListener("keydown", (e) => {
   const t = e.target;
   if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -584,7 +592,7 @@ function listCompactCard() {
 }
 function changeList() {
   const total = data.sheets.length + 1;
-  if (total <= 3) { listEditing = true; render(); }
+  if (total <= 3) { listEditing = true; repaint("audience"); }
   else listPickModal();
 }
 function listRadioCards() {
@@ -611,7 +619,7 @@ function listRadioCards() {
     stack.append(mk(s.id, s.name, s.n_rows, s.headers || [], camp ? "List for " + camp.name : "Uploaded list"));
   }
   stack.append(mk(0, "All contacts", data.n_contacts, ["company", "hr_name", "hr_email"], "Every contact in your main list."));
-  stack.append(el("button", { class: "linklike", style: "align-self:flex-start", onclick: () => { listEditing = false; render(); } }, "Done"));
+  stack.append(el("button", { class: "linklike", style: "align-self:flex-start", onclick: () => { listEditing = false; repaint("audience"); } }, "Done"));
   return stack;
 }
 function listPickModal() {
@@ -683,7 +691,7 @@ function contactTools() {
         await selectList(d.sheet.id);
         await autoMatch();
         toast("List added: " + d.sheet.name + " (" + fmtInt(d.sheet.n_rows) + " rows).");
-        render();
+        repaint("audience");
       } catch (e) { toast(e.message, { type: "error" }); }
     });
   });
@@ -774,7 +782,7 @@ async function contactPicker() {
     S.contactIds = [...state.sel].sort((a, b) => a - b);
     touch();
     m.close();
-    render();
+    repaint("audience");
   });
   paint();
 }
@@ -878,7 +886,7 @@ function pickTemplate(id) {
   S.templateId = id;
   S.matchOpen = false;
   touch();
-  autoMatch().then(render);
+  autoMatch().then(() => repaint("message", "review"));
 }
 function tplCard(t, onPick) {
   const fields = Array.isArray(t.fields) ? t.fields : [];
@@ -1006,7 +1014,7 @@ function matchSection() {
   } else {
     wrap.append(el("div", { class: "match-note warn" }, icon("alert-triangle", "i i-16"),
       el("span", {}, unmatched.length + " " + (unmatched.length === 1 ? "field needs" : "fields need") + " your help: " + unmatched.map((f) => esc(f)).join(", ")),
-      el("button", { class: "linklike", onclick: () => { S.matchOpen = !S.matchOpen; touch(); render(); } }, S.matchOpen ? "Hide" : "Fix now")));
+      el("button", { class: "linklike", onclick: () => { S.matchOpen = !S.matchOpen; touch(); repaint("message"); } }, S.matchOpen ? "Hide" : "Fix now")));
     if (S.matchOpen) { const host = el("div", { id: "match-panel" }); buildMatchPanel(host); wrap.append(host); }
   }
   return wrap;
@@ -1122,7 +1130,7 @@ function accountSelect() {
     ...data.accounts.map((a) => el("option", { value: String(a.id) }, a.email || a.label)));
   if (!S.account && data.accounts.length) S.account = data.last_account_id || data.accounts[0].id;
   sel.value = String(S.account || "");
-  sel.addEventListener("change", () => { S.account = +sel.value; touch(); render(); });
+  sel.addEventListener("change", () => { S.account = +sel.value; touch(); repaint("delivery", "review"); });
   return el("div", {}, sel,
     el("div", { class: "field-help" }, data.accounts.length
       ? "The Gmail account that sends. Add more in Settings."
@@ -1236,7 +1244,7 @@ async function drawChecks() {
     push("ok", "check-circle-2", "No fill-in fields - every email is identical");
   }
   const fix = card.querySelector("#fix-match");
-  if (fix) fix.addEventListener("click", (e) => { e.preventDefault(); S.step = 1; S.matchOpen = true; touch(); render(); });
+  if (fix) fix.addEventListener("click", (e) => { e.preventDefault(); S.matchOpen = true; touch(); changeLink("message"); });
   const tbtn = el("button", { class: "btn btn-secondary", style: "width:100%;justify-content:center;margin-top:12px" },
     icon("send", "i i-14"), " Send me a test");
   card.append(tbtn);
@@ -1332,7 +1340,7 @@ function outcomeCards() {
       class: "opt-card" + (S.outcome === o.id ? " is-selected" : "") + (disabled ? " is-disabled" : ""),
       type: "button", disabled: disabled ? "" : null,
       title: disabled ? "Safe mode is on. Turn it off to send immediately." : "",
-      onclick: () => { if (!disabled) { S.outcome = o.id; touch(); render(); } },
+      onclick: () => { if (!disabled) { S.outcome = o.id; touch(); repaint("delivery", "review"); } },
     },
       el("span", { class: "opt-ico" }, icon(o.icon, "i i-18")),
       el("div", { style: "min-width:0;flex:1" },
@@ -1365,7 +1373,7 @@ function liveSendingModal() {
         data.safe = false;
         done = true; m.close();
         toast("Live sending is on.", { type: "success" });
-        render();
+        repaint("delivery", "review");
         resolve(true);
       } catch (e) { toast(e.message, { type: "error" }); done = true; m.close(); resolve(false); }
     }));
@@ -1383,18 +1391,17 @@ async function pickWhen() {
     });
     S.when = r.when;
     S.stagger = r.staggerMin || 0;
-    touch(); render();
+    touch(); repaint("delivery", "review");
   } catch (e) {
     if (e && e.message !== "cancelled") toast(e.message, { type: "error" });
   }
 }
 
 function whenBlock() {
-  const when = parseWhen(S.when);
   return el("div", { class: "card", style: "padding:14px 16px;margin-top:12px" },
     el("div", { style: "display:flex;align-items:center;gap:12px;flex-wrap:wrap" },
       icon("clock", "i i-16"),
-      el("span", { style: "font-weight:600" }, when ? fmtLong(when.toISOString()) : "Pick a time"),
+      el("span", { style: "font-weight:600" }, S.when ? fmtLong(S.when) : "Pick a time"),
       S.stagger ? el("span", { class: "t-caption t-faint" }, "spaced " + S.stagger + " min apart") : null,
       el("span", { class: "push" }),
       el("button", { class: "btn btn-ghost btn-sm", onclick: pickWhen }, when ? "Change" : "Choose time")));
@@ -1411,7 +1418,13 @@ function addOn(ico, title, stateFn, open, build) {
     el("span", { class: "chev" }, icon("chevron-down", "i i-14")));
   head.addEventListener("click", () => wrap.classList.toggle("open"));
   const body = el("div", { class: "addon-body" });
-  const commit = () => { touch(); head.querySelector(".addon-state").textContent = stateFn(); updateRail(); };
+  const commit = () => {
+    touch();
+    head.querySelector(".addon-state").textContent = stateFn();
+    updateStatuses();
+    const sc = $q("#summary-card");
+    if (sc && isOpen("review")) sc.replaceWith(summaryCard());
+  };
   body.append(build(commit));
   wrap.append(head, body);
   return wrap;
@@ -1493,11 +1506,7 @@ function followUpWrap() {
   return wrap;
 }
 
-function changeLink(step) {
-  S.after = "review";
-  touch();
-  go(step, { fromReview: true });
-}
+
 function summaryCard() {
   const camp = data.campaigns.find((c) => c.id === S.campaignId);
   const tpl = data.templates.find((t) => t.id === S.templateId);
@@ -1506,14 +1515,13 @@ function summaryCard() {
     el("span", { style: "flex:1;color:var(--text-2)" }, label),
     el("b", {}, val),
     el("button", { class: "linklike summary-change", onclick: () => changeLink(step) }, "Change"));
-  const when = parseWhen(S.when);
   const outcomeLabel = {
     draft: "Saved as Gmail drafts - nothing is sent",
-    schedule: S.when ? "Scheduled for " + fmtLong(when.toISOString()) + (S.stagger ? " \u00b7 spaced " + S.stagger + " min apart" : "") : "Scheduled (pick a time first)",
+    schedule: S.when ? "Scheduled for " + fmtLong(S.when) + (S.stagger ? " \u00b7 spaced " + S.stagger + " min apart" : "") : "Scheduled (pick a time first)",
     send: "Sent immediately, one after another",
     queue: "Kept in your email queue",
   }[S.outcome];
-  return el("div", { class: "summary-card", style: "margin-top:14px" },
+  return el("div", { class: "summary-card", id: "summary-card", style: "margin-top:14px" },
     el("h3", {}, "Summary"),
     L("users", "To", (S.contactIds.length ? fmtInt(S.contactIds.length) + " of " : "") + data.listName + (camp ? " \u00b7 " + camp.name : ""), "audience"),
     L("file-text", "Template", tpl ? tpl.name : "\u2014", "message"),
@@ -1574,7 +1582,7 @@ function confirmSendNow() {
 function confirmSchedule() {
   return new Promise((resolve) => {
     const n = data.preview_total || nPeople();
-    const when = S.when ? fmtLong(parseWhen(S.when).toISOString()) : "";
+    const when = S.when ? fmtLong(S.when) : "";
     let done = false;
     const m = modal({
       title: "Schedule " + fmtInt(n) + " " + (n === 1 ? "email" : "emails") + "?",
@@ -1700,7 +1708,7 @@ function successScreen(res) {
     sub = "Open your Drafts folder to review them - delete what you don't want, edit, or send from there.";
   } else if (S.outcome === "schedule") {
     title = (res.scheduled != null ? fmtInt(res.scheduled) : fmtInt(n)) + " " + ((res.scheduled ?? n) === 1 ? "email is" : "emails are") + " scheduled";
-    sub = "Goes out " + (S.when ? fmtLong(parseWhen(S.when).toISOString()) : "at the chosen time") +
+    sub = "Goes out " + (S.when ? fmtLong(S.when) : "at the chosen time") +
       (S.stagger ? ", spaced " + S.stagger + " minutes apart" : "") + ". You can reschedule or cancel until then.";
   } else if (S.outcome === "send") {
     const sent = res.sent != null ? res.sent : n;
