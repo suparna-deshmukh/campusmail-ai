@@ -1398,7 +1398,7 @@ function outcomeCards() {
   }
   for (const o of OUTCOMES) {
     const disabled = o.id === "send" && data.safe;
-    const pl = planDelivery({ outcome: o.id, n: nPeople(), cap: data.maxCap, sentToday: data.sentToday });
+    const pl = planDelivery({ outcome: o.id, n: effN(), cap: data.maxCap, sentToday: data.sentToday });
     const capLine = o.id === "send" ? sendCapSentence(pl) : o.id === "schedule" ? scheduleCapSentence(pl) : "";
     const b = el("button", {
       class: "opt-card" + (S.outcome === o.id ? " is-selected" : "") + (disabled ? " is-disabled" : ""),
@@ -1468,7 +1468,7 @@ function whenBlock() {
       el("span", { style: "font-weight:600" }, S.when ? fmtLong(S.when) : "Pick a time"),
       S.stagger ? el("span", { class: "t-caption t-faint" }, "spaced " + S.stagger + " min apart") : null,
       el("span", { class: "push" }),
-      el("button", { class: "btn btn-ghost btn-sm", onclick: pickWhen }, when ? "Change" : "Choose time")));
+      el("button", { class: "btn btn-ghost btn-sm", onclick: pickWhen }, S.when ? "Change" : "Choose time")));
 }
 
 const files = [];
