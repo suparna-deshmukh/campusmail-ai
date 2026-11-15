@@ -133,10 +133,9 @@ class CDP:
 def ev(cdp, expression):
     d = cdp.send("Runtime.evaluate",
                  {"expression": expression, "returnByValue": True, "awaitPromise": True})
-    r = d.get("result", {})
-    if r.get("exceptionDetails"):
-        raise AssertionError("page JS error: %s" % json.dumps(r["exceptionDetails"])[:400])
-    return r.get("value")
+    if d.get("exceptionDetails"):
+        raise AssertionError("page JS error: %s" % json.dumps(d["exceptionDetails"])[:400])
+    return d.get("result", {}).get("value")
 
 
 def _wait_for(cdp, selector, timeout=15.0):
@@ -506,8 +505,8 @@ def test_send_now_undo_window(cdp_session, tenant, mock_gmail):
     btn = ev(cdp, "!!document.querySelector('.modal-foot .btn-danger')")
     assert btn, "hold button expected for < 100 emails"
     ev(cdp, "document.querySelector('.modal-foot .btn-danger').dispatchEvent(new MouseEvent('mousedown'))")
-    time.sleep(2.4)
-    ev(cdp, "document.querySelector('.modal-foot .btn-danger').dispatchEvent(new MouseEvent('mouseup'))")
+    # the hold auto-fires after 2 s (a real user's late mouseup lands on a
+    # closed modal and is a no-op, so we do not dispatch it)
     # progress panel, then the undo countdown modal (a second modal replaces
     # the confirm one once the batch is held)
     deadline = time.time() + 15
@@ -687,3 +686,47 @@ def test_template_gallery_differentiators(cdp_session, tenant):
     time.sleep(0.4)
     ev(cdp, "document.querySelector('.modal .btn-ghost').click()")
     time.sleep(0.4)
+
+
+def test_unmatched_field_blocks_continue(cdp_session, tenant):
+    """Journey D: an unmapped field blocks Continue with the field named in
+    visible text, the stepper dot flags it, and fixing the mapping
+    unblocks."""
+    cdp = cdp_session["cdp"]
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    c = db.conn()
+    cur = c.execute("INSERT INTO email_templates(name, subject, body_html, kind, is_active, fields, created_at) "
+                    "VALUES('Odd Fields','Hi {company}','<p>Dear {hr_name}, code {oddcode}</p>','outreach',0,"
+                    "'[\"company\", \"oddcode\"]','%s')" % db.now_iso())
+    tid = cur.lastrowid
+    c.commit(); c.close()
+    ev(cdp, "localStorage.setItem('cm_send_1', JSON.stringify({schemaVersion: 8, campaignId: 1, listId: 0, templateId: %d, account: 1, mapping: {}, contactIds: [], outcome: 'draft', step: 'audience', visited: ['audience']}))" % tid)
+    ev(cdp, "location.href = '/campaigns/1/send?theme=dark'")
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    time.sleep(1.0)
+    # Audience is fine; Continue to Message is still offered...
+    ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').click()")
+    time.sleep(1.0)
+    assert _current_step(cdp) == "message"
+    # ...but on Message the primary is disabled and names the field
+    assert ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').disabled") is True
+    reason = ev(cdp, "document.querySelector('.send-sticky-foot .foot-reason').textContent")
+    assert reason == "Match \u2018oddcode\u2019 to continue", reason
+    # stepper dot flags the blocked step
+    assert "is-block" in ev(cdp, "document.querySelector('.send-steps .send-step:nth-child(2) .send-step-n').className")
+    # fixing the mapping unblocks (the match table is right here on this screen)
+    out = ev(cdp, """(() => {
+      const sel = document.querySelector('#sec-msg-match tr.is-unmatched select');
+      if (!sel) return 'noselect';
+      sel.value = 'company';
+      sel.dispatchEvent(new Event('change'));
+      return 'set';
+    })()""")
+    assert out == 'set', out
+    time.sleep(0.8)
+    # the section repainted itself and the block is gone
+    assert ev(cdp, "document.querySelector('#sec-msg-match').children.length") > 0, "match section repainted"
+    assert "All 2 fields matched" in ev(cdp, "document.querySelector('#sec-msg-match').textContent")
+    assert ev(cdp, "document.querySelectorAll('#sec-msg-match tr.is-unmatched').length") == 0
+    assert ev(cdp, "document.querySelector('.send-sticky-foot .foot-reason') === null") is True
+    assert ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').disabled") is False

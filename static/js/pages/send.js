@@ -1154,7 +1154,7 @@ function rebuildWithFocus(host, build) {
 }
 function paintMatchSection() {
   const host = $q("#sec-msg-match");
-  if (host) rebuildWithFocus(host, matchSection());
+  if (host) rebuildWithFocus(host, () => matchSection());
   updateFooterChrome();
 }
 function matchSection() {
