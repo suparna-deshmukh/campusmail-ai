@@ -691,7 +691,7 @@ function accountSelect() {
 }
 
 /* ================= Step 2: Check ================= */
-const previewHtmlEsc = (x) => String(x ?? "").replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">");
+const previewHtmlEsc = (x) => String(x ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 function previewDoc(p, fills) {
   const fillsJson = JSON.stringify(fills).replace(/</g, "\\u003c");
@@ -710,7 +710,7 @@ function previewDoc(p, fills) {
     localToUrl(p.body) +
     "<script>" +
     "var fills=" + fillsJson + ";" +
-    "function esc(s){return String(s).replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>')}" +
+    "function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}" +
     "function walk(n){" +
     "if(n.nodeType===3){var t=n.nodeValue,ch=false;" +
     "for(var i=0;i<fills.length;i++){var v=fills[i];if(v&&t.indexOf(v)>=0){t=t.split(v).join('<span class=cm-fill>'+esc(v)+'</span>');ch=true;}}" +
