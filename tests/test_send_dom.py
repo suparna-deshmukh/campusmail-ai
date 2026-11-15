@@ -22,6 +22,7 @@ import urllib.request
 import pytest
 
 import app as appmod  # noqa: E402
+import db  # noqa: E402
 
 ADMIN = "admin@test.dev"
 
@@ -387,3 +388,51 @@ def test_hold_to_confirm_renders_single_label(cdp_session):
     assert out["confirmed"] == 1, "hold never fired (rAF throttled?)"
     assert "holding" in out["during"].lower() and "%" in out["during"]
     assert out["after"] == "Hold to send 5"
+
+
+def test_duplicate_skip_default_on(cdp_session, tenant):
+    """8.2: duplicates are skipped by default (keep first), the toggle is
+    visible on Audience and in the Review checks, and the counts follow it."""
+    cdp = cdp_session["cdp"]
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    assert ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').textContent") == "Create 12 drafts"
+    # add two duplicate rows: rec1 (same company) and rec2 (different company)
+    c = db.conn()
+    for serial, email, company in (("13", "rec1@example.com", "Company1"),
+                                   ("14", "rec2@example.com", "OtherCo")):
+        c.execute("INSERT INTO contacts(serial, company, hr_name, hr_email, status, sheet_id, created_at) "
+                  "VALUES(?, ?, ?, ?, 'new', 1, '%s')" % db.now_iso(),
+                  (serial, company, "Dup" + serial, email))
+    c.commit(); c.close()
+    ev(cdp, "location.href = '/campaigns/1/send?theme=dark'")
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    time.sleep(0.6)
+    # footer counts the effective audience (14 - 2 dupes)
+    assert ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').textContent") == "Create 12 drafts"
+    # audience quality line: dupes named + toggle ON by default
+    _open_section(cdp, "audience")
+    q = ev(cdp, "document.querySelector('#sec-aud-quality').textContent")
+    assert "2 duplicate emails" in q, q
+    assert ev(cdp, "document.querySelector('#sec-aud-quality input[type=checkbox]').checked") is True
+    # review: ok line + Skipped summary row
+    _open_section(cdp, "review")
+    _wait_for(cdp, "#send-root .summary-card")
+    _wait_checks(cdp)
+    t = ev(cdp, "document.querySelector('#checks-card').textContent")
+    assert "will be skipped (keep first)" in t, t
+    assert "2+ companies" in t, t
+    summ = ev(cdp, "document.querySelector('#summary-card').textContent")
+    assert "Skipped" in summ and "2 duplicates" in summ, summ
+    # turn skipping off: counts go back, warning line appears
+    ev(cdp, "document.querySelector('#sec-aud-quality input[type=checkbox]').click()")
+    time.sleep(0.8)
+    assert ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').textContent") == "Create 14 drafts"
+    t = ev(cdp, "document.querySelector('#checks-card').textContent")
+    assert "each one still gets an email" in t, t
+    assert "Skipped" not in ev(cdp, "document.querySelector('#summary-card').textContent")
+    # view duplicates modal
+    ev(cdp, "document.querySelector('#view-dupes').click()")
+    _wait_for(cdp, ".modal .match-table")
+    assert ev(cdp, "document.querySelectorAll('.modal .match-table tbody tr').length") == 2
+    assert "different companies!" in ev(cdp, "document.querySelector('.modal').textContent")
+    ev(cdp, "document.querySelector('.modal .btn-ghost').click()")

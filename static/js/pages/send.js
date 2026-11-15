@@ -11,6 +11,7 @@ import {
 import { fmtInt, fmtLong, fmtDayTime, toBackend, parseWhen, localToUrl } from "/static/js/core/format.js";
 import { openTimePicker } from "/static/js/components/timepicker.js";
 import { planDelivery, sendCapSentence, scheduleCapSentence } from "/static/js/core/send-plan.js";
+import { dedupeRows, keepFirstIds } from "/static/js/core/dedupe.js";
 
 const START_CID = window.send_campaign_id || 0;
 const root = document.getElementById("send-root");
@@ -45,6 +46,7 @@ const S = {
   when: "",
   stagger: 0,
   outcome: "draft",      // draft | schedule | send | queue
+  skipDupes: true,       // 8.2: skip duplicate emails, keep first
   touched: false,        // set by real user actions; plain visits save nothing
 };
 const K = () => "cm_send_" + (S.campaignId || "global");
@@ -81,7 +83,7 @@ function migrateSaved(raw) {
     if (typeof out[k] !== "number" || !isFinite(out[k])) out[k] = 0;
   for (const k of ["when", "cc"]) if (typeof out[k] !== "string") out[k] = "";
   if (typeof out.append_signature !== "boolean") out.append_signature = true;
-  out.after = "";
+  if (typeof out.skipDupes !== "boolean") out.skipDupes = true;
   return out;
 }
 function restoreRaw() {
@@ -99,6 +101,7 @@ const data = {
   allRows: null,         // all contacts (id/serial/company/hr_name/hr_email)
   quality: null,         // {n, missing, dupes} for the current audience
   qualityFor: "",     // audience key the quality result belongs to
+  dedupe: null,        // {dupes, crossCompany, groups, keepIds}
   last_error: "",
   meEmail: "", defaultStagger: 0, maxCap: 0, sentToday: 0,
   restoreNotes: [],      // {step, text} one-line notices for stale saved ids
@@ -107,7 +110,19 @@ let listEditing = false; // transient: show the radio stack for list picking
 
 const $q = (sel, r = root) => r.querySelector(sel);
 const nPeople = () => (S.contactIds.length || data.listCount || 0);
-const planNow = () => planDelivery({ outcome: S.outcome, n: data.preview_total || nPeople(), cap: data.maxCap, sentToday: data.sentToday });
+/* Audience count after duplicate skipping (8.2): what will actually go out.
+   Base is nPeople() (unfiltered); preview_total already reflects the
+   filtered audience once previews have loaded, so never subtract twice. */
+const effN = () => {
+  const n = nPeople();
+  return (S.skipDupes && data.dedupe && data.dedupe.dupes) ? Math.max(0, n - data.dedupe.dupes) : n;
+};
+/* Contact ids that will actually be sent (skip duplicates -> keep first). */
+function effContactIds() {
+  if (S.skipDupes && data.dedupe && data.dedupe.dupes) return [...data.dedupe.keepIds];
+  return S.contactIds.length ? [...S.contactIds] : undefined;
+}
+const planNow = () => planDelivery({ outcome: S.outcome, n: effN(), cap: data.maxCap, sentToday: data.sentToday });
 const unmatchedFields = () => data.fields.filter((f) => !S.mapping[f]);
 
 /* ---------------- load ---------------- */
@@ -177,6 +192,7 @@ async function load() {
   // Always resolve field mapping on load (the "no fields mapped -> 2 mapped"
   // mismatch came from skipping this on first visit).
   await autoMatch();
+  await refreshQuality(); // footer counts and section statuses need it up front
   if (!saved) S.open = allValid() ? [] : [firstBlocker().sec];
   const cu = new URL(location.href); cu.searchParams.delete("step");
   history.replaceState(null, "", cu.toString());
@@ -229,15 +245,9 @@ async function refreshQuality() {
   if (data.qualityFor === key && data.quality) { paintQuality(); return; }
   const rows = await checkRows();
   const missing = rows.filter((r) => !(r.hr_email || "").trim()).length;
-  const seen = new Set();
-  let dupes = 0;
-  for (const r of rows) {
-    const e = String(r.hr_email || "").trim().toLowerCase();
-    if (!e) continue;
-    if (seen.has(e)) dupes++;
-    seen.add(e);
-  }
-  data.quality = { n: rows.length, missing, dupes };
+  const dd = dedupeRows(rows);
+  data.quality = { n: rows.length, missing, dupes: dd.dupes };
+  data.dedupe = { dupes: dd.dupes, crossCompany: dd.crossCompany, groups: dd.groups, keepIds: keepFirstIds(rows) };
   data.qualityFor = key;
   paintQuality();
 }
@@ -425,7 +435,7 @@ function footerBar() {
   return el("div", { class: "send-sticky-foot" }, sum, skip, primary);
 }
 function footerSummaryAll() {
-  const n = nPeople();
+  const n = effN();
   if (!n) return "Set up your send";
   const t = (data.templates.find((x) => x.id === S.templateId) || {}).name || "no template";
   const pl = planNow();
@@ -711,6 +721,20 @@ function qualityLine() {
   }
   wrap.append(el("span", {}, parts.join(", ")));
   if (data.quality) wrap.append(el("button", { class: "linklike", onclick: () => contactPicker() }, "Review"));
+  if (data.quality && data.quality.dupes) {
+    const cb = el("input", { type: "checkbox", "aria-label": "Skip duplicate emails",
+      style: "width:15px;height:15px;accent-color:var(--primary-500);margin-left:10px" });
+    cb.checked = S.skipDupes;
+    cb.addEventListener("change", () => {
+      S.skipDupes = cb.checked; touch();
+      updateStatuses();
+      const sc = $q("#summary-card");
+      if (sc && isOpen("review")) sc.replaceWith(summaryCard());
+      if (isOpen("review")) drawChecks();
+    });
+    wrap.append(el("label", { style: "display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:550;cursor:pointer" },
+      cb, "Skip duplicates (keep first)"));
+  }
   return wrap;
 }
 
@@ -1208,7 +1232,7 @@ async function drawChecks() {
   if (!card) return;
   card.querySelectorAll(".check-line, .btn").forEach((n) => n.remove());
   const rows = await checkRows();
-  const total = data.preview_total || rows.length;
+  const total = effN();
   const push = (cls, ic, html) => card.append(el("div", { class: "check-line " + cls }, icon(ic, "i i-16"), el("span", { html })));
   if (!total) {
     push("warn", "alert-triangle", "This selection has no recipients yet.");
@@ -1218,14 +1242,19 @@ async function drawChecks() {
   const missing = rows.filter((r) => !(r.hr_email || "").trim()).length;
   if (missing) push("warn", "alert-triangle", "<b>" + fmtInt(missing) + "</b> row" + (missing === 1 ? " has" : "s have") + " no email address - they'll be skipped");
   else push("ok", "check-circle-2", "Every row has an email address");
-  const seen = new Set(); let dupes = 0;
-  for (const r of rows) {
-    const e = String(r.hr_email || "").trim().toLowerCase();
-    if (!e) continue;
-    if (seen.has(e)) dupes++;
-    seen.add(e);
+  const dd = data.dedupe || dedupeRows(rows);
+  const dupNote = fmtInt(dd.dupes) + " duplicate email" + (dd.dupes === 1 ? "" : "s");
+  if (dd.dupes) {
+    if (S.skipDupes) {
+      push("ok", "check-circle-2", dupNote + " will be skipped (keep first)" +
+        (dd.crossCompany ? " - " + fmtInt(dd.crossCompany) + " shared by 2+ companies" : "") +
+        " - <a class='linklike' id='view-dupes'>view</a>");
+    } else {
+      push("warn", "alert-triangle", dupNote + " - each one still gets an email" +
+        (dd.crossCompany ? " (" + fmtInt(dd.crossCompany) + " shared by 2+ companies)" : "") +
+        " - <a class='linklike' id='skip-dupes'>skip duplicates</a> · <a class='linklike' id='view-dupes'>view</a>");
+    }
   }
-  if (dupes) push("warn", "alert-triangle", "<b>" + fmtInt(dupes) + "</b> duplicate email" + (dupes === 1 ? "" : "s") + " - each one still gets an email");
   const blanks = [];
   for (const f of data.fields) {
     const m = S.mapping[f];
@@ -1245,6 +1274,16 @@ async function drawChecks() {
   }
   const fix = card.querySelector("#fix-match");
   if (fix) fix.addEventListener("click", (e) => { e.preventDefault(); S.matchOpen = true; touch(); changeLink("message"); });
+  const sd = card.querySelector("#skip-dupes");
+  if (sd) sd.addEventListener("click", (e) => {
+    e.preventDefault();
+    S.skipDupes = true; touch();
+    syncDupesToggle(); drawChecks(); updateStatuses();
+    const sc = $q("#summary-card");
+    if (sc) sc.replaceWith(summaryCard());
+  });
+  const vd = card.querySelector("#view-dupes");
+  if (vd) vd.addEventListener("click", (e) => { e.preventDefault(); viewDuplicates(); });
   const tbtn = el("button", { class: "btn btn-secondary", style: "width:100%;justify-content:center;margin-top:12px" },
     icon("send", "i i-14"), " Send me a test");
   card.append(tbtn);
@@ -1260,6 +1299,30 @@ async function drawChecks() {
         : "Test sent to " + data.meEmail + " - check your inbox.", { type: "success", duration: 8000 });
     } catch (e) { toast(e.message, { type: "error" }); }
   }));
+}
+
+function syncDupesToggle() {
+  const cb = $q("#sec-aud-quality input[type=checkbox]");
+  if (cb) cb.checked = S.skipDupes;
+}
+function viewDuplicates() {
+  const dd = data.dedupe;
+  if (!dd || !dd.dupes) { toast("No duplicate emails in this selection."); return; }
+  const bodyRows = dd.groups.map((g) => {
+    const comp = g.companies.length > 1 ? g.companies.map(esc).join(", ") + " (different companies!)"
+      : (g.companies.length ? esc(g.companies[0]) : "—");
+    return "<tr><td>" + esc(g.email) + "</td><td>" + g.count + "</td><td>" + comp + "</td><td>first in list</td></tr>";
+  }).join("");
+  const m = modal({
+    title: fmtInt(dd.dupes) + " duplicate email" + (dd.dupes === 1 ? "" : "s") + (S.skipDupes ? " - will be skipped" : ""),
+    sub: "Only the first row for each address goes out." + (dd.crossCompany ? " " + fmtInt(dd.crossCompany) + " address" + (dd.crossCompany === 1 ? " appears" : "es appear") + " under more than one company." : ""),
+    body: el("div", { style: "max-height:340px;overflow:auto" },
+      el("table", { class: "match-table" },
+        el("tr", {}, el("th", {}, "Email"), el("th", {}, "Times"), el("th", {}, "Company"), el("th", {}, "Kept")),
+        el("tbody", { html: bodyRows }))),
+    foot: [el("button", { class: "btn btn-ghost" }, "Close")],
+  });
+  m.foot.querySelector(".btn-ghost").addEventListener("click", () => m.close());
 }
 
 function renderStepReview(panel) {
@@ -1281,7 +1344,7 @@ function renderStepReview(panel) {
       const [d] = await Promise.all([
         api("/api/merge/preview", { body: {
           template_id: S.templateId, mapping: S.mapping, sheet_id: S.listId,
-          contact_ids: S.contactIds,
+          contact_ids: effContactIds(),
           limit: 8, append_signature: S.append_signature ? 1 : 0,
         } }),
         audienceRows(),
@@ -1381,7 +1444,7 @@ function liveSendingModal() {
 }
 
 async function pickWhen() {
-  const count = Math.max(1, data.preview_total || nPeople() || 1);
+  const count = Math.max(1, effN());
   try {
     const r = await openTimePicker({
       count,
@@ -1528,6 +1591,7 @@ function summaryCard() {
     L("send", "From", (data.accounts.find((a) => a.id === S.account) || {}).email || "No account picked", "delivery"),
     S.append_signature ? L("pencil", "Signature", "appended", "message") : null,
     S.cc.trim() ? L("mail", "CC", S.cc.trim(), "message") : null,
+    (S.skipDupes && data.dedupe && data.dedupe.dupes) ? L("copy", "Skipped", fmtInt(data.dedupe.dupes) + " duplicates (keep first)", "audience") : null,
     S.reminder_days > 0 ? L("bell", "Follow-up", "every " + S.reminder_days + " day(s), up to " + S.reminder_max + "\u00d7", "delivery") : null,
     files.length ? L("paperclip", "Attachments", fmtInt(files.length) + " file" + (files.length === 1 ? "" : "s"), "message") : null,
     el("div", { class: "summary-outcome" }, outcomeLabel,
@@ -1540,7 +1604,7 @@ function accountEmail() {
 }
 
 function primary3() {
-  const n = data.preview_total || nPeople();
+  const n = effN();
   const pl = planNow();
   const label = {
     draft: "Create " + fmtInt(n) + " drafts",
@@ -1616,7 +1680,7 @@ function genBody(action) {
     mapping: S.mapping,
     campaign_id: S.campaignId,
     sheet_id: S.listId,
-    contact_ids: S.contactIds.length ? S.contactIds : undefined,
+    contact_ids: effContactIds(),
     account_id: S.account,
     action,
     at: S.when,
@@ -1635,7 +1699,7 @@ async function startCreate() {
     if (S.outcome === "queue" || !files.length) {
       result = await api("/api/merge/generate", { body: genBody(S.outcome) });
       batchId = result.batch_id;
-      prog.done(prog.add("Creating " + fmtInt(nPeople()) + " emails…"),
+      prog.done(prog.add("Creating " + fmtInt(effN()) + " emails…"),
         "Batch created - " + fmtInt(result.created) + " " + (result.created === 1 ? "email" : "emails") +
         (S.outcome === "queue" ? " queued" : " " + outcomeDoneText(result)));
     } else {
@@ -1719,10 +1783,12 @@ function successScreen(res) {
     title = fmtInt(res.created != null ? res.created : n) + " " + ((res.created ?? n) === 1 ? "email is" : "emails are") + " in your queue";
     sub = "They're waiting in the campaign's email list. Send or schedule them whenever you're ready.";
   }
+  if (S.skipDupes && data.dedupe && data.dedupe.dupes)
+    sub += " Skipped " + fmtInt(data.dedupe.dupes) + " duplicate email" + (data.dedupe.dupes === 1 ? "" : "s") + " (keep first).";
   const cid = S.campaignId || 0;
   root.innerHTML = "";
   root.append(el("div", { class: "send-success" },
-    el("div", { class: "empty-illust" }, `<svg viewBox="0 0 96 96" width="96" height="96" aria-hidden="true"><circle cx="48" cy="48" r="26" fill="var(--success-bg)" stroke="none"/><path d="M36 49l9 9 17-19" fill="none" stroke="var(--success)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`),
+    successIllustration(),
     el("div", { class: "ss-title" }, title),
     el("p", { class: "ss-sub" }, sub),
     failed ? el("div", { class: "banner banner-warn", style: "text-align:left;max-width:560px" },
