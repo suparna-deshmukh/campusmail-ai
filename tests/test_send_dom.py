@@ -730,3 +730,43 @@ def test_unmatched_field_blocks_continue(cdp_session, tenant):
     assert ev(cdp, "document.querySelectorAll('#sec-msg-match tr.is-unmatched').length") == 0
     assert ev(cdp, "document.querySelector('.send-sticky-foot .foot-reason') === null") is True
     assert ev(cdp, "document.querySelector('.send-sticky-foot .btn-primary').disabled") is False
+def test_step_content_is_visible(cdp_session):
+    """D-45: the step body must actually be painted. The old accordion CSS
+    (settings.css: .acc-body { display: none }) leaked into the 4-step
+    layout and hid every step's content while DOM-level checks still passed."""
+    cdp = cdp_session["cdp"]
+    _wait_for(cdp, "#send-root .send-sticky-foot")
+    for step in ("audience", "message", "delivery"):
+        _open_section(cdp, step)
+        assert _current_step(cdp) == step
+    _open_section(cdp, "review")
+    for step in ("audience", "message", "delivery", "review"):
+        if _current_step(cdp) != step:
+            _open_section(cdp, step)
+        ok = ev(cdp, """(() => {
+          const a = document.querySelector('#acc-body-' + arguments[0]);
+          return a ? getComputedStyle(a).display : 'missing';
+        })()""".replace("arguments[0]", '"%s"' % step))
+        assert ok == "block", "step %r body display=%r" % (step, ok)
+        vis = ev(cdp, """(() => {
+          const a = document.querySelector('#acc-body-' + "%s");
+          if (!a) return -1;
+          const els = Array.from(a.querySelectorAll("button, input, select, .opt-card, .list-card, .tpl-main"));
+          return els.filter(x => x.offsetParent !== null).length;
+        })()""" % step)
+        assert vis > 0, "step %r has no visible controls" % step
+    # and the keyboard reaches the step content (focus boundary check)
+    ev(cdp, "document.getElementById('send-root').setAttribute('tabindex', '-1')")
+    ev(cdp, "document.getElementById('send-root').focus()")
+    time.sleep(0.3)
+    reached = []
+    for _ in range(60):
+        cdp.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Tab", "code": "Tab", "windowsVirtualKeyCode": 9})
+        cdp.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Tab", "code": "Tab", "windowsVirtualKeyCode": 9})
+        reached.append(ev(cdp, """(() => {
+          const a = document.activeElement;
+          return document.querySelector('#acc-body-review') && document.querySelector('#acc-body-review').contains(a) ? 'content' : a.tagName;
+        })()"""))
+        if "content" in reached:
+            break
+    assert "content" in reached, "Tab never reaches the review step content: %r" % reached

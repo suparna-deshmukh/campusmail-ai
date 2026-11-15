@@ -79,6 +79,10 @@
 .acc-chev { color: var(--text-3); flex: none; transition: transform var(--t-fast) var(--ease); }
 .acc-head[aria-expanded="true"] .acc-chev { transform: rotate(180deg); }
 .acc-body { padding: 2px 16px 16px; border-top: 1px solid var(--border); }
+/* settings.css globally sets .acc-body { display: none } (accordion pattern).
+   The 4-step layout has no .acc-item wrapper, so re-assert visibility here
+   with a higher-specificity selector (D-45). */
+.acc-body.step-body { display: block; }
 .acc-body[hidden] { display: none; }
 .acc-body .step-sec:last-of-type { margin-bottom: 0; }
 
