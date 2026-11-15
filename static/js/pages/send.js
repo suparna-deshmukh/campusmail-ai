@@ -62,6 +62,10 @@ function save() {
   } catch { /* private mode */ }
 }
 function touch() { S.touched = true; save(); }
+/* Focus restore across full step repaints (8.7): the arrow-key radio
+   navigation sets this before re-rendering; paintStage() focuses the node
+   carrying data-focus-key = value at the end. */
+let pendingFocusKey = null;
 function clearDraftKey() { try { localStorage.removeItem(K()); } catch { /* private mode */ } }
 
 /* Migrate any saved draft (schema 1/2/3 or corrupt) onto the 4-step shape.
@@ -418,6 +422,11 @@ function paintStage() {
   paintStepper();
   paintRail();
   updateFooterChrome();
+  if (pendingFocusKey) {
+    const nf = stage.querySelector('[data-focus-key="' + pendingFocusKey + '"]');
+    if (nf) nf.focus();
+    pendingFocusKey = null;
+  }
 }
 function showStep(key, opts = {}) {
   if (!STEPS.includes(key)) return;
@@ -697,12 +706,44 @@ function listCompactCard() {
         ...li.columns.slice(0, 4).map((h) => el("code", { class: "mono-chip" }, h)),
         li.columns.length > 4 ? el("code", { class: "mono-chip" }, "+" + (li.columns.length - 4)) : null,
         data.quality && data.quality.missing ? el("span", { class: "list-warn" }, fmtInt(data.quality.missing) + " rows have no email") : null)),
-    el("button", { class: "btn btn-secondary btn-sm", onclick: changeList }, "Change list"));
+    el("button", { class: "btn btn-secondary btn-sm", "data-focus-key": "audience-change-list", onclick: changeList }, "Change list"));
 }
 function changeList() {
   const total = data.sheets.length + 1;
   if (total <= 3) { listEditing = true; repaint("audience"); }
   else listPickModal();
+}
+/* WAI-ARIA radio pattern for the opt-card groups (8.9): the container is a
+   radiogroup, each card is a radio with a roving tabindex, and the arrow
+   keys move the selection. The cards are real <button>s, so click, Enter
+   and Space keep working as they do for mouse users. */
+function radioGroup(container, label, groupId, onPick) {
+  container.setAttribute("role", "radiogroup");
+  container.setAttribute("aria-label", label);
+  const cards = () => [...container.querySelectorAll("button.opt-card:not(:disabled)")];
+  const sync = () => {
+    let marked = false;
+    for (const c of cards()) {
+      const sel = c.classList.contains("is-selected");
+      c.setAttribute("role", "radio");
+      c.setAttribute("aria-checked", sel ? "true" : "false");
+      if (sel && !marked) { c.tabIndex = 0; c.dataset.focusKey = "rg-" + groupId; marked = true; }
+      else c.tabIndex = -1;
+    }
+    if (!marked) { const c0 = cards()[0]; if (c0) c0.tabIndex = 0; }
+  };
+  container.addEventListener("keydown", (e) => {
+    if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+    const list = cards();
+    if (!list.length) return;
+    e.preventDefault();
+    const i = list.indexOf(document.activeElement);
+    const d = (e.key === "ArrowDown" || e.key === "ArrowRight") ? 1 : -1;
+    const next = list[(Math.max(i, 0) + d + list.length) % list.length];
+    pendingFocusKey = "rg-" + groupId;
+    if (onPick) onPick(next);
+  });
+  sync();
 }
 function listRadioCards() {
   const stack = el("div", { class: "opt-stack" });
@@ -728,6 +769,7 @@ function listRadioCards() {
     stack.append(mk(s.id, s.name, s.n_rows, s.headers || [], camp ? "List for " + camp.name : "Uploaded list"));
   }
   stack.append(mk(0, "All contacts", data.n_contacts, ["company", "hr_name", "hr_email"], "Every contact in your main list."));
+  radioGroup(stack, "Choose who to email", "list", (c) => { pendingFocusKey = "audience-change-list"; c.click(); });
   stack.append(el("button", { class: "linklike", style: "align-self:flex-start", onclick: () => { listEditing = false; repaint("audience"); } }, "Done"));
   return stack;
 }
@@ -998,10 +1040,14 @@ function templateGallery() {
     sub: "Pick the message every person gets.",
     wide: true,
     body: el("div", {},
-      data.templates.length
-        ? el("div", { class: "opt-stack" }, ...data.templates.map((t) => tplCard(t, () => { pickTemplate(t.id); m.close(); })))
-        : el("div", { class: "banner banner-info" }, icon("info", "i i-16"),
-            el("span", {}, "No templates yet. Write one with AI or upload an HTML file.")),
+      (() => {
+        const stack = data.templates.length
+          ? el("div", { class: "opt-stack" }, ...data.templates.map((t) => tplCard(t, () => { pickTemplate(t.id); m.close(); })))
+          : el("div", { class: "banner banner-info" }, icon("info", "i i-16"),
+              el("span", {}, "No templates yet. Write one with AI or upload an HTML file."));
+        if (data.templates.length) radioGroup(stack, "Choose a template", "template", (c) => c.click());
+        return stack;
+      })(),
       uploadAiRow()),
     foot: [el("button", { class: "btn btn-ghost" }, "Cancel")],
     onClose: () => {},
@@ -1716,6 +1762,7 @@ function outcomeCards() {
       el("span", { class: "opt-radio" }));
     stack.append(b);
   }
+  radioGroup(stack, "What happens next", "outcome", (c) => c.click());
   return stack;
 }
 

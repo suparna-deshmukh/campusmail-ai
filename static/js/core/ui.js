@@ -310,6 +310,7 @@ window.addEventListener("pagehide", () => {
 });
 
 /* ---------------- Hold-to-confirm button ---------------- */
+const RM_MQL = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
 export function holdToConfirm(button, { onConfirm, duration = 1200, label = "Hold to confirm" }) {
   let raf = null, start = 0, active = false;
   // Single label: replace whatever the button already contains - callers
@@ -324,7 +325,7 @@ export function holdToConfirm(button, { onConfirm, duration = 1200, label = "Hol
   const step = (ts) => {
     if (!active) return;
     const p = Math.min(1, (ts - start) / duration);
-    fill.style.transform = `scaleX(${p})`;
+    if (!RM_MQL.matches) fill.style.transform = `scaleX(${p})`;
     setLabel("Keep holding… " + Math.round(p * 100) + "%");
     if (p >= 1) { stop(true); return; }
     raf = requestAnimationFrame(step);
