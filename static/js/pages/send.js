@@ -943,6 +943,7 @@ async function pickWhen() {
       count,
       defaultStaggerMin: S.stagger || data.defaultStagger || 0,
       initial: S.when ? parseWhen(S.when) : null,
+      dailyCap: data.maxCap,
     });
     S.when = r.when;
     S.stagger = r.staggerMin || 0;

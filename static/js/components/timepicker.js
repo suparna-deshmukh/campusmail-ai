@@ -12,9 +12,18 @@ function nextMonday(from) {
   return d;
 }
 
-export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = null, title = "When should it go?" } = {}) {
+export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = null, title = "When should it go?", dailyCap = null } = {}) {
   const now = new Date();
-  let d = initial ? new Date(initial) : new Date(now.getTime() + 3600e3);
+  let d;
+  if (initial) {
+    d = new Date(initial);
+  } else {
+    // Default: an hour ahead, snapped to a real 15-minute slot so the time
+    // select is never left empty or mismatched (D-27).
+    d = new Date(now.getTime() + 3600e3);
+    d.setSeconds(0, 0);
+    d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15);
+  }
 
   // quick chips — only the ones still in the future
   const chipDefs = [
@@ -24,7 +33,7 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
     { label: "Tomorrow 10:00", at: () => { const x = new Date(); x.setDate(x.getDate() + 1); x.setHours(10, 0, 0, 0); return x; } },
     { label: "Monday 09:00", at: () => { const x = nextMonday(now); x.setHours(9, 0, 0, 0); return x; } },
     { label: "Next week", at: () => { const x = nextMonday(nextMonday(now)); x.setHours(9, 0, 0, 0); return x; } },
-  ].filter((c) => c.at() > now + 10 * 60e3);
+  ].filter((c) => c.at().getTime() > now.getTime() + 10 * 60e3);
 
   const dateIn = el("input", { type: "date", class: "input", "aria-label": "Date" });
   const timeSel = el("select", { class: "select", "aria-label": "Time" });
@@ -75,7 +84,7 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
   const limitLine = el("div", { class: "field-error", style: "display:none" },
     icon("alert-triangle"), el("span", {}, "limit-text"));
   const goBtn = el("button", { class: "btn btn-primary" }, "Choose time");
-  let dailyCap = 0;
+  let capToday = Number(dailyCap) || 0;
 
   function isPast() { return d <= new Date(Date.now() + 5 * 60e3); }
 
@@ -97,9 +106,9 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
       : gap === 0
         ? fmtInt(n) + " emails all at once at " + fmtTime(toBackend(d)) + "."
         : fmtInt(n) + " emails, one every " + gap + " " + (gap === 1 ? "minute" : "minutes") + ". First at " + fmtTime(toBackend(d)) + ", last at " + fmtTime(toBackend(last)) + ".";
-    if (dailyCap > 0 && n > dailyCap) {
+    if (capToday > 0 && n > capToday) {
       limitLine.style.display = "";
-      limitLine.querySelector("span").textContent = "Your daily limit is " + fmtInt(dailyCap) + ". This send puts " + fmtInt(n) + " on one day. ";
+      limitLine.querySelector("span").textContent = "Your daily limit is " + fmtInt(capToday) + ". This send puts " + fmtInt(n) + " on one day. ";
       const a = el("a", { href: "/settings", style: "font-weight:650" }, "Change limit");
       limitLine.append(a);
     } else {
@@ -148,8 +157,8 @@ export function openTimePicker({ count = 1, defaultStaggerMin = 0, initial = nul
       m.close();
       settle({ when: toBackend(d), staggerMin: staggerMin() });
     });
-    api("/api/state").then((s2) => {
-      dailyCap = Number((s2.settings && s2.settings.max_sends_per_day) || 0);
+    if (!capToday) api("/api/state").then((s2) => {
+      capToday = Number((s2.settings && s2.settings.max_sends_per_day) || 0);
       if (!m.box.isConnected) return;
       refresh();
     }).catch(() => {});
