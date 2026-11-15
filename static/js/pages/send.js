@@ -837,11 +837,14 @@ function renderStep2() {
       false, ""));
   (async () => {
     try {
-      const d = await api("/api/merge/preview", { body: {
-        template_id: S.templateId, mapping: S.mapping, sheet_id: S.listId,
-        contact_ids: S.contactIds,
-        limit: 8, append_signature: S.append_signature ? 1 : 0,
-      } });
+      const [d] = await Promise.all([
+        api("/api/merge/preview", { body: {
+          template_id: S.templateId, mapping: S.mapping, sheet_id: S.listId,
+          contact_ids: S.contactIds,
+          limit: 8, append_signature: S.append_signature ? 1 : 0,
+        } }),
+        audienceRows(),
+      ]);
       data.previews = d.previews || [];
       data.preview_total = d.total || 0;
       if (data.preview_idx >= data.previews.length) data.preview_idx = 0;
