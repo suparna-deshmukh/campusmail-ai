@@ -81,3 +81,30 @@ def test_formatting_in_grouping_and_plurals():
     assert out["a"] == "1,046"
     assert out["b"] == "10,46,000"
     assert out["c"] == "1"
+
+
+def test_copy_no_junk_or_jargon():
+    """8.11: status copy must have no double spaces, literal '...', unreplaced
+    ${} placeholders, edge whitespace, or banned jargon (GLOSSARY)."""
+    out = run_js("""
+      import { MSG, STATUS, GLOSSARY } from './static/js/core/copy.js';
+      const samples = [
+        MSG.draftsCreated(1, "Gmail"), MSG.draftsCreated(1046, "Gmail"),
+        MSG.scheduled(1, "tomorrow 09:00"), MSG.scheduled(2, "tomorrow 09:00"),
+        MSG.sent(1), MSG.sent(3),
+        MSG.partial(9, 10, 1), MSG.partial(10, 10, 0),
+        MSG.stopped(2), MSG.markedReplied(), MSG.liveOn(), MSG.liveOff(),
+        MSG.importDone(3, 2), MSG.importDone(1, 0),
+        MSG.gmailReconnect("a@b.co"), MSG.limitExceeded(100, 1046),
+        MSG.engineStopped(), MSG.aiOff(), MSG.saveFailed(), MSG.sessionExpired(),
+        ...Object.values(STATUS).map(s2 => s2.label),
+      ];
+      const bad = samples.filter(x => typeof x === "string" && (
+        /  /.test(x) || /\\.{3}/.test(x) || /\\$\\{/.test(x) || /^\\s|\\s$/.test(x)));
+      const jargon = samples.filter(x => typeof x === "string" &&
+        GLOSSARY.banned.some(w => new RegExp("\\b" + w + "\\b", "i").test(x)));
+      console.log(JSON.stringify({ n: samples.length, bad, jargon }));
+    """)
+    assert out["n"] >= 15
+    assert out["bad"] == []
+    assert out["jargon"] == []

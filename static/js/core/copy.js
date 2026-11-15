@@ -85,3 +85,17 @@ export function bounceReason(code) {
   if (c) return "The address did not work.";
   return "The address did not work.";
 }
+
+/* Glossary - one word per concept (8.11).
+   people    in prose about the audience ("1,046 people in total")
+   contacts  for the list itself ("46 contacts skipped")
+   emails    the messages (always pluralised with plural())
+   send      the action / flow ("before it goes")
+   Never in UI copy: recipients (code only), batch, segment, payload. */
+export const GLOSSARY = {
+  people: "prose about the audience",
+  contacts: "the list itself",
+  emails: "the messages",
+  send: "the action / flow",
+  banned: ["recipients", "batch", "segment", "payload"],
+};
