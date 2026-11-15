@@ -1343,6 +1343,14 @@ def api_merge_generate():
 
 
 def _run_merge(d):
+    # D-32/B2: hold keys are server-sanctioned only. Raw client values used
+    # to bypass safe mode, so strip them; a plain "hold": true opts into the
+    # configured undo window (send_undo_seconds). Safe mode still blocks.
+    d = dict(d or {})
+    d.pop("internal_hold", None)
+    d.pop("internal_hold_seconds", None)
+    if d.get("action") == "send" and d.get("hold"):
+        d["internal_hold_seconds"] = int(db.get_setting("send_undo_seconds") or 0)
     try:
         out = services.merge(d, request.user)
     except services.ServiceError as e:
@@ -1356,12 +1364,28 @@ def api_batch_send_as(bid):
     """Finalize a created batch: draft, schedule, or send now - used after
     attachments have been uploaded to the batch."""
     d = request.get_json(force=True)
+    # D-32/B2: server-sanctioned hold, same rule as /api/merge/generate.
+    hold = 0
+    if (d.get("action") or "") == "send" and d.get("hold"):
+        hold = int(db.get_setting("send_undo_seconds") or 0)
     try:
         out = services.batch_send_as(bid, d.get("action") or "", d.get("at") or "",
-                                     d.get("stagger") or 0, int(d.get("account_id") or 0), request.user)
+                                     d.get("stagger") or 0, int(d.get("account_id") or 0),
+                                     request.user, internal_hold_seconds=hold)
     except services.ServiceError as e:
         return api_err(e.message, e.code)
     return jsonify(out)
+
+
+@app.route("/api/batches/<int:bid>/undo", methods=["POST"])
+@login_required
+def api_batch_undo(bid):
+    """Cancel a held batch while its undo window is open. Idempotent (D-15)."""
+    try:
+        out = services.undo_send(bid, request.user["id"], request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    return jsonify({"ok": True, **out})
 
 
 # ---------------- campaigns ----------------
