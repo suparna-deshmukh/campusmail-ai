@@ -33,7 +33,12 @@ outreach team. Runs on the laptop (Flask app, SQLite) and mirrors to a cloud ins
 ### Campaigns (`/campaigns`)
 - Campaign list (name, contacts, sent, replied, reply rate, status badge).
 - **Campaign hub** per campaign:
-  - Overview (counts, notes, delete).
+  - Overview (counts, notes, delete). The sent count splits into
+    *delivered so far* and *verifying*: Gmail retries undelivered mail
+    for up to ~72 h, so mail inside that window (setting
+    `delivery_verify_hours`, 0–168 h, default 72) shows as verifying
+    instead of being claimed delivered; bounced mail is terminal and
+    stops all re-checking.
   - **Audience**: the contact lists linked to the campaign (rows, columns, preview) — add/remove lists, import new ones.
   - **Template**: which template the campaign uses; open the template editor.
   - **Send emails**: the 3-step send flow (below).
@@ -61,7 +66,15 @@ non-repliers.
   and send from Gmail (or mark handled, snooze, or mark replied manually).
 - Bounce handling: delivery-failure notices (Google's "5.1.1 mailbox not found" etc.)
   are detected by polling the Gmail account's bounce notifications; bounced contacts
-  are flagged with the reason so you can fix the list and re-send.
+  are flagged with the reason so you can fix the list and re-send. Any *permanent*
+  failure (final "Delivery Status Notification (Failure)", whatever the reason -
+  bad address, policy block, ...) marks the mail bounced; *temporary* problems
+  ("Gmail will retry for N more hours") leave it as *verifying* and are logged in
+  the activity feed.
+- Reply polling runs every ~40 s over all sent mail (rotating, nothing is
+  starved). A mail is checked for replies only once it is confidently
+  delivered — past the delivery window above — so the Replies inbox only
+  contains answers to mail that actually got through.
 
 ### Library (`/library`)
 - **Templates**: your uploaded/created email templates. Word (.docx), HTML or plain
@@ -127,94 +140,171 @@ template, schedule sends, read replies, and what safe mode does.
 
 ## 4. Ask AI — the agentic assistant
 
-The Ask AI drawer (top bar sparkle, or ⌘K → "Ask AI") is a full agent over the
-platform. It is *not* a chatbot that guesses: every number it quotes comes from a
-tool call against your real database, and **every action that changes anything is
-shown to you as a confirmation card before it runs**.
+The Ask AI drawer (top-bar sparkle, ⌘K → "Ask AI", or `?ask=1`) is a full
+agent over the platform. It can do **anything your role can do in the UI**,
+so you can live in the chat. It is not a chatbot that guesses: every number
+comes from a tool call against the real database, and **every action that
+changes anything passes a server-side approval gate** — the app cannot run a
+mutation without the exact card you approved (approval tokens are bound to
+the parameter hash; edits void the old approval; every card response is
+idempotent, so double-clicks and two tabs can never double-send).
 
-### 4.1 What it can do (its tools)
+### 4.1 Risk levels — what needs what
 
-**Read (runs immediately, shown as little "zap" step chips):**
-| Tool | What it sees |
-| --- | --- |
-| `get_overview` | Campaigns, contacts, sent, replied, bounced, scheduled, queued, templates |
-| `list_campaigns` / `get_campaign` | Campaigns with email counts; per-campaign deep stats, lists, batches |
-| `list_templates` / `get_template` | Templates with fields; full body HTML |
-| `list_contacts` | Total + sample rows, searchable |
-| `get_replies` | Who replied, when |
-| `list_team` | Members, roles |
-| `recent_activity` | Recent log entries |
+| Level | What | How it runs |
+| --- | --- | --- |
+| **R0 Read** | Overview, campaigns, templates, lists, replies, threads, bounces, batches, schedule, analytics, team, activity, accounts, settings, help, AI usage | Runs immediately, rendered as a data card. No confirmation. |
+| **R1 Generate** | Write/polish a template or email, suggest subjects, suggest a reply, write a reminder | One LLM call; the result lands in an **editable draft editor** — nothing is saved or sent by generation alone. |
+| **R2 App write** | Create/edit campaigns, save/rename/activate templates, import lists, attach lists/templates, update contacts (bounce fix), mark reply handled/snoozed, reminders text, settings | A **confirm card** (exact before → after). |
+| **R3 Destructive** | Delete campaign/template/list, cancel emails, remove member, change role | Confirm card with **impact counts** and "cannot be undone in the app; Gmail copies are not touched". |
+| **R4 Outbound** | Drafts, test email, schedule, send now, one-off email, send reply, reminders scheduling | **Final review card** (the exact rendered email, recipient browser, safety panel, pre-send check) → confirm with a labelled button like `Send 240 emails now`. |
+| **R5 Platform-critical** | Safe-mode toggle, AI settings (key via masked input), remove Gmail account, data export | Admin only + confirm card with consequence text. Danger-zone resets are a Settings handoff only. |
 
-**Change (always requires your Yes/No confirmation first):**
-| Tool | What it does |
-| --- | --- |
-| `create_campaign` / `update_campaign` / `delete_campaign` | Campaign CRUD. Delete confirmation states exactly how many email records will be removed and that Gmail copies are untouched. |
-| `create_template` / `update_template` / `delete_template` / `activate_template` | Template CRUD; activate = default template for new sends. If you attach a .docx/.html/.txt, it can create the template straight from the file. |
-| `import_contacts_sheet` | Imports the CSV/XLSX you attached as a new contact list, optionally linked to a campaign. |
-| `send_test_email` | Sends a real test email from your connected Gmail (e.g. to yourself to check signature/images/attachments). |
-| `prepare_send` | The full send pipeline: personalises the template for the campaign's list (auto-mapping fields → columns) and runs it as **queue / drafts / schedule (at a time you give) / send now** — same safety rails as the UI (safe mode, daily cap, schedule limits). |
-| `cancel_emails` | Stops queued / drafted / scheduled emails so they won't go out. |
-
-**Interaction:**
-| Tool | What you see |
-| --- | --- |
-| `ask_user` | A question card: a few clickable option buttons **and/or** a text box when it needs you to type something (a name, an address, a time). It waits for your answer and continues. |
+Main tools: `get_overview`, `get_attention_items` (Home "needs your
+attention", same counts as Home), `get_replies`/`get_reply_thread`,
+`list_bounces`, `get_upcoming_sends`/`list_batches`, `get_results`
+(analytics), `render_preview`, `list_gmail_accounts`, `get_settings`,
+`get_send_status`, `get_help`, `get_ai_usage`, `run_presend_check`;
+`create/edit/delete_campaign`, `attach/detach_sheet`, `set_campaign_template`,
+`create/update/rename/activate/delete_template`, `import_contacts_sheet`,
+`delete_sheet`, `update_contact`, `prepare_send` (queue / drafts / schedule /
+send now), `send_adhoc_email` (one-off), `send_test_email`, `send_reply` /
+`create_reply_draft` (threaded with the original Message-Id),
+`set_reminders` (1–5 rounds), `reschedule_batch`, `cancel_emails`,
+`mark_reply_handled`/`snooze_reply`/`mark_replied_manual`, `set_live_sending`,
+`set_send_limits`, `set_signature`, `set_branding`, `set_ai_settings`,
+`invite_member`/`change_role`/`remove_member`, `approve/deny_join`,
+`remove_gmail_account`, `start_gmail_connect` (handoff), `export_data`,
+`undo_send`.
 
 ### 4.2 How the conversation works
 
-1. You type (and optionally attach a file). The assistant may call several read tools
-   in one turn — each appears as a collapsible step chip so nothing is hidden.
-2. If it wants to **change** something, it stops and shows:
+- **Questions are buttons.** Choices are option cards (≤ 4 options +
+  "Something else…"); free input appears as the right input card in the
+  chat (text / number / date-time / masked secret / file drop zone /
+  editable table) — never "type your answer in a message".
+- **One decision per card; edits are free, executing is not.** You can edit
+  every field in a draft/review card without approval; only the labelled
+  primary action executes. Any edit after an approval voids it.
+- **Typing while a card is pending** cancels nothing silently: the pending
+  card is marked *superseded* (inert, greyed) and your new message is
+  handled normally. "Cancel" words cancel the card.
+- **Multi-step requests show a plan first** (read-only step list with risk
+  badges); each step still gets its own gate. If step N fails, steps 1…N−1
+  stay done and you choose retry / skip / stop.
+- **Closing the drawer** cancels every pending interaction; draft-editor
+  buffers are kept for 2 h and offered as "Resume unsaved draft?".
+- **Two modes** (drawer header): **Guided** (default — one question per
+  card) and **Compact** (one editable review card gathers timing/stagger/CC/
+  signature/attachments/reminders for a send). Same actions, same gates,
+  same pre-send check in both; Compact never pre-selects the send action or
+  the schedule time, and remembers your usual stagger/CC/signature choice
+  (never the action itself).
+- Conversations last ~2 h in memory; message history is kept locally in the
+  browser. Answered cards collapse to one line and stay expandable.
 
-   > **CONFIRM ACTION** — Create campaign "Winter 2027"
-   > `[Yes, do it]` `[No, cancel]`
+### 4.3 Sending email from the chat (the flagship flow)
 
-   "No" tells the model it was declined; it adapts instead of retrying.
-3. If it needs **input**, it shows:
+1. You ask (e.g. "draft the Diwali follow-up and send it tomorrow 10 am").
+   One LLM call writes subject + body into the **draft editor**: From
+   account, recipients/audience, CC (≤ 20, merge fields allowed), subject
+   (+ "Suggest subjects"), the white-paper rich-text body with merge-field
+   chips and "Preview as contact", attachments, rendered signature toggle,
+   and `Revise with AI…` (uses your current edited text as the base).
+2. **What next?** — `Save as template` · `Send` · `Schedule` · `Queue` ·
+   `Gmail drafts` · `Send test to me` · `Discard`.
+3. **Final review** (R4): the exact email as sent (merge fields resolved,
+   signature appended, images resolved), a recipient browser ("Recipient 1
+   of 240"), the send facts (time, stagger → "last email ≈ 14:35",
+   reminders) and the **safety panel** (safe mode, today X/cap, remaining,
+   account/token status, rows without email, duplicates).
+4. **Pre-send check** (deterministic, zero LLM) above the buttons: ✗
+   blocking lines keep the button disabled, ⚠ warnings and ℹ suggestions
+   never block. Includes merge-field health (blank values list the affected
+   serials), link syntax checks (and best-effort reachability that can
+   never block a send), and "template never tested — send a test to me"
+   for ≥ 10 recipients.
+5. **Bulk guard**: at or above the bulk threshold (default 50, admin-set
+   10–500) the confirm needs a "I've reviewed N recipients" checkbox, and
+   at 4× the threshold a typed recipient count that must match. Verified
+   server-side.
+6. **Send now has an undo window** (default 20 s, admin-set 10–30): after
+   you confirm, a countdown card with one **Undo** (no confirmation) holds
+   the batch — nothing reaches Gmail during the hold, and the cap
+   reservation is released on undo. After release it says plainly that
+   mail already sent cannot be recalled.
+7. Result cards are deterministic (counts, IDs, deep links); next steps are
+   offered as buttons. Everything is logged as "… via Ask AI".
 
-   > **A QUICK QUESTION** — Which email should the test mail go to?
-   > `[f20230611@goa...ac.in]` `[adityaa@goa...ac.in]` `[type your answer…]`
+Replies (F-42): the unhandled-reply list → pick a reply → `Draft a reply`
+(one LLM suggestion, fully editable, threaded on the original
+Message-Id) → `Send reply` / `Save as Gmail draft` / `Open in Gmail`, plus
+`Mark handled` / `Snooze` (1 d / 3 d / 1 wk / custom). Bounces (F-43):
+`list_bounces` with reasons → edit the corrected addresses in a table →
+`Update N contacts` → optional **re-send to the fixed contacts only**.
 
-4. It continues only after you answer, and answers your follow-ups in the same
-   conversation. Conversations last ~2 hours (in memory) and restart fresh each time
-   you open the drawer; your message history is kept locally in the browser.
+### 4.4 File uploads in the chat
 
-### 4.3 File uploads in the chat
+Paperclip or in-card file drop zone (max 5 MB): `.csv` / `.xlsx` / `.tsv`
+→ contact list (parse preview first); `.docx` / `.html` / `.txt` → template;
+`.pdf` / `.png` / `.jpg` → only as attachments / signature images /
+template images. Wrong types are rejected with a clear message.
 
-Paperclip button next to the input (max 5 MB):
-- **`.csv` / `.xlsx` / `.tsv`** → parsed as a contact list; it reports columns + row
-  count and offers to import (confirmation card first).
-- **`.docx` / `.html` / `.txt`** → converted to the email HTML and offered as a new
-  template (you can edit it in the Library afterwards).
-- Other types are rejected with a clear message.
+### 4.5 AI budget
 
-### 4.4 Example session
+Each user has a daily AI budget (calls + tokens; admin can set per-user and
+workspace limits in Settings → AI). At 80% you get one inline notice; at
+100% the AI degrades gracefully — reads, chips and deterministic flows
+keep working, free text gets button options instead of LLM answers, and
+drafts open empty with "write it yourself". Counters are server-side; the
+key pool (two keys, 50 calls/day each) rotates transparently.
+
+### 4.6 Example session
 
 ```
-You:   Summarise what needs my attention
-AI:    15 emails bounced (bad addresses), 2 replies waiting. [zap chips shown]
+You:   What needs my attention?
+AI:    [data card] 15 bounced, 2 replies waiting, 12 due tomorrow. (0 LLM calls)
 
-You:   Create a campaign for the winter internship season
-AI:    CONFIRM ACTION — Create campaign "Winter Internship 2027"?  [Yes, do it] [No, cancel]
-You:   (clicks Yes, do it)
-AI:    Created — campaign #2. Want me to import a contact list?
+You:   Draft the Diwali follow-up and send it tomorrow 10 am, stagger 2 min
+AI:    [draft editor — subject + body, editable] … [Continue]
+AI:    What next?  [Send] [Schedule] [Queue] [Gmail drafts] [More…]
+You:   (Schedule) → date-time card (min +5 min, max +45 days) → stagger card
+AI:    [final review — rendered email, 240 recipients, safety panel, all checks passed]
+       [Schedule 240 emails for 20 Nov, 10:00]
+You:   (confirm)
+AI:    ✓ Scheduled 240 emails for 20 Nov 10:00 — first at 10:00, last ≈ 10:47.
 
-You:   (attaches winter_recruiters.xlsx) Import this one
-AI:    I found winter_recruiters.xlsx: 240 rows — company, hr_name, hr_email.
-       CONFIRM ACTION — Import attached file "winter_recruiters.xlsx" as a contact list (240 rows)?  [Yes, do it] [No, cancel]
-You:   (Yes)
-AI:    Imported as sheet #7 and linked it to Winter Internship 2027.
-
-You:   Draft the emails from my Diwali template, don't send
-AI:    CONFIRM ACTION — Create 240 Gmail draft(s) for campaign "Winter Internship 2027" (nothing is sent)  [Yes, do it] [No, cancel]
+You:   Send the welcome test to me
+AI:    [final review of the test render] [Send test to f20230611@goa…]
+You:   (confirm)
+AI:    ✓ Sent. [Gmail received; verified]
 ```
 
-### 4.5 Guardrails
+### 4.7 Guardrails
 
-- It cannot bypass safe mode or the daily send cap — the same code path as the UI is used.
-- It never deletes Gmail copies of anything; "delete" only removes app records.
-- Mutations are impossible without your explicit Yes.
-- If AI is not configured (no key), the drawer tells you to add a key in Settings → AI features.
+- **Server-enforced approval gate.** Mutations run only through
+  `execute_gated` with a valid, unexpired, unused approval token bound to
+  the exact parameters and preview you saw. The model and the client never
+  submit execution parameters. Direct calls to mutating functions raise.
+- **Role-aware.** Admin-only tools are not even offered to members, and the
+  server re-checks on every action; a demoted user mid-chat gets a friendly
+  403 message, not a blank state.
+- **Same rails as the UI.** Safe mode, daily cap, 5 min → 45 day schedule
+  window, CC ≤ 20, idempotency, and the scheduled-send double-send guard —
+  one shared service layer for UI and agent.
+- **No Gmail deletion, no new OAuth scopes.** The assistant never claims it
+  can un-send or delete Gmail items; every delete card says "Gmail copies
+  are not touched." Scopes remain `gmail.compose` + `gmail.readonly`.
+- **Secrets stay secret.** API keys travel only through the masked
+  secret-input card; they never enter LLM prompts, logs, activity entries
+  or browser storage (covered by tests).
+- **Prompt-injection aware.** Email bodies, contact data, replies and
+  uploaded files are treated as untrusted data; at worst an injection can
+  *propose* an action, which you still see and approve.
+- **LLM-call economy.** Explicit requests route deterministically (0 LLM
+  calls); free text uses exactly one routing call; generation is one
+  structured call (one repair attempt only); narration is number-guarded
+  and dropped if it can't be verified. Typical full send flow: 2–4 calls.
 
 ---
 
