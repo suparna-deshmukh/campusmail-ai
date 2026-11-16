@@ -19,6 +19,10 @@ async function ensureSchema() {
   await sql`ALTER TABLE relay_emails ADD COLUMN IF NOT EXISTS bounced_at TIMESTAMPTZ`;
   await sql`ALTER TABLE relay_emails ADD COLUMN IF NOT EXISTS bounce_reason TEXT DEFAULT ''`;
   await sql`ALTER TABLE relay_emails ADD COLUMN IF NOT EXISTS undo_hold BOOLEAN NOT NULL DEFAULT FALSE`;
+  await sql`CREATE TABLE IF NOT EXISTS relay_token_cache (
+    account_id   INTEGER PRIMARY KEY,
+    access_token TEXT NOT NULL DEFAULT '',
+    expiry_epoch INTEGER NOT NULL DEFAULT 0)`;
   await sql`CREATE TABLE IF NOT EXISTS relay_processed_dsn (
     message_id   TEXT PRIMARY KEY,
     processed_at TIMESTAMPTZ NOT NULL DEFAULT now())`;
@@ -153,6 +157,118 @@ async function statusPull(): Promise<Response> {
     bounce_reason: r.bounce_reason || "",
     body_html: r.is_reminder ? (r.body_text || "") : undefined,
   })) });
+}
+
+function parseAtts(s: string | null): any[] {
+  try { return JSON.parse(s || "[]"); } catch { return []; }
+}
+function parseCc(s: string | null): string[] {
+  return (s || "").split(",").map((x) => x.trim()).filter(Boolean);
+}
+
+// ---------------- MIME ----------------
+
+function b64url(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function enc(s: string): Uint8Array {
+  return new TextEncoder().encode(s);
+}
+
+function buildRaw(to: string, subject: string, bodyHtml: string, atts: any[], cc: string[]): string {
+  if (!atts.length) {
+    const ccLine = cc.length ? "Cc: " + cc.join(", ") + "\r\n" : "";
+    const raw =
+      "To: " + to + "\r\nSubject: " + subject + "\r\n" + ccLine +
+      "MIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + bodyHtml;
+    return b64url(enc(raw));
+  }
+  const boundary = "mf-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  const chunks: string[] = [];
+  chunks.push("--" + boundary + "\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + bodyHtml);
+  for (const a of atts) {
+    chunks.push("--" + boundary +
+      "\r\nContent-Type: " + (a.mime || "application/octet-stream") +
+      "\r\nContent-Transfer-Encoding: base64" +
+      "\r\nContent-Disposition: attachment; filename=\"" + a.name + "\"" +
+      "\r\n\r\n" + (a.b64 || ""));
+  }
+  chunks.push("--" + boundary + "--");
+  const head = "To: " + to + "\r\nSubject: " + subject +
+    (cc.length ? "\r\nCc: " + cc.join(", ") + "\r\n" : "") +
+    "\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"" + boundary + "\"\r\n\r\n";
+  return b64url(enc(head + chunks.join("\r\n")));
+}
+
+// ---------------- Gmail (fetch, no SDK) ----------------
+
+const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GMAIL_API = "https://gmail.googleapis.com/gmail/v1";
+
+async function accessToken(): Promise<string> {
+  const cached: any[] = await sql`
+    SELECT access_token, expiry_epoch FROM relay_token_cache WHERE account_id = 0 LIMIT 1`;
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (cached.length && cached[0].access_token && (cached[0].expiry_epoch || 0) > nowSec + 60) {
+    return cached[0].access_token as string;
+  }
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    client_id: CLIENT_ID,
+    client_secret: CLIENT_SECRET,
+    refresh_token: REFRESH_TOKEN,
+  });
+  const r = await fetch(TOKEN_URL, {
+    method: "POST",
+    body,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  });
+  if (!r.ok) throw new Error("token refresh failed: " + (await r.text()).slice(0, 200));
+  const d: any = await r.json();
+  const expiry = nowSec + (d.expires_in || 3600);
+  await sql`
+    INSERT INTO relay_token_cache(account_id, access_token, expiry_epoch) VALUES (0, ${d.access_token}, ${expiry})
+    ON CONFLICT (account_id) DO UPDATE SET access_token = excluded.access_token, expiry_epoch = excluded.expiry_epoch`;
+  return d.access_token;
+}
+
+async function gmailSend(raw: string): Promise<any> {
+  const doSend = async (token: string) => {
+    const r = await fetch(GMAIL_API + "/users/" + encodeURIComponent(SENDER) + "/messages/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body: JSON.stringify({ raw }),
+    });
+    if (!r.ok) throw new Error("gmail send failed: " + (await r.text()).slice(0, 300) + " [" + r.status + "]");
+    return await r.json();
+  };
+  try {
+    return await doSend(await accessToken());
+  } catch (e) {
+    if (String(e).includes("[401]")) {
+      await sql`DELETE FROM relay_token_cache WHERE account_id = 0`;
+      return await doSend(await accessToken());
+    }
+    throw e;
+  }
+}
+
+async function gmailMessageId(messageId: string): Promise<string> {
+  if (!messageId) return "";
+  const token = await accessToken();
+  const r = await fetch(
+    GMAIL_API + "/users/" + encodeURIComponent(SENDER) + "/messages/" + messageId +
+    "?format=metadata&metadataHeaders=Message-Id",
+    { headers: { Authorization: "Bearer " + token } },
+  );
+  if (!r.ok) return "";
+  const d: any = await r.json();
+  for (const h of (d.payload && d.payload.headers) || []) {
+    if ((h.name || "").toLowerCase() === "message-id") return (h.value || "").replace(/[<>]/g, "");
+  }
+  return "";
 }
 
 // ---------------- sending ----------------

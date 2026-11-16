@@ -340,6 +340,9 @@ function statTiles() {
   };
   return el("div", { class: "stat-row" },
     tile("Sent", s.n_sent, "delivered so far", "?tab=emails&status=sent"),
+    (s.n_verifying || 0) > 0
+      ? tile("Verifying", s.n_verifying, "delivery in flight, re-checking", "?tab=emails")
+      : null,
     tile("Replied", s.n_replied, "people wrote back", "?tab=emails&status=replied"),
     tile("Reply rate", rate, s.n_sent ? "of " + fmtInt(s.n_sent) + " sent" : "no sends yet", "?tab=emails&status=replied", true),
     tile("Bounced", s.n_bounced, "addresses that did not work", "?tab=emails&status=bounced"));

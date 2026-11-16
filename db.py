@@ -102,6 +102,10 @@ CREATE TABLE IF NOT EXISTS processed_dsn(
   processed_at TEXT,
   PRIMARY KEY (account_id, message_id)
 );
+CREATE TABLE IF NOT EXISTS tick_state(
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
 CREATE TABLE IF NOT EXISTS user_settings(
   user_id INTEGER, key TEXT, value TEXT,
   PRIMARY KEY (user_id, key)
@@ -359,7 +363,7 @@ def account_token_json(account_id):
 def conn():
     p = tenant_db()
     p.parent.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(str(p), timeout=15)
+    c = sqlite3.connect(str(p), timeout=30)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     return c

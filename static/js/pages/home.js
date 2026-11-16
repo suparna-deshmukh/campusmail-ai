@@ -184,7 +184,7 @@ function campaignCards(cams) {
   }
   const wrap = el("div", { class: "grid-12 stagger" });
   for (const cam of cams) {
-    const emailed = Math.max(0, cam.n_emails - (cam.status_counts?.pending || 0));
+    const emailed = cam.status_counts?.sent || 0;
     const pct = cam.n_contacts ? Math.min(100, Math.round(100 * emailed / cam.n_contacts)) : (emailed ? 100 : 0);
     const status = campaignStatus(cam);
     const card = el("a", { class: "card card-flush card-clickable span-6 camp-card", href: "/campaigns/" + cam.id, style: "padding:20px" },

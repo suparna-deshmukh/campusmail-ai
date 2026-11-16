@@ -188,11 +188,18 @@ def inline_local_images(body_html):
     return re.sub(pattern, _sub, body_html)
 
 
-def build_raw(to_addr, subject, body_html, attachments=None, cc=None):
-    """Build a MIME message. attachments: list of (filename, bytes, content_type). cc: list of emails."""
+def build_raw(to_addr, subject, body_html, attachments=None, cc=None,
+              in_reply_to=None, references=None):
+    """Build a MIME message. attachments: list of (filename, bytes, content_type). cc: list of emails.
+    in_reply_to/references: original Message-Id(s) for threaded replies (F-42)."""
     NL = chr(10)
     cc_line = (NL.join(["Cc: " + a for a in cc]) + NL) if cc else ""
-    headers = "To: " + to_addr + NL + "Subject: " + subject + NL + cc_line
+    ref_line = ""
+    if in_reply_to:
+        ref_line += "In-Reply-To: <%s>" % in_reply_to.strip("<>") + NL
+    if references:
+        ref_line += "References: " + " ".join("<%s>" % m.strip("<>") for m in references) + NL
+    headers = "To: " + to_addr + NL + "Subject: " + subject + NL + cc_line + ref_line
     headers += "MIME-Version: 1.0" + NL
     if not attachments:
         headers += "Content-Type: text/html; charset=utf-8" + NL
@@ -222,9 +229,11 @@ def build_raw(to_addr, subject, body_html, attachments=None, cc=None):
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
-def create_draft(account_id, to_addr, subject, body_html, attachments=None, cc=None):
+def create_draft(account_id, to_addr, subject, body_html, attachments=None, cc=None,
+                 in_reply_to=None, references=None):
     svc = get_service(account_id)
-    msg = {"raw": build_raw(to_addr, subject, inline_local_images(body_html), attachments, cc)}
+    msg = {"raw": build_raw(to_addr, subject, inline_local_images(body_html), attachments, cc,
+                            in_reply_to=in_reply_to, references=references)}
     return svc.users().drafts().create(userId="me", body={"message": msg}).execute()
 
 
@@ -241,22 +250,26 @@ def _message_id_of(svc, msg_id):
     return ""
 
 
-def send_message(account_id, to_addr, subject, body_html, attachments=None, cc=None):
+def send_message(account_id, to_addr, subject, body_html, attachments=None, cc=None,
+                 in_reply_to=None, references=None):
     svc = get_service(account_id)
-    payload = {"raw": build_raw(to_addr, subject, inline_local_images(body_html), attachments, cc)}
+    payload = {"raw": build_raw(to_addr, subject, inline_local_images(body_html), attachments, cc,
+                                in_reply_to=in_reply_to, references=references)}
     res = svc.users().messages().send(userId="me", body=payload).execute()
     return {"id": res.get("id", ""), "message_id": _message_id_of(svc, res.get("id", ""))}
 
 
 
 
-def send_with_retry(account_id, to_addr, subject, body_html, attachments=None, cc=None):
+def send_with_retry(account_id, to_addr, subject, body_html, attachments=None, cc=None,
+                    in_reply_to=None, references=None):
     from googleapiclient.errors import HttpError
     import time
     last = None
     for attempt in range(4):
         try:
-            return send_message(account_id, to_addr, subject, body_html, attachments, cc)
+            return send_message(account_id, to_addr, subject, body_html, attachments, cc,
+                                in_reply_to=in_reply_to, references=references)
         except HttpError as e:
             last = e
             if e.resp.status in (403, 429) and attempt < 3:
@@ -359,32 +372,62 @@ def list_bounce_notices(account_id, limit=30):
     return out
 
 
-def parse_bounce_notice(text, subject=""):
-    """Parse a delivery-failure notice. Returns [(failed_addr, reason)] for HARD
-    bounces only (address wrong or mailbox does not exist). Soft failures
-    (mailbox full, temporarily rejected) are ignored."""
+def _dsn_recipients(text):
+    """Failed addresses named in a DSN, sorted and lower-cased."""
     recips = set()
     for m in re.finditer(r"Final-Recipient:\s*[^;\n]+;\s*<?([^<>\s;]+@[^<>\s;]+)>?", text, re.I):
         recips.add(m.group(1).strip().strip("'\"").lower())
     if not recips:
-        m = re.search(r"(?:failed|couldn'?t deliver|unable to deliver|not delivered)[^\n:]*:\s*<?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+)>?", text, re.I)
+        m = re.search(r"(?:failed|couldn'?t deliver|unable to deliver|not delivered)\n*\s*<?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+)>?", text, re.I)
         if m:
             recips.add(m.group(1).strip().lower())
+    return sorted(recips)
+
+
+def _dsn_status(text):
+    m = re.search(r"Status:\s*([0-9]\.[0-9](?:\.[0-9])?)", text, re.I)
+    return m.group(1) if m else ""
+
+
+def _dsn_diag(text):
+    d = re.search(r"Diagnostic-Code:.*", text, re.I | re.S)
+    if not d:
+        return ""
+    diag = re.sub(r"\s+", " ", d.group(0)).replace("Diagnostic-Code:", "", 1).strip()
+    return re.sub(r"^(SMTP|SMTPError)\s*;\s*", "", diag)[:240]
+
+
+def parse_bounce_notice(text, subject=""):
+    """Parse a delivery-failure notice. Returns [(failed_addr, reason)] for
+    PERMANENT failures only (RFC 3463 status 5xx: Gmail has given up retrying,
+    so the mail will never arrive - bad address, policy block, or any other
+    final failure). Temporary failures (4xx) are still being retried by Gmail
+    and are NOT bounces; use parse_retry_notice for those. Notices without a
+    machine status count as permanent only when the wording clearly says the
+    address is wrong."""
+    recips = _dsn_recipients(text)
     if not recips:
         return []
-    status_m = re.search(r"Status:\s*([0-9]\.[0-9](?:\.[0-9])?)", text, re.I)
-    code = status_m.group(1) if status_m else ""
-    diag = ""
-    d = re.search(r"Diagnostic-Code:.*", text, re.I | re.S)
-    if d:
-        diag = re.sub(r"\s+", " ", d.group(0)).replace("Diagnostic-Code:", "", 1).strip()
-        diag = re.sub(r"^(SMTP|SMTPError)\s*;\s*", "", diag)[:240]
-    # 5.1.x = invalid recipient (unknown user / no such user / bad address)
-    # 5.7.x = count as hard only when the text says the address itself is bad
-    # 5.2/5.3/5.4 (quota, policy, "access denied") and 4.x are NOT wrong addresses
-    hard = code.startswith("5.1") or (
-        (code.startswith("5.7") or not code) and HARD_BOUNCE_RE.search(text + " " + diag))
-    if not hard:
+    code = _dsn_status(text)
+    diag = _dsn_diag(text)
+    permanent = bool(code.startswith("5")) or (
+        not code and HARD_BOUNCE_RE.search(text + " " + diag))
+    if not permanent:
         return []
     reason = (" - ".join(x for x in (code, diag) if x))[:300] or "Delivery failed"
-    return [(a, reason) for a in sorted(recips)]
+    return [(a, reason) for a in recips]
+
+
+def parse_retry_notice(text, subject=""):
+    """Parse a TEMPORARY delivery problem (RFC 3463 status 4xx): Gmail is
+    still retrying, so the mail stays 'verifying' - but the problem is real
+    and must be visible in the activity log. Returns [(failed_addr, status)]."""
+    recips = _dsn_recipients(text)
+    if not recips:
+        return []
+    code = _dsn_status(text)
+    if not code.startswith("4"):
+        return []
+    return [(a, code) for a in recips]
+
+

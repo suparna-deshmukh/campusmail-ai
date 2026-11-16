@@ -230,6 +230,8 @@ def fill_fields(text, mapping, row_values):
         val = mapping.get(name, "")
         if val.startswith("column:"):
             return str(row_values.get(val[len("column:"):], ""))
+        if val.startswith("literal:"):
+            return val[len("literal:"):]
         return val
     return re.sub(docx_convert.PLACEHOLDER_RE, _repl, text)
 
@@ -1541,14 +1543,31 @@ def api_campaign_detail(cid):
     for k in ("n_emails", "n_ready", "n_drafted", "n_scheduled", "n_sent",
               "n_replied", "n_bounced", "n_failed", "n_stopped", "n_sent_unreplied"):
         summary[k] = summary.get(k) or 0
+    # delivery verification window: sent mails younger than this are still
+    # "in flight" (Gmail retries up to ~72h; a DSN may still be on its way).
+    # n_sent ("delivered so far") only counts mails past the window; the
+    # in-flight ones are visible as n_verifying, not silently "successful".
+    verify_h = int(db.get_setting("delivery_verify_hours") or 72)
+    verifying = 0
+    if verify_h > 0:
+        vcut = (datetime.utcnow() - timedelta(hours=verify_h)).strftime("%Y-%m-%d %H:%M:%S")
+        verifying = c.execute(
+            ("SELECT COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id %s "
+             "WHERE b.campaign_id=? AND e.status='sent' AND " + services.sent_at_utc_sql() + " > ? "
+             "AND COALESCE(e.bounced_at,'')='' AND COALESCE(e.replied_at,'')='' %s") % (send_by, send_w),
+            (cid,) + (vcut,) + send_p).fetchone()["n"]
+    summary["n_verifying"] = verifying
+    summary["n_sent"] = max(0, summary["n_sent"] - verifying)
     per_day = {r["d"]: r["n"] for r in c.execute("""
         SELECT date(e.sent_at) d, COUNT(*) n
         FROM emails e JOIN batches b ON e.batch_id=b.id %s
         WHERE b.campaign_id=? AND e.status='sent' AND e.sent_at IS NOT NULL AND e.sent_at != '' %s
         GROUP BY d""" % (send_by, send_w), (cid,) + send_p).fetchall()}
+    # funnel stage "Emailed" = contacts that actually received a sent email
+    # (bounced/replied are sub-metrics of sent, so the funnel base is sent)
     n_emailed = c.execute(
         "SELECT COUNT(DISTINCT e.contact_id) n FROM emails e JOIN batches b ON e.batch_id=b.id %s "
-        "WHERE b.campaign_id=? AND e.status != 'deleted' %s" % (send_by, send_w),
+        "WHERE b.campaign_id=? AND e.status = 'sent' %s" % (send_by, send_w),
         (cid,) + send_p).fetchone()["n"]
     recent_replies = [dict(r) for r in c.execute("""
         SELECT e.id, e.to_addr, e.replied_at, co.company, co.hr_name
@@ -1982,11 +2001,26 @@ def sends_today():
 
 
 def replies_tick():
-    """Poll inboxes for replies to sent mails (needs the readonly scope)."""
+    """Poll inboxes for replies to sent mails (needs the readonly scope).
+    Reply-checking starts only once a mail is confidently delivered,
+    i.e. past the delivery verification window (Gmail retries up to ~72h;
+    admin: delivery_verify_hours). Bounced mails are terminal and stop
+    being polled entirely. A rotating cursor (local, non-synced) makes
+    sure every mail gets re-checked over time, not just the first 40."""
     c = db.conn()
+    cur_row = c.execute("SELECT value FROM tick_state WHERE key='replies_cursor'").fetchone()
+    cursor = int(cur_row["value"]) if cur_row and str(cur_row["value"] or "").isdigit() else 0
+    window_h = int(db.get_setting("delivery_verify_hours") or 72)
+    min_age = (datetime.utcnow() - timedelta(hours=window_h, minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
     rows = [dict(r) for r in c.execute(
-        "SELECT * FROM emails WHERE status='sent' AND message_id != '' "
-        "AND (replied_at IS NULL OR replied_at = '') ORDER BY sent_at LIMIT 40").fetchall()]
+        "SELECT * FROM emails WHERE status='sent' AND message_id != '' AND id > ? "
+        "AND COALESCE(" + services.sent_at_utc_sql("sent_at") + ", '1970-01-01 00:00:00') <= ? "
+        "AND (replied_at IS NULL OR replied_at = '') AND (bounced_at IS NULL OR bounced_at = '') "
+        "ORDER BY id LIMIT 40", (cursor, min_age)).fetchall()]
+    cursor = rows[-1]["id"] if len(rows) == 40 else 0
+    c.execute("INSERT INTO tick_state(key, value) VALUES('replies_cursor', ?) "
+              "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(cursor),))
+    c.commit()
     c.close()
     if not rows:
         return
@@ -2018,9 +2052,15 @@ def replies_tick():
 
 
 def bounces_tick():
-    """Scan send-account inboxes for delivery failures and mark matching mails as
-    bounced (recipient address wrong or does not exist). State is mirrored to the
-    cloud relay so every instance shows the same analytics."""
+    """Scan send-account inboxes for delivery DSNs (RFC 3463).
+    Permanent failures (status 5xx - Gmail gave up) mark the mail bounced,
+    whatever the sub-reason (bad address, policy, ...): a mail Gmail will
+    never deliver must never age into "delivered". Temporary failures
+    (status 4xx, "Gmail will retry for N more hours") do NOT bounce the mail;
+    they are logged as delivery_retry and it stays "verifying" until Gmail's
+    retries end (final DSN or the verification window).
+    State is mirrored to the cloud relay so every instance shows the same
+    analytics."""
     c = db.conn()
     accts = [dict(r) for r in c.execute("SELECT id FROM gmail_accounts").fetchall()]
     c.close()
@@ -2028,7 +2068,7 @@ def bounces_tick():
         if not db.account_token_json(a["id"]):
             continue
         try:
-            notices = gmail_client.list_bounce_notices(a["id"])
+            notices = gmail_client.list_bounce_notices(a["id"], limit=100)
         except Exception as e:
             db.log_activity("bounce_poll_error", str(e)[:200], "scheduler", throttle=1800)
             continue
@@ -2040,7 +2080,8 @@ def bounces_tick():
             if c.execute("SELECT 1 FROM processed_dsn WHERE account_id=? AND message_id=?",
                          (a["id"], n["message_id"])).fetchone():
                 continue
-            for addr, reason in gmail_client.parse_bounce_notice(n["text"], n["subject"]):
+            hard = gmail_client.parse_bounce_notice(n["text"], n["subject"])
+            for addr, reason in hard:
                 row = c.execute("SELECT id FROM emails WHERE lower(to_addr)=lower(?) AND status='sent' "
                                 "AND (bounced_at IS NULL OR bounced_at='') ORDER BY id DESC LIMIT 1",
                                 (addr,)).fetchone()
@@ -2052,6 +2093,10 @@ def bounces_tick():
                           "WHERE id=(SELECT contact_id FROM emails WHERE id=?) AND status NOT IN ('replied','bounced')",
                           (row["id"],))
                 marked.append((row["id"], addr, reason))
+            if not hard:
+                for addr, code in gmail_client.parse_retry_notice(n["text"], n["subject"]):
+                    db.log_activity("delivery_retry",
+                                    addr + " - temporary (" + code + "), Gmail retrying", "scheduler")
             c.execute("INSERT OR IGNORE INTO processed_dsn(account_id, message_id, processed_at) VALUES(?,?,?)",
                       (a["id"], n["message_id"], db.now_iso()))
         c.commit()
@@ -2327,6 +2372,11 @@ def scheduler_tick():
         return
     if _relay_enabled():
         relay_status_pull()
+        if TICK_COUNTER["n"] % 5 == 0:
+            try:
+                replies_tick()
+            except Exception as e:
+                SCHEDULER_STATE["last_error"] = str(e)[:200]
         if TICK_COUNTER["n"] % 15 == 0:
             try:
                 bounces_tick()
@@ -2367,6 +2417,12 @@ def scheduler_tick():
             break
         if sent_start + sent >= cap:
             break
+        # double-send guard (F-29/F-72): claim the row atomically before
+        # touching Gmail; another instance on the same DB may be racing us
+        if not c.execute("UPDATE emails SET status='sending' WHERE id=? AND status='scheduled'",
+                         (r["id"],)).rowcount:
+            c.commit()
+            continue
         try:
             if not r["account_id"]:
                 raise RuntimeError("no send account assigned")
