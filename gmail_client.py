@@ -193,7 +193,7 @@ def build_raw(to_addr, subject, body_html, attachments=None, cc=None,
     """Build a MIME message. attachments: list of (filename, bytes, content_type). cc: list of emails.
     in_reply_to/references: original Message-Id(s) for threaded replies (F-42)."""
     NL = chr(10)
-    cc_line = (NL.join(["Cc: " + a for a in cc]) + NL) if cc else ""
+    cc_line = ("Cc: " + ", ".join(cc) + NL) if cc else ""
     ref_line = ""
     if in_reply_to:
         ref_line += "In-Reply-To: <%s>" % in_reply_to.strip("<>") + NL
