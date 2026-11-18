@@ -324,7 +324,8 @@ def _sync_tick_inner(force=False):
     now = time.time()
     if SYNC_STATE["halted"]:
         return
-    if not force and now - SYNC_STATE["last_run"] < 45:
+    # 60 s cadence (was 45 s): lighter steady-state load on the free tier
+    if not force and now - SYNC_STATE["last_run"] < 60:
         return
     url, secret = _cfg()
     if not url or not secret:

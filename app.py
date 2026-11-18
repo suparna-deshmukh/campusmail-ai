@@ -2387,12 +2387,12 @@ def scheduler_tick():
         return
     if _relay_enabled():
         relay_status_pull()
-        if TICK_COUNTER["n"] % 5 == 0:
+        if TICK_COUNTER["n"] % 10 == 0:
             try:
                 replies_tick()
             except Exception as e:
                 SCHEDULER_STATE["last_error"] = str(e)[:200]
-        if TICK_COUNTER["n"] % 15 == 0:
+        if TICK_COUNTER["n"] % 30 == 0:
             try:
                 bounces_tick()
             except Exception as e:
@@ -2484,12 +2484,12 @@ def scheduler_tick():
         reminders_tick()
     except Exception as e:
         SCHEDULER_STATE["last_error"] = str(e)[:200]
-    if TICK_COUNTER["n"] % 5 == 0:
+    if TICK_COUNTER["n"] % 10 == 0:
         try:
             replies_tick()
         except Exception as e:
             SCHEDULER_STATE["last_error"] = str(e)[:200]
-    if TICK_COUNTER["n"] % 15 == 0:
+    if TICK_COUNTER["n"] % 30 == 0:
         try:
             bounces_tick()
         except Exception as e:
@@ -2515,7 +2515,10 @@ def scheduler_loop():
             sync_relay.sync_tick()
         except Exception as e:
             SCHEDULER_STATE["last_error"] = str(e)[:200]
-        time.sleep(8)
+        # 15 s cadence: sends still fire within ~15 s, but the free-tier CPU
+        # quota is shared with the browser polls - lighter steady-state load
+        # means fewer multi-minute CPU starvation windows on PA.
+        time.sleep(15)
 
 
 @app.route("/api/scheduler/trigger", methods=["POST"])
