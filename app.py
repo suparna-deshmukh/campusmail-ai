@@ -284,10 +284,12 @@ def _row_vals(r):
 # Liveness probe: no auth, no DB - answers as soon as the WSGI worker is up.
 # Use to tell "worker is cold/restarting" apart from "app is healthy":
 #   curl https://<you>.pythonanywhere.com/healthz
+# Also accepts POST so the Supabase cron keep-alive (0007_keepalive.sql) can
+# ping it: a warm worker means human visits load instantly.
 WORKER_STARTED_AT = time.time()
 
 
-@app.route("/healthz")
+@app.route("/healthz", methods=["GET", "POST"])
 def healthz():
     return jsonify({"ok": True, "uptime_s": int(time.time() - WORKER_STARTED_AT)})
 

@@ -99,3 +99,28 @@ Quick manual trigger of one tick (no reset): `POST /api/admin/sync/force`.
 `CAMPUSMAIL_AI_DEV_LOGIN` auto-logs every visitor in as an **admin** without
 Google sign-in. It is for throwaway local instances only - **never set it on
 the deployed PA web app** (Web tab -> environment variables).
+
+## Keep-alive (no more cold starts)
+
+The PA free-tier worker is recycled when idle, so the first visit after quiet
+periods waits out a worker start (can be minutes). A Supabase cron job pings
+the app every 5 min so the worker is always warm:
+
+1. Supabase (relay project) -> SQL editor -> run
+   `supabase/migrations/0007_keepalive.sql` once (it's idempotent).
+2. It adds a `pa-keepalive` cron job that pings
+   `https://aicampusmail.pythonanywhere.com/healthz` (no auth, no DB).
+
+Cost: ~288 tiny HTTP calls/day, no edge-function invocations, no egress
+impact. Inspect recent pings:
+
+```sql
+SELECT start_time, status, return_message, duration
+FROM cron.job_run_details
+WHERE jobid = (SELECT jobid FROM cron.job WHERE jobname='pa-keepalive')
+ORDER BY start_time DESC LIMIT 10;
+```
+
+Verify warmness any time: `curl https://aicampusmail.pythonanywhere.com/healthz`
+- `uptime_s` growing between two calls a few minutes apart = worker stayed up.
+- To stop: `SELECT cron.unschedule('pa-keepalive');`

@@ -88,3 +88,10 @@ def test_personal_workspace_for_pending_user(client, tenant, monkeypatch, tmp_pa
     assert d.json["templates"] == []
     ws_db = tmp_path / "ws" / (appmod.workspace_key("outsider@test.dev") + ".db")
     assert ws_db.exists(), "personal workspace must have its own database file"
+
+
+def test_healthz_get_and_post(client, tenant):
+    d = client.get("/healthz")
+    assert d.status_code == 200 and d.json["ok"] and d.json["uptime_s"] >= 0
+    d = client.post("/healthz", json={"ping": "supabase-cron"})
+    assert d.status_code == 200 and d.json["ok"]
