@@ -133,7 +133,7 @@ def _http(method, url, payload=None, tries=2):
                                           headers={"Content-Type": "application/json",
                                                    "x-relay-secret": _cfg()[1]},
                                           method=method)
-            with urllib.request.urlopen(req, timeout=90) as r:
+            with urllib.request.urlopen(req, timeout=30) as r:
                 return r.status, r.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")[:300]
@@ -384,6 +384,11 @@ def _sync_tick_inner(force=False):
             c.commit()
             pushed_rows += len(rows)
             pushed_dels += len(dels)
+            if rows or dels:
+                # yield so the single web worker can serve queued requests
+                # between relay bursts (free-tier CPU starvation otherwise
+                # freezes the whole site for the duration of the batch)
+                time.sleep(3)
     finally:
         c.close()
     if pushed_rows or pushed_dels or fails == 0:
