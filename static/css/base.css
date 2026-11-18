@@ -66,6 +66,7 @@ p { max-width: 68ch; }
   flex: none;
   vertical-align: -4px;
 }
+.i-fill { fill: currentColor; stroke: none; vertical-align: 0; }
 .i-16 { width: 16px; height: 16px; }
 .i-18 { width: 18px; height: 18px; }
 .i-24 { width: 24px; height: 24px; }
