@@ -97,6 +97,7 @@ ALLOWED_ATTACH_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".txt", 
 MAX_ATTACH_PER_BATCH = 10
 MAX_ATTACH_TOTAL = 15 * 1024 * 1024
 app = Flask(__name__, template_folder=str(BASE / "ui"), static_folder=str(BASE / "static"))
+app.config["TEMPLATES_AUTO_RELOAD"] = True  # never serve stale templates after edits/deploys
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 app.secret_key = "boot"
 ON_PA = str(BASE).startswith("/home/")  # PythonAnywhere homes are /home/<user>
