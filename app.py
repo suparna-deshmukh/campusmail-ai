@@ -127,6 +127,11 @@ def reset_tenant(exc=None):
 SCHEDULER_STATE = {"running": True, "last_tick": None, "last_error": ""}
 TICK_COUNTER = {"n": 0}
 DEV_LOGIN_EMAIL = os.environ.get("CAMPUSMAIL_AI_DEV_LOGIN", "").strip().lower()
+if ON_PA:
+    # The dev-login shortcut auto-logs every visitor in as admin without
+    # Google - it must never take effect on the deployed site, no matter
+    # where the variable was set (web-app env vars, wsgi.py, ...).
+    DEV_LOGIN_EMAIL = ""
 
 
 # ---------------- auth helpers ----------------
