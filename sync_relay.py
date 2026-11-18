@@ -418,7 +418,7 @@ def _sync_tick_inner(force=False):
         if pushed_rows or pushed_dels:
             db.log_activity("sync_tick",
                             "out %d rows/%d dels, in 0 changes, rev %d" %
-                            (pushed_rows, pushed_dels, rev), "sync")
+                            (pushed_rows, pushed_dels, rev), "sync", throttle=1800)
         return
     c = db.conn()
     try:
@@ -457,4 +457,5 @@ def _sync_tick_inner(force=False):
     if pushed_rows or pushed_dels or changes:
         db.log_activity("sync_tick",
                         "out %d rows/%d dels, in %d changes, rev %d->%d" %
-                        (pushed_rows, pushed_dels, len(changes), rev, next_rev), "sync")
+                        (pushed_rows, pushed_dels, len(changes), rev, next_rev), "sync",
+                        throttle=1800)

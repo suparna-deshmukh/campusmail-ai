@@ -281,6 +281,17 @@ def _row_vals(r):
 
 # ---------------- google sign-in ----------------
 
+# Liveness probe: no auth, no DB - answers as soon as the WSGI worker is up.
+# Use to tell "worker is cold/restarting" apart from "app is healthy":
+#   curl https://<you>.pythonanywhere.com/healthz
+WORKER_STARTED_AT = time.time()
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True, "uptime_s": int(time.time() - WORKER_STARTED_AT)})
+
+
 def google_login_ready():
     return bool(db.get_setting("google_client_id", "").strip())
 
@@ -355,8 +366,10 @@ def google_callback():
         u = db.get_user_by_email(email)
         db.log_activity("user_promoted", email + " promoted to admin (matches admin_email)", "system")
     session["uid"] = u["id"]
-    if u["status"] != "active":
-        return render_template("login.html", email=email, name=name, status=u["status"], request_open=False)
+    # Non-team sign-ins (pending/declined) go straight into their personal
+    # workspace: bind_tenant switches their tenant per request, and the app
+    # shell shows a banner about their team request. Their data never mixes
+    # with the team's, and they get the full platform on a clean slate.
     db.log_activity("login", email, email)
     return redirect("/")
 
@@ -2388,6 +2401,18 @@ def scheduler_tick():
     now = datetime.now().astimezone()
     now_iso_str = now.isoformat()
     c = db.conn()
+    # Stale 'sending' rows: the worker died between claim and result commit.
+    # A live send finishes in seconds (even with retries), so anything stuck
+    # in 'sending' for 15 min is orphaned - requeue it instead of losing it.
+    stale_ms = int((now - timedelta(minutes=15)).timestamp() * 1000)
+    n_stale = c.execute("UPDATE emails SET status='scheduled' WHERE status='sending' "
+                        "AND updated_at_ms IS NOT NULL AND updated_at_ms > 0 "
+                        "AND updated_at_ms <= ?", (stale_ms,)).rowcount
+    if n_stale:
+        c.commit()
+        db.log_activity("sends_stale_requeued",
+                        str(n_stale) + " stuck 'sending' row(s) requeued", "scheduler",
+                        throttle=3600)
     due = c.execute("SELECT * FROM emails WHERE status='scheduled' AND scheduled_at <= ? "
                     "ORDER BY scheduled_at LIMIT 500", (now_iso_str,)).fetchall()
     missed_ids = set()
@@ -2423,6 +2448,10 @@ def scheduler_tick():
                          (r["id"],)).rowcount:
             c.commit()
             continue
+        # Commit the claim at once: it is published atomically, and the write
+        # lock is released before the multi-second Gmail call, so web requests
+        # never queue behind the send loop (multi-minute site freeze fix).
+        c.commit()
         try:
             if not r["account_id"]:
                 raise RuntimeError("no send account assigned")
@@ -2604,6 +2633,55 @@ def api_sync_status():
         "pending_rows": sum(p["rows"] for p in pending),
         "relay": relay,
     })
+
+
+@app.route("/api/admin/sync/force", methods=["POST"])
+@admin_required
+def api_sync_force():
+    """Run one sync tick now (bypasses the 45 s cadence and failure backoff)."""
+    import sync_relay
+    def _run():
+        try:
+            sync_relay.sync_tick(force=True)
+        except Exception as e:
+            db.log_activity("sync_force_error", str(e)[:200], "sync", throttle=600)
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "started": True})
+
+
+@app.route("/api/admin/sync/reset-identity", methods=["POST"])
+@admin_required
+def api_sync_reset_identity():
+    """Give this instance a fresh relay identity and force a full-state resync.
+    Use when the instance identity collided (e.g. data/ was copied between
+    instances - both then push as the same relay instance and each side's
+    pull filters out the other's changes) or to re-bootstrap one side."""
+    import secrets
+    d = request.get_json(silent=True) or {}
+    full = bool(d.get("full_resync", True))
+    old_id = db.get_setting("sync_instance_id", "") or ""
+    new_id = "inst-" + secrets.token_hex(4)
+    db.set_setting("sync_instance_id", new_id)
+    db.set_setting("sync_fail_count", "0")
+    if full:
+        c = db.conn()
+        try:
+            c.execute("DELETE FROM sync_pushed")
+            c.execute("DELETE FROM sync_deletes")
+            c.commit()
+        finally:
+            c.close()
+    db.log_activity("sync_identity_reset",
+                    "%s -> %s (full_resync=%s)" % (old_id, new_id, str(full).lower()), "admin")
+    import sync_relay
+    def _run():
+        try:
+            sync_relay.sync_tick(force=True)
+        except Exception as e:
+            db.log_activity("sync_force_error", str(e)[:200], "sync", throttle=600)
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "old_instance": old_id, "new_instance": new_id,
+                    "full_resync": full, "started": True})
 
 
 @app.route("/api/settings", methods=["POST"])
