@@ -106,6 +106,12 @@ ON_PA = str(BASE).startswith("/home/")  # PythonAnywhere homes are /home/<user>
 @app.before_request
 def bind_tenant():
     # every request starts on the team DB + team files; non-team members switch to their own
+    # explicitly reset per-request identity state: on older Flask (e.g. the deployed
+    # server's), a ContextVar set by a previous request in the same worker thread is
+    # still visible to the next one, which would leak one visitor's identity (and
+    # therefore their data) to the next visitor.
+    _RESOLVED_USER.set(None)
+    _TENANT_DIRS.set(None)
     db.set_tenant_db(db.DB_PATH)
     filestore.reset_tenant()
     uid = session.get("uid")
@@ -2023,16 +2029,19 @@ def sends_today():
 
 def replies_tick():
     """Poll inboxes for replies to sent mails (needs the readonly scope).
-    Reply-checking starts only once a mail is confidently delivered,
-    i.e. past the delivery verification window (Gmail retries up to ~72h;
-    admin: delivery_verify_hours). Bounced mails are terminal and stop
-    being polled entirely. A rotating cursor (local, non-synced) makes
-    sure every mail gets re-checked over time, not just the first 40."""
+    Reply-checking starts 1h after send (a reply can only exist once the
+    mail was delivered, so there is no reason to wait out the 72h delivery
+    verification window - that window still governs "in-flight" delivery
+    analytics in the reports). Bounced mails are terminal and stop being
+    polled entirely. A rotating cursor (local, non-synced) makes sure every
+    mail gets re-checked over time, not just the first 40."""
     c = db.conn()
     cur_row = c.execute("SELECT value FROM tick_state WHERE key='replies_cursor'").fetchone()
     cursor = int(cur_row["value"]) if cur_row and str(cur_row["value"] or "").isdigit() else 0
-    window_h = int(db.get_setting("delivery_verify_hours") or 72)
-    min_age = (datetime.utcnow() - timedelta(hours=window_h, minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    # a reply proves delivery, so detect replies promptly: start checking after a
+    # short 1h grace post-send. (The delivery_verify_hours window still governs
+    # "in-flight" delivery analytics in the reports SQL, not reply detection.)
+    min_age = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
     rows = [dict(r) for r in c.execute(
         "SELECT * FROM emails WHERE status='sent' AND message_id != '' AND id > ? "
         "AND COALESCE(" + services.sent_at_utc_sql("sent_at") + ", '1970-01-01 00:00:00') <= ? "

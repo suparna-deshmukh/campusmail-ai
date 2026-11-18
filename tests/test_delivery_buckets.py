@@ -80,10 +80,12 @@ def test_verify_window_can_be_disabled(client, tenant):
     assert s["n_sent"] == 2
 
 
-def test_replies_tick_waits_for_delivery_window(tenant, mock_gmail):
-    fresh = _add_sent("fresh", 1, 2)        # in flight: may still bounce
+def test_replies_tick_starts_shortly_after_send(tenant, mock_gmail):
+    young = _add_sent("young", 1, 0.25)     # 15m old: inside the 1h grace
+    mid = _add_sent("mid", 1, 2)            # 2h old: past the grace, check now
     old = _add_sent("old", 1, 5 * 24)       # confidently delivered
     appmod.replies_tick()
     polled = [eid for pairs in mock_gmail.reply_pairs for (eid, _) in pairs]
-    assert fresh[0] not in polled, "in-flight mails wait for the delivery window"
+    assert young[0] not in polled, "mails within the 1h grace are not yet reply-checked"
+    assert mid[0] in polled, "mails past the 1h grace get reply-checked promptly"
     assert old[0] in polled, "delivered mails get reply-checked"

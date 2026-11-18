@@ -289,7 +289,7 @@ def check_replies(account_id, pairs):
         if not mid:
             continue
         hit = False
-        for q in ('is:inbox "in-reply-to: ' + mid + '"', 'is:inbox "references: ' + mid + '"'):
+        for q in ('(is:inbox OR is:spam) "in-reply-to: ' + mid + '"', '(is:inbox OR is:spam) "references: ' + mid + '"'):
             try:
                 r = svc.users().messages().list(userId="me", q=q, maxResults=1).execute()
                 if r.get("messages"):
