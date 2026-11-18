@@ -14,6 +14,7 @@
 .auth-shell {
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
+  grid-template-rows: 1fr;
   min-height: 100dvh;
 }
 
@@ -41,7 +42,7 @@
 .auth-brand-row .auth-name { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; color: #fff; }
 .auth-brand-row .auth-sub { font-size: 12.5px; color: rgba(255, 255, 255, .62); font-weight: 500; }
 .auth-panel-line {
-  margin: auto 0 0;
+  margin: var(--sp-6) 0 0;
   font-size: 14px; line-height: 1.55;
   color: rgba(255, 255, 255, .68);
   max-width: 38ch;
