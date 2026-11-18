@@ -59,7 +59,9 @@ TABLE_ORDER = ["users", "campaigns", "email_templates", "sheets", "batches",
                "contacts", "emails", "activity"]
 
 SYNC_STATE = {"last_run": 0, "last_pull": 0, "last_attempt": 0, "halted": False}
-PUSH_BATCH = 50
+# 500-row batches: a full-state resync (~3.3k rows) is 7 relay calls instead of
+# ~66 - the push window (and any DB lock pressure around it) stays short.
+PUSH_BATCH = 500
 PULL_MIN_INTERVAL = 90
 
 
