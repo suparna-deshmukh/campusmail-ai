@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import sqlite3
+import threading
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -360,13 +361,91 @@ def account_token_json(account_id):
     return r["token_json"] if r and r["token_json"] else None
 
 
+# On PA the data dir lives on NFS, where opening a DB file (and the first
+# open's WAL recovery) can occasionally stall for minutes. A stalled open
+# inside the single web worker freezes every request until it clears, so we
+# open in a side thread and give up after a short cap: the request fails
+# fast and the worker stays free instead of wedging the whole site.
+CONNECT_TIMEOUT_S = 10
+QUERY_TIMEOUT_S = 20
+# Gap between progress-handler calls that indicates a statement boundary:
+# an executing statement invokes the callback every ~ms, while Python-level
+# gaps between statements are much larger.
+_PROGRESS_GAP_S = 0.5
+# Canaries run on the first connection only (None = untested). Some Python
+# builds have a broken sqlite3 progress-handler callback (any invocation
+# interrupts the statement); the canary detects that and we then skip the
+# per-query timeout instead of taking the risk.
+_QUERY_HANDLER_OK = None
+_open_threads = []
+
+
+def _install_query_timeout(c):
+    """Abort any single statement that runs longer than QUERY_TIMEOUT_S.
+
+    A statement stalled in storage I/O (NFS lag on PA) would otherwise block
+    the calling thread - and with a single web worker, the whole site - for
+    minutes. The handler runs every 10k VM instructions; a call arriving more
+    than _PROGRESS_GAP_S after the previous one starts a new statement clock.
+    """
+    global _QUERY_HANDLER_OK
+    if _QUERY_HANDLER_OK is False:
+        return
+    state = {"t0": 0.0, "last": 0.0}
+
+    def _handler(instr_count):
+        now = time.time()
+        if now - state["last"] > _PROGRESS_GAP_S:
+            state["t0"] = now
+        state["last"] = now
+        if now - state["t0"] > QUERY_TIMEOUT_S:
+            return 1
+        return 0
+
+    c.set_progress_handler(_handler, 10000)
+    if _QUERY_HANDLER_OK is None:
+        try:
+            # Forces several progress-handler invocations (30k+ VM steps).
+            c.execute("SELECT COUNT(*) FROM (WITH RECURSIVE c(i) AS "
+                      "(SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 30000) SELECT i)")
+        except sqlite3.OperationalError:
+            c.set_progress_handler(None, 0)
+            _QUERY_HANDLER_OK = False
+            return
+        _QUERY_HANDLER_OK = True
+
+
+def _connect_guarded(path):
+    if len(_open_threads) >= 8:
+        raise TimeoutError("database open saturated (storage slow); retry shortly")
+    box = {}
+
+    def opener():
+        try:
+            c = sqlite3.connect(str(path), timeout=30, check_same_thread=False)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA journal_mode=WAL")
+            _install_query_timeout(c)
+            box["conn"] = c
+        except Exception as e:
+            box["err"] = e
+
+    th = threading.Thread(target=opener, daemon=True)
+    _open_threads.append(th)
+    th.start()
+    th.join(CONNECT_TIMEOUT_S)
+    _open_threads[:] = [t for t in _open_threads if t.is_alive()]
+    if th.is_alive():
+        raise TimeoutError("database open timed out (storage slow); retry shortly")
+    if "err" in box:
+        raise box["err"]
+    return box["conn"]
+
+
 def conn():
     p = tenant_db()
     p.parent.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(str(p), timeout=30)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA journal_mode=WAL")
-    return c
+    return _connect_guarded(p)
 
 
 def _parse_ts_ms(s):

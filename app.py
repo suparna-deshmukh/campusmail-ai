@@ -1209,7 +1209,7 @@ def api_team_reports_summary():
 @app.route("/api/team/members")
 @login_required
 def api_team_members():
-    """Active team roster — any team member may read it (used by the
+    """Active team roster - any team member may read it (used by the
     person filter on the Results tab, which is not admin-only)."""
     c = db.conn()
     rows = [dict(r) for r in c.execute(
@@ -2323,7 +2323,8 @@ def relay_status_pull():
         lid, st = e.get("local_id"), e.get("status")
         if not lid or st not in ("sent", "error", "scheduled", "cancelled", "drafted"):
             continue
-        row = c.execute("SELECT status FROM emails WHERE id=?", (lid,)).fetchone()
+        row = c.execute("SELECT status, error, sent_at, message_id, reminder_count "
+                        "FROM emails WHERE id=?", (lid,)).fetchone()
         if row and row["status"] == "deleted":
             continue  # locally deleted - never resurrect from cloud status
         if not row and e.get("is_reminder") and st == "sent":
@@ -2340,18 +2341,27 @@ def relay_status_pull():
                            e.get("message_id") or "", db.now_iso()))
                 pending_logs.append("serial " + str(parent["serial"]) + " - reminder sent from cloud")
             continue
-        c.execute("UPDATE emails SET status=?, error=? WHERE id=?",
-                  (st, e.get("error") or "", lid))
-        if e.get("reminder_count"):
+        if not row:
+            continue  # no local row (non-reminder): nothing to update
+        # Write only on real change: the after-update trigger re-stamps
+        # updated_at_ms on every write, and a re-stamped synced row is pushed
+        # to the other instance, which re-stamps it in turn - an unconditional
+        # UPDATE here (this runs every tick per tracked email) would churn the
+        # sync relay's 24h row budget and never let the two sides converge.
+        if row["status"] != st or (row["error"] or "") != (e.get("error") or ""):
+            c.execute("UPDATE emails SET status=?, error=? WHERE id=?",
+                      (st, e.get("error") or "", lid))
+        if e.get("reminder_count") and int(e["reminder_count"]) != int(row["reminder_count"] or 0):
             c.execute("UPDATE emails SET reminder_count=? WHERE id=?", (int(e["reminder_count"]), lid))
         if st == "sent":
             sent_at, mid = e.get("sent_at") or None, e.get("message_id") or ""
-            if mid:
+            if mid and mid != (row["message_id"] or ""):
                 c.execute("UPDATE emails SET sent_at=COALESCE(?, sent_at), message_id=? WHERE id=?", (sent_at, mid, lid))
-            elif sent_at:
-                c.execute("UPDATE emails SET sent_at=COALESCE(?, sent_at) WHERE id=?", (sent_at, lid))
+            elif sent_at and sent_at != (row["sent_at"] or ""):
+                c.execute("UPDATE emails SET sent_at=? WHERE id=?", (sent_at, lid))
             c.execute("UPDATE contacts SET status='sent' "
-                      "WHERE id=(SELECT contact_id FROM emails WHERE id=?) AND status NOT IN ('replied','bounced')", (lid,))
+                      "WHERE id=(SELECT contact_id FROM emails WHERE id=?) "
+                      "AND status NOT IN ('replied','bounced','sent')", (lid,))
         if st == "sent" and e.get("bounced_at"):
             c.execute("UPDATE emails SET bounced_at=?, bounce_reason=COALESCE(NULLIF(?,''), bounce_reason) "
                       "WHERE id=? AND (bounced_at IS NULL OR bounced_at='')",
@@ -3856,7 +3866,7 @@ def api_home():
     out["campaigns"] = cams[:4]
 
     # result tiles (30 d default window; period filter is client-side cosmetic only
-    # until the API grows period params — see CHANGELOG-UI.md)
+    # until the API grows period params - see CHANGELOG-UI.md)
     c = db.conn()
     tiles = {
         "sent": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent'").fetchone()["n"],
