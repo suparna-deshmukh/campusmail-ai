@@ -2106,6 +2106,7 @@ def bounces_tick():
             continue
         c = db.conn()
         marked = []
+        retries = []
         for n in notices:
             if c.execute("SELECT 1 FROM processed_dsn WHERE account_id=? AND message_id=?",
                          (a["id"], n["message_id"])).fetchone():
@@ -2125,12 +2126,17 @@ def bounces_tick():
                 marked.append((row["id"], addr, reason))
             if not hard:
                 for addr, code in gmail_client.parse_retry_notice(n["text"], n["subject"]):
-                    db.log_activity("delivery_retry",
-                                    addr + " - temporary (" + code + "), Gmail retrying", "scheduler")
+                    retries.append(addr + " - temporary (" + code + "), Gmail retrying")
             c.execute("INSERT OR IGNORE INTO processed_dsn(account_id, message_id, processed_at) VALUES(?,?,?)",
                       (a["id"], n["message_id"], db.now_iso()))
+        # Commit and close BEFORE any log_activity call: log_activity opens its
+        # own connection, and a second writer on the same DB deadlocks against
+        # this uncommitted transaction ("database is locked" after the 30s busy
+        # timeout), which used to roll back every bounce mark and dedup row.
         c.commit()
         c.close()
+        for msg in retries:
+            db.log_activity("delivery_retry", msg, "scheduler")
         for eid, addr, reason in marked:
             db.log_activity("bounce_detected", str(eid) + " " + addr + " - " + reason[:140], "scheduler")
             try:
