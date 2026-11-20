@@ -293,7 +293,14 @@ def _apply_change(c, table, rid, op, payload):
                 local_id = by_email["id"]
     if local and _row_ms(local) > ms:
         return False  # local copy is newer
-    vals = [local_id] + [data.get(col) for col in cols if col != "id"]
+    # Version-skew guard: if the remote payload omits a column entirely (older
+    # code that predates it), keep our local value instead of clobbering it with
+    # NULL. Columns the remote knows about are applied verbatim.
+    if local:
+        keep = {col: local[col] for col in cols if col not in data}
+    else:
+        keep = {}
+    vals = [local_id] + [data.get(col, keep.get(col)) for col in cols if col != "id"]
     if local:
         # DELETE+INSERT: the INSERT trigger does not re-stamp updated_at when one is
         # supplied, so the remote timestamp stays authoritative (no echo, no LWW flip).

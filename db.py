@@ -725,10 +725,10 @@ def mark_opened(email_id):
         return False, None
     was_first = not row["opened_at"]
     if was_first:
-        c.execute("UPDATE emails SET opened_at=?, open_count=open_count+1 WHERE id=?",
+        c.execute("UPDATE emails SET opened_at=?, open_count=COALESCE(open_count,0)+1 WHERE id=?",
                   (now_iso(), eid))
     else:
-        c.execute("UPDATE emails SET open_count=open_count+1 WHERE id=?", (eid,))
+        c.execute("UPDATE emails SET open_count=COALESCE(open_count,0)+1 WHERE id=?", (eid,))
     c.commit()
     c.close()
     return True, None

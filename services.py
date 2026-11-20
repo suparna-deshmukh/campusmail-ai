@@ -662,7 +662,13 @@ def merge(d, actor, now=None):
         c.execute("INSERT INTO emails(batch_id, contact_id, serial, to_addr, subject, body_html, account_id, status) "
                   "VALUES(?,?,?,?,?,?,?,'pending')",
                   (bid, r["id"], r["serial"], r["hr_email"], subject, body, account_id))
-        eids.append(c.execute("SELECT last_insert_rowid() id").fetchone()["id"])
+        eid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+        # embed the open-tracking pixel at creation so EVERY path (send now,
+        # schedule, draft, later reminder) ships a trackable body
+        tracked = open_tracking_body(body, eid)
+        if tracked != body:
+            c.execute("UPDATE emails SET body_html=? WHERE id=?", (tracked, eid))
+        eids.append(eid)
     c.commit()
     if action == "create":
         db.log_activity("batch_create", "Batch '" + name + "' - " + str(len(rows)) + " emails queued (nothing sent)",

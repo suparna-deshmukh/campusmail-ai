@@ -314,8 +314,9 @@ def open_pixel_url(public_base, email_id, ns=""):
 
 
 def inject_open_pixel(body_html, pixel_url):
-    """Hide a tracking pixel in the HTML body so opens can be counted."""
-    if not pixel_url:
+    """Hide a tracking pixel in the HTML body so opens can be counted.
+    Idempotent: a body that already carries a pixel is returned unchanged."""
+    if not pixel_url or "/t/px/" in (body_html or ""):
         return body_html
     tag = '<img width="1" height="1" border="0" src="%s" alt="" style="width:1px;height:1px;">' % pixel_url
     if re.search(r"(?is)</(html|body)>", body_html):

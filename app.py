@@ -2165,7 +2165,7 @@ def reads_tick():
     c = db.conn()
     # A) reply => read
     n = c.execute(
-        "UPDATE emails SET opened_at=?, open_count=open_count+1 "
+        "UPDATE emails SET opened_at=?, open_count=COALESCE(open_count,0)+1 "
         "WHERE COALESCE(replied_at,'')!='' AND (opened_at IS NULL OR opened_at='') "
         "AND (bounced_at IS NULL OR bounced_at='')", (db.now_iso(),)).rowcount
     c.commit()
@@ -2215,7 +2215,7 @@ def reads_tick():
                 # receipts/replies only count when they come from our own recipient
                 continue
             c = db.conn()
-            c.execute("UPDATE emails SET opened_at=?, open_count=open_count+1 WHERE id=?",
+            c.execute("UPDATE emails SET opened_at=?, open_count=COALESCE(open_count,0)+1 WHERE id=?",
                       (db.now_iso(), hit))
             c.commit()
             c.close()
@@ -2352,6 +2352,8 @@ def reminders_tick():
             subj, body = render_email(tpl, dict(contact), mapping)
             subj = subj.replace("{first_subject}", e["subject"])
             body = body.replace("{first_subject}", e["subject"])
+            # reminders carry the same open-tracking pixel as the original
+            body = services.open_tracking_body(body, e["id"])
             try:
                 if not db.account_token_json(e["account_id"]):
                     raise RuntimeError("send account lost its login")
@@ -2534,7 +2536,7 @@ def relay_status_pull():
         # open + reply state from the cloud (both instances poll, so apply when
         # the remote side has data we lack - first-open wins, count accumulates)
         if e.get("opened_at") and not (row["opened_at"] or ""):
-            c.execute("UPDATE emails SET opened_at=?, open_count=open_count+COALESCE(?,0) WHERE id=?",
+            c.execute("UPDATE emails SET opened_at=?, open_count=COALESCE(open_count,0)+COALESCE(?,0) WHERE id=?",
                       (e["opened_at"], int(e.get("open_count") or 0), lid))
         elif e.get("open_count") and int(e.get("open_count") or 0) > int(row["open_count"] or 0) and row["opened_at"]:
             c.execute("UPDATE emails SET open_count=? WHERE id=?", (int(e["open_count"]), lid))
