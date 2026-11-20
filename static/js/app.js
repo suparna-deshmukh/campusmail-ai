@@ -1446,6 +1446,7 @@ Pages.reports = async function () {
     const s = await api("/api/reports/summary" + mparam());
     const cards = [
       ["Sent emails", s.sent, "outreach delivered", "green"],
+      ["Read", s.opened || 0, s.read_rate + "% of sent emails", "amber"],
       ["Replied", s.replied, "recruiters responded", "accent"],
       ["Bounced", s.bounced || 0, "address wrong / not exist", (s.bounced || 0) > 0 ? "red" : ""],
       ["Reply rate", s.reply_rate + "%", "of sent emails", ""],

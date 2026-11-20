@@ -27,6 +27,26 @@
 .funnel-val { font-size: 12.5px; font-weight: 650; text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .funnel-pct { font-size: 11.5px; color: var(--text-3); font-weight: 500; text-align: right; }
 .funnel-caption { font-size: 12px; color: var(--text-3); margin-top: 6px; }
+/* Delivery funnel: big number, small percentage, arrow between stages */
+.funnel2 { display: flex; flex-direction: column; gap: 8px; }
+.funnel2-row { display: grid; grid-template-columns: 150px 1fr 96px; gap: 12px; align-items: center; }
+.funnel2-label { font-size: 12.5px; font-weight: 550; color: var(--text-2); }
+.funnel2-mid { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.funnel2-bar { height: 16px; border-radius: 999px; background: var(--bg); overflow: hidden; }
+.funnel2-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--primary-500); }
+.funnel2-row.st-opened .funnel2-bar > i { background: var(--warn, #f59e0b); }
+.funnel2-row.st-read .funnel2-bar > i { background: #10b981; }
+.funnel2-row.st-replied .funnel2-bar > i { background: var(--accent, #3b82f6); }
+.funnel2-nums { text-align: right; }
+.funnel2-num { font-size: 24px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.funnel2-pct { font-size: 12px; color: var(--text-3); font-weight: 500; margin-top: 1px; }
+.funnel2-arrow { display: flex; align-items: center; gap: 8px; margin: 1px 0 1px 162px; }
+.funnel2-arrow .fl { font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: .02em; text-transform: uppercase; white-space: nowrap; }
+@media (max-width: 560px) {
+  .funnel2-row { grid-template-columns: 118px 1fr 84px; gap: 8px; }
+  .funnel2-arrow { margin-left: 130px; }
+  .funnel2-num { font-size: 20px; }
+}
 @media (max-width: 560px) {
   .funnel-row { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "label val" "bar bar"; row-gap: 6px; }
   .funnel-label { grid-area: label; white-space: nowrap; }

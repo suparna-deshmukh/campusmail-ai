@@ -583,6 +583,39 @@ function secAdvanced(col) {
       el("div", { class: "row", style: "gap:8px" }, rsec, rsave),
       packBtn)));
 
+  /* Open tracking */
+  const pb = el("input", { class: "input", value: SETTINGS.public_base || "", placeholder: "https://you.pythonanywhere.com", "aria-label": "Public base URL" });
+  const pbSave = el("button", { class: "btn btn-primary btn-sm" }, "Save");
+  pbSave.onclick = async () => {
+    await withLoading(pbSave, async () => {
+      try {
+        await api("/api/settings", { body: { public_base: pb.value.trim() } });
+        toast("Public URL saved. Open-tracking pixels now point here.");
+        render();
+      } catch (e) { toast(e.message, { type: "error" }); }
+    });
+  };
+  const trackOn = (SETTINGS.track_opens || "1") !== "0";
+  const trackSw = switchInput(trackOn, async (on) => {
+    try {
+      await api("/api/settings", { body: { track_opens: on ? "1" : "0" } });
+      toast(on ? "Open tracking is on for new sends." : "Open tracking is off.");
+    } catch (e) { toast(e.message, { type: "error" }); }
+  }, "Open tracking");
+  const pbOn = (SETTINGS.public_base || "").trim() !== "";
+  col.append(acc("Open tracking", (trackOn && pbOn) ? "On" : "Off", (trackOn && pbOn) ? "check-circle-2" : "circle-dashed", () =>
+    el("div", { style: "display:flex;flex-direction:column;gap:12px;padding-top:12px" },
+      el("div", { class: "set-row" },
+        el("div", { class: "set-row-main" },
+          el("div", { class: "set-row-label" }, "Count opens"),
+          el("div", { class: "set-row-help" }, "Adds a 1x1 pixel to new sends; the campaign funnel's Read stage lights up when a recipient opens the email.")),
+        trackSw),
+      el("div", { class: "set-row" },
+        el("div", { class: "set-row-main" },
+          el("div", { class: "set-row-label" }, "Public URL"),
+          el("div", { class: "set-row-help" }, "The public web address (e.g. your PythonAnywhere subdomain). The pixel must be reachable from the recipient's mail client, so it always points at the web instance.")),
+        el("div", { class: "row", style: "gap:8px" }, pb, pbSave)))));
+
   /* Sync status */
   const syncBody = el("div", { style: "padding-top:12px" },
     el("div", { class: "t-small t-faint" }, "Loading sync status…"));

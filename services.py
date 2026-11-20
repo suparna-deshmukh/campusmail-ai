@@ -91,6 +91,21 @@ def render_email(tpl, row, mapping):
     return subject, body
 
 
+def open_tracking_body(body_html, email_id, ns=""):
+    """Inject a 1x1 open-tracking pixel for a campaign send. No-op when
+    tracking is off or no public base URL is configured (pixel must be
+    reachable from the recipient's mail client, so it always points at the
+    public/web instance)."""
+    if (db.get_setting("track_opens", "1") or "") == "0":
+        return body_html
+    import gmail_client
+    url = gmail_client.open_pixel_url(db.get_setting("public_base", ""), email_id,
+                                      ns or db.open_tenant_ns())
+    if not url:
+        return body_html
+    return gmail_client.inject_open_pixel(body_html, url)
+
+
 def signature_html():
     return db.get_setting("signature_html", "")
 
@@ -697,7 +712,8 @@ def merge(d, actor, now=None):
                 try:
                     batch = c.execute("SELECT * FROM batches WHERE id=?", (bid,)).fetchone()
                     attach = load_attachments(dict(batch)) if batch else []
-                    gmail_client.create_draft(account_id, r["to_addr"], r["subject"], r["body_html"],
+                    gmail_client.create_draft(account_id, r["to_addr"], r["subject"],
+                                              open_tracking_body(r["body_html"], eid),
                                               attach or None, cc_of(dict(batch)))
                     c.execute("UPDATE emails SET status='drafted', account_id=?, error='' WHERE id=?", (account_id, eid))
                     c.execute("UPDATE contacts SET status='drafted' WHERE id=?", (r["contact_id"],))
@@ -719,7 +735,8 @@ def merge(d, actor, now=None):
                 try:
                     batch = c.execute("SELECT * FROM batches WHERE id=?", (bid,)).fetchone()
                     attach = load_attachments(dict(batch)) if batch else []
-                    res = gmail_client.send_with_retry(account_id, r["to_addr"], r["subject"], r["body_html"],
+                    res = gmail_client.send_with_retry(account_id, r["to_addr"], r["subject"],
+                                                       open_tracking_body(r["body_html"], eid),
                                                        attach or None, cc_of(dict(batch)))
                     mid = res.get("message_id", "") if isinstance(res, dict) else ""
                     c.execute("UPDATE emails SET status='sent', account_id=?, sent_at=?, error='', message_id=? WHERE id=?",
@@ -1226,7 +1243,7 @@ VALID_KEYS = {"safe_mode", "max_sends_per_day", "default_stagger_min", "catchup_
               "storage_backend", "supabase_url", "supabase_bucket",
               "send_undo_seconds", "bulk_confirm_threshold",
               "ai_daily_calls_per_user", "ai_daily_tokens_per_user", "ai_daily_calls_workspace",
-              "presend_test_suggest_min"} | ADMIN_ONLY_KEYS
+              "presend_test_suggest_min", "public_base", "track_opens"} | ADMIN_ONLY_KEYS
 
 
 def send_rail_settings():
@@ -1511,7 +1528,8 @@ def batch_send_as(bid, action, at="", stagger=0, account_id=0, actor=None, inter
             try:
                 batch = c.execute("SELECT * FROM batches WHERE id=?", (int(bid),)).fetchone()
                 attach = load_attachments(dict(batch)) if batch else []
-                gmail_client.create_draft(int(account_id), r["to_addr"], r["subject"], r["body_html"],
+                gmail_client.create_draft(int(account_id), r["to_addr"], r["subject"],
+                                          open_tracking_body(r["body_html"], eid),
                                           attach or None, cc_of(dict(batch)))
                 c.execute("UPDATE emails SET status='drafted', account_id=?, error='' WHERE id=?", (int(account_id), eid))
                 c.execute("UPDATE contacts SET status='drafted' WHERE id=?", (r["contact_id"],))
@@ -1563,7 +1581,8 @@ def batch_send_as(bid, action, at="", stagger=0, account_id=0, actor=None, inter
                 try:
                     batch = c.execute("SELECT * FROM batches WHERE id=?", (int(bid),)).fetchone()
                     attach = load_attachments(dict(batch)) if batch else []
-                    res = gmail_client.send_with_retry(int(account_id), r["to_addr"], r["subject"], r["body_html"],
+                    res = gmail_client.send_with_retry(int(account_id), r["to_addr"], r["subject"],
+                                                       open_tracking_body(r["body_html"], eid),
                                                        attach or None, cc_of(dict(batch)))
                     mid = res.get("message_id", "") if isinstance(res, dict) else ""
                     c.execute("UPDATE emails SET status='sent', account_id=?, sent_at=?, error='', message_id=? WHERE id=?",

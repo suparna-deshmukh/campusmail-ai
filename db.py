@@ -472,7 +472,9 @@ def _migrate(c):
             ("bounce_reason", "TEXT DEFAULT ''"),
             ("reminder_count", "INTEGER DEFAULT 0"),
             ("is_reminder", "INTEGER DEFAULT 0"),
-            ("handled_at", "TEXT")):
+            ("handled_at", "TEXT"),
+            ("opened_at", "TEXT"),
+            ("open_count", "INTEGER DEFAULT 0")):
         if col not in cols:
             c.execute("ALTER TABLE emails ADD COLUMN " + col + " " + decl)
     bcols = {r["name"] for r in c.execute("PRAGMA table_info(batches)").fetchall()}
@@ -661,6 +663,75 @@ def set_setting(key, value):
               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
     c.commit()
     c.close()
+
+
+def open_tenant_ns():
+    """Namespace of the CURRENT tenant DB: '' for the team DB, or the 16-hex
+    workspace key for a personal DB (so an open-pixel resolves to the right DB)."""
+    p = Path(tenant_db())
+    if p == Path(DB_PATH):
+        return ""
+    return p.stem
+
+
+def _open_secret():
+    """Secret for open-tracking tokens. Shared between local + public so the
+    pixel (fetched on the public instance) can be resolved. Defaults to the
+    relay secret; falls back to a constant so same-instance tracking works."""
+    v = (get_setting("open_track_secret", "") or "").strip()
+    if v:
+        return v
+    v = (get_setting("cloud_relay_secret", "") or "").strip()
+    if v:
+        return v
+    return "campusmail-open-track-v1"
+
+
+def open_token_for(email_id, ns=""):
+    """Stateless, verifiable open-tracking token. ns = tenant namespace:
+    '' for the team DB, or a 16-hex workspace key for a personal DB."""
+    import base64, hashlib, hmac
+    payload = (ns + ":" + str(int(email_id))).encode()
+    b64 = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    mac = hmac.new(_open_secret().encode(), b64.encode(), hashlib.sha256).hexdigest()[:24]
+    return b64 + "." + mac
+
+
+def open_token_decode(token):
+    """Return (namespace, email_id) from a token, or None if MAC is invalid."""
+    import base64, hashlib, hmac
+    if not token or "." not in token:
+        return None
+    b64, _, mac = token.partition(".")
+    expect = hmac.new(_open_secret().encode(), b64.encode(), hashlib.sha256).hexdigest()[:24]
+    if not hmac.compare_digest(expect, mac):
+        return None
+    pad = b64 + "=" * (-len(b64) % 4)
+    try:
+        ns, _, eid = base64.urlsafe_b64decode(pad.encode()).decode().partition(":")
+        return ns, int(eid)
+    except Exception:
+        return None
+
+
+def mark_opened(email_id):
+    """Record an open. Returns (was_first_open, row_or_None). First open sets
+    opened_at; repeats only bump open_count."""
+    eid = int(email_id)
+    c = conn()
+    row = c.execute("SELECT opened_at, open_count FROM emails WHERE id=?", (eid,)).fetchone()
+    if not row:
+        c.close()
+        return False, None
+    was_first = not row["opened_at"]
+    if was_first:
+        c.execute("UPDATE emails SET opened_at=?, open_count=open_count+1 WHERE id=?",
+                  (now_iso(), eid))
+    else:
+        c.execute("UPDATE emails SET open_count=open_count+1 WHERE id=?", (eid,))
+    c.commit()
+    c.close()
+    return True, None
 
 
 def get_user_setting(user_id, key, default=None):

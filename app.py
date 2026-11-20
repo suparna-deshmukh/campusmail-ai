@@ -92,6 +92,13 @@ def _enter_personal_tenant(email, display_name, team_status):
     pu["personal_workspace"] = True
     pu["team_status"] = team_status
     _RESOLVED_USER.set(pu)
+_PIXEL_1PX = Response(
+    base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII="
+    ),
+    mimetype="image/png")
+
+
 ALLOWED_ATTACH_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".txt", ".png",
                       ".jpg", ".jpeg", ".zip", ".ppt", ".pptx", ".html"}
 MAX_ATTACH_PER_BATCH = 10
@@ -612,6 +619,32 @@ def page_assistant():
     return redirect("/?ask=1")
 
 
+@app.route("/t/px/<path:token>")
+def open_track_pixel(token):
+    """Open-tracking pixel. Fetched by the recipient's mail client when the
+    email is opened. Unauthenticated by design: the HMAC token is the only
+    credential. Resolves to the right tenant DB (team or personal) and marks
+    the email opened."""
+    import app as _a
+    dec = db.open_token_decode(token)
+    if not dec:
+        return Response(b"", status=204)
+    ns, eid = dec
+    # pick the tenant DB for this open
+    if ns:
+        key = re.sub(r"[^0-9a-f]", "", ns)[:16]
+        if len(key) == 16:
+            pth = WORKSPACES_DIR / (key + ".db")
+            if pth.exists():
+                with db.tenant(pth):
+                    db.mark_opened(eid)
+                return _PIXEL_1PX
+    else:
+        with db.tenant(db.DB_PATH):
+            db.mark_opened(eid)
+    return _PIXEL_1PX
+
+
 @app.route("/local_img/<name>")
 @login_required
 def local_img(name):
@@ -647,6 +680,8 @@ def api_state():
     sent_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent'").fetchone()["n"]
     replied_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
                            "AND replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"]
+    opened_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND opened_at IS NOT NULL "
+                         "AND opened_at != ''").fetchone()["n"]
     bounced_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
                            "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"]
     reminders_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=1").fetchone()["n"]
@@ -673,8 +708,10 @@ def api_state():
                       "last_error": SCHEDULER_STATE["last_error"],
                       "due_now": due,
                       "next_fire": nxt["scheduled_at"] if nxt else None},
-        "reply": {"sent": sent_n, "replied": replied_n, "needs_reply": needs_n, "bounced": bounced_n,
+        "reply": {"sent": sent_n, "replied": replied_n, "opened": opened_n, "needs_reply": needs_n,
+                  "bounced": bounced_n,
                   "rate": round(100.0 * replied_n / sent_n) if sent_n else 0,
+                  "read_rate": round(100.0 * opened_n / sent_n) if sent_n else 0,
                   "reminders": reminders_n},
         "settings": {k: db.get_setting(k) for k in
                      ("safe_mode", "max_sends_per_day", "default_stagger_min", "catchup_policy",
@@ -1552,12 +1589,14 @@ def api_campaign_detail(cid):
     # recent replies. Additive fields only.
     srow = c.execute("""
         SELECT COUNT(*) AS n_emails,
+          SUM(CASE WHEN e.status='sent' THEN 1 ELSE 0 END) AS n_sent_total,
           SUM(CASE WHEN e.status='pending' THEN 1 ELSE 0 END) AS n_ready,
           SUM(CASE WHEN e.status='drafted' THEN 1 ELSE 0 END) AS n_drafted,
           SUM(CASE WHEN e.status='scheduled' THEN 1 ELSE 0 END) AS n_scheduled,
           SUM(CASE WHEN e.status='sent' AND COALESCE(e.bounced_at,'')='' AND COALESCE(e.replied_at,'')='' THEN 1 ELSE 0 END) AS n_sent,
           SUM(CASE WHEN COALESCE(e.replied_at,'')!='' THEN 1 ELSE 0 END) AS n_replied,
           SUM(CASE WHEN COALESCE(e.bounced_at,'')!='' THEN 1 ELSE 0 END) AS n_bounced,
+          SUM(CASE WHEN e.status='sent' AND COALESCE(e.opened_at,'')!='' THEN 1 ELSE 0 END) AS n_opened,
           SUM(CASE WHEN e.status='error' THEN 1 ELSE 0 END) AS n_failed,
           SUM(CASE WHEN e.status='cancelled' THEN 1 ELSE 0 END) AS n_stopped,
           SUM(CASE WHEN e.status='sent' AND COALESCE(e.replied_at,'')='' AND COALESCE(e.bounced_at,'')='' THEN 1 ELSE 0 END) AS n_sent_unreplied,
@@ -1567,9 +1606,11 @@ def api_campaign_detail(cid):
         WHERE b.campaign_id=? AND e.status != 'deleted' %s
     """ % (send_by, send_w), (cid,) + send_p).fetchone()
     summary = dict(srow)
-    for k in ("n_emails", "n_ready", "n_drafted", "n_scheduled", "n_sent",
-              "n_replied", "n_bounced", "n_failed", "n_stopped", "n_sent_unreplied"):
+    for k in ("n_emails", "n_sent_total", "n_ready", "n_drafted", "n_scheduled", "n_sent",
+              "n_replied", "n_bounced", "n_opened", "n_failed", "n_stopped", "n_sent_unreplied"):
         summary[k] = summary.get(k) or 0
+    # funnel stage 1 "total mails sent" = everything Gmail accepted (incl. in-flight)
+    summary["n_sent_all"] = summary["n_sent_total"]
     # delivery verification window: sent mails younger than this are still
     # "in flight" (Gmail retries up to ~72h; a DSN may still be on its way).
     # n_sent ("delivered so far") only counts mails past the window; the
@@ -1585,6 +1626,12 @@ def api_campaign_detail(cid):
             (cid,) + (vcut,) + send_p).fetchone()["n"]
     summary["n_verifying"] = verifying
     summary["n_sent"] = max(0, summary["n_sent"] - verifying)
+    # funnel stage 2 "successfully sent" = delivered = sent and not bounced.
+    # read and reply are subsets of this, so it is the base for their percentages.
+    summary["n_delivered"] = max(0, summary["n_sent_total"] - summary["n_bounced"])
+    base = summary["n_delivered"]
+    summary["read_rate"] = round(100.0 * summary["n_opened"] / base) if base else 0
+    summary["reply_rate"] = round(100.0 * summary["n_replied"] / base) if base else 0
     per_day = {r["d"]: r["n"] for r in c.execute("""
         SELECT date(e.sent_at) d, COUNT(*) n
         FROM emails e JOIN batches b ON e.batch_id=b.id %s
@@ -1812,6 +1859,8 @@ def _email_rows(params):
     status = params.get("status")
     if status == "replied":
         sql += " AND e.replied_at IS NOT NULL AND e.replied_at != ''"
+    elif status == "opened":
+        sql += " AND e.opened_at IS NOT NULL AND e.opened_at != ''"
     elif status == "bounced":
         sql += " AND e.bounced_at IS NOT NULL AND e.bounced_at != ''"
     elif status:
@@ -1836,6 +1885,8 @@ def _email_rows(params):
         sql += " ORDER BY e.status " + d + ", e.id ASC"
     elif sort == "time":
         sql += " ORDER BY COALESCE(e.sent_at, e.scheduled_at, e.created_at) " + d
+    elif sort == "opened":
+        sql += " ORDER BY e.opened_at " + d
     elif sort == "replied":
         sql += " ORDER BY e.replied_at " + d
     elif sort == "company":
@@ -2042,12 +2093,26 @@ def replies_tick():
     # short 1h grace post-send. (The delivery_verify_hours window still governs
     # "in-flight" delivery analytics in the reports SQL, not reply detection.)
     min_age = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    recent_cut = (datetime.utcnow() - timedelta(hours=48)).strftime("%Y-%m-%d %H:%M:%S")
+    base_where = ("status='sent' AND message_id != '' "
+                  "AND COALESCE(" + services.sent_at_utc_sql("sent_at") + ", '1970-01-01 00:00:00') <= ? "
+                  "AND (replied_at IS NULL OR replied_at = '') AND (bounced_at IS NULL OR bounced_at = '') ")
+    # fast path: anything sent in the last 48h is re-checked EVERY tick, so a
+    # reply that arrives after an earlier pass is still noticed within one tick.
     rows = [dict(r) for r in c.execute(
-        "SELECT * FROM emails WHERE status='sent' AND message_id != '' AND id > ? "
-        "AND COALESCE(" + services.sent_at_utc_sql("sent_at") + ", '1970-01-01 00:00:00') <= ? "
-        "AND (replied_at IS NULL OR replied_at = '') AND (bounced_at IS NULL OR bounced_at = '') "
-        "ORDER BY id LIMIT 40", (cursor, min_age)).fetchall()]
-    cursor = rows[-1]["id"] if len(rows) == 40 else 0
+        "SELECT * FROM emails WHERE " + base_where +
+        "AND " + services.sent_at_utc_sql("sent_at") + " > ? "
+        "ORDER BY id LIMIT 80", (min_age, recent_cut)).fetchall()]
+    # coverage: a rotating cursor keeps re-checking older sends, oldest-first,
+    # so a big campaign still gets full coverage over a few hours
+    older = [dict(r) for r in c.execute(
+        "SELECT * FROM emails WHERE " + base_where +
+        "AND " + services.sent_at_utc_sql("sent_at") + " <= ? AND id > ? "
+        "ORDER BY id LIMIT 40", (recent_cut, min_age, cursor)).fetchall()]
+    have = {r["id"] for r in rows}
+    rows.extend(r for r in older if r["id"] not in have)
+    # advance the coverage cursor only when the older query is full (more pages)
+    cursor = older[-1]["id"] if len(older) == 40 else 0
     c.execute("INSERT INTO tick_state(key, value) VALUES('replies_cursor', ?) "
               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(cursor),))
     c.commit()
@@ -2057,7 +2122,7 @@ def replies_tick():
     by_acct = {}
     for r in rows:
         if r["account_id"]:
-            by_acct.setdefault(r["account_id"], []).append((r["id"], r["message_id"]))
+            by_acct.setdefault(r["account_id"], []).append((r["id"], r["message_id"], r["to_addr"]))
     for acct, pairs in by_acct.items():
         if not db.account_token_json(acct):
             continue
@@ -2070,15 +2135,111 @@ def replies_tick():
             continue
         c = db.conn()
         for lid in found:
-            c.execute("UPDATE emails SET replied_at=? WHERE id=?", (db.now_iso(), int(lid)))
+            # a reply proves the mail was read too
+            c.execute("UPDATE emails SET replied_at=?, "
+                      "opened_at=CASE WHEN COALESCE(opened_at,'')='' THEN ? ELSE opened_at END, "
+                      "open_count=open_count+CASE WHEN COALESCE(opened_at,'')='' THEN 1 ELSE 0 END "
+                      "WHERE id=?", (db.now_iso(), db.now_iso(), int(lid)))
             r0 = c.execute("SELECT contact_id FROM emails WHERE id=?", (int(lid),)).fetchone()
-            if r0:
-                c.execute("UPDATE contacts SET status='replied' WHERE id=?", (r0["contact_id"],))
+            if r0 and r0["contact_id"]:
+                c.execute("UPDATE contacts SET status='replied' WHERE id=? "
+                          "AND status NOT IN ('replied')", (r0["contact_id"],))
         c.commit()
         c.close()
         for lid in found:
             db.log_activity("reply_detected", "email " + str(lid) + " replied", "scheduler")
             _cloud_push_email(int(lid))
+
+
+def reads_tick():
+    """Infer opens (reads) without a tracking pixel, so the Read stage is never
+    misleadingly 0. Two signals, both reliable:
+    A) a reply implies a read - any email that got replied to but has no
+       opened_at yet is marked read (backfill for pre-pixel mails).
+    B) recipient activity - if a recipient writes to us from their own
+       address (any subject, recent), they have seen our outreach; the most
+       recent sent mail to that address is marked read.
+    Bounced mails never count as read. The Read stage also covers future
+    opens via the tracking pixel; this keeps the number honest for mails sent
+    before pixels were on. Runs every 7.5 min, like bounces."""
+    c = db.conn()
+    # A) reply => read
+    n = c.execute(
+        "UPDATE emails SET opened_at=?, open_count=open_count+1 "
+        "WHERE COALESCE(replied_at,'')!='' AND (opened_at IS NULL OR opened_at='') "
+        "AND (bounced_at IS NULL OR bounced_at='')", (db.now_iso(),)).rowcount
+    c.commit()
+    c.close()
+    if n:
+        db.log_activity("read_inferred", str(n) + " mail(s) marked read (reply implies read)",
+                        "scheduler", throttle=3600)
+    # B) recipient wrote to us recently (any subject) or sent a read/delivery
+    # receipt. Extract the sender's address and map it to the most recent
+    # sent mail we have for that address.
+    c = db.conn()
+    cand = {r["to_addr"].lower(): r["id"] for r in c.execute(
+        "SELECT id, to_addr FROM emails WHERE is_reminder=0 AND status='sent' "
+        "AND (opened_at IS NULL OR opened_at='') AND (bounced_at IS NULL OR bounced_at='') "
+        "AND to_addr != ''")}
+    c.close()
+    if not cand:
+        return
+    import re as _re
+    from_addr_re = _re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+    marked = 0
+    for acct in _send_accounts():
+        svc = _gmail_svc(acct)
+        try:
+            r = svc.users().messages().list(
+                userId="me", q="is:inbox newer_than:45d", maxResults=150).execute()
+        except Exception as e:
+            db.log_activity("read_poll_error", str(e)[:150], "scheduler", throttle=3600)
+            continue
+        for m in r.get("messages", []):
+            if marked >= 40:
+                break
+            try:
+                msg = svc.users().messages().get(
+                    userId="me", id=m["id"], format="metadata").execute()
+                h = {x.get("name", "").lower(): x.get("value", "")
+                     for x in msg.get("payload", {}).get("headers", [])}
+            except Exception:
+                continue
+            frm_raw = (h.get("from") or "").lower()
+            ma = from_addr_re.search(frm_raw)
+            if not ma:
+                continue
+            sender = ma.group(0).lower().strip()
+            hit = cand.get(sender)
+            if not hit:
+                # receipts/replies only count when they come from our own recipient
+                continue
+            c = db.conn()
+            c.execute("UPDATE emails SET opened_at=?, open_count=open_count+1 WHERE id=?",
+                      (db.now_iso(), hit))
+            c.commit()
+            c.close()
+            marked += 1
+            del cand[sender]  # don't re-mark the same recipient twice this pass
+    if marked:
+        db.log_activity("read_inferred", str(marked) + " mail(s) marked read (recipient wrote back)",
+                        "scheduler", throttle=3600)
+
+
+def _send_accounts():  db.log_activity("read_inferred", str(marked) + " mail(s) marked read (recipient wrote back)",
+                        "scheduler", throttle=3600)
+
+
+def _send_accounts():
+    c = db.conn()
+    accts = [r["id"] for r in c.execute("SELECT id FROM gmail_accounts").fetchall()]
+    c.close()
+    return [a for a in accts if db.account_token_json(a)]
+
+
+def _gmail_svc(acct):
+    import gmail_client
+    return gmail_client.get_service(acct)
 
 
 def bounces_tick():
@@ -2294,7 +2455,8 @@ def _cloud_push_email(email_id, status=None):
         "sent_at": r["sent_at"], "message_id": r["message_id"], "error": r["error"],
         "reminder_days": rem_days, "reminder_max": rem_max,
         "reminder_subject": rem_subj, "reminder_body": rem_body,
-        "replied_at": r["replied_at"],
+        "replied_at": r["replied_at"] or "",
+        "opened_at": r["opened_at"] or "", "open_count": int(r["open_count"] or 0),
         "bounced_at": r["bounced_at"] or "", "bounce_reason": (r["bounce_reason"] or ""),
         "undo_hold": bool(services.undo_hold_for_batch(r["batch_id"])) if r["batch_id"] else False,
     }]}
@@ -2329,7 +2491,8 @@ def relay_status_pull():
         lid, st = e.get("local_id"), e.get("status")
         if not lid or st not in ("sent", "error", "scheduled", "cancelled", "drafted"):
             continue
-        row = c.execute("SELECT status, error, sent_at, message_id, reminder_count "
+        row = c.execute("SELECT status, error, sent_at, message_id, reminder_count, "
+                        "replied_at, opened_at, open_count "
                         "FROM emails WHERE id=?", (lid,)).fetchone()
         if row and row["status"] == "deleted":
             continue  # locally deleted - never resurrect from cloud status
@@ -2368,6 +2531,17 @@ def relay_status_pull():
             c.execute("UPDATE contacts SET status='sent' "
                       "WHERE id=(SELECT contact_id FROM emails WHERE id=?) "
                       "AND status NOT IN ('replied','bounced','sent')", (lid,))
+        # open + reply state from the cloud (both instances poll, so apply when
+        # the remote side has data we lack - first-open wins, count accumulates)
+        if e.get("opened_at") and not (row["opened_at"] or ""):
+            c.execute("UPDATE emails SET opened_at=?, open_count=open_count+COALESCE(?,0) WHERE id=?",
+                      (e["opened_at"], int(e.get("open_count") or 0), lid))
+        elif e.get("open_count") and int(e.get("open_count") or 0) > int(row["open_count"] or 0) and row["opened_at"]:
+            c.execute("UPDATE emails SET open_count=? WHERE id=?", (int(e["open_count"]), lid))
+        if e.get("replied_at") and not (row["replied_at"] or ""):
+            c.execute("UPDATE emails SET replied_at=? WHERE id=?", (e["replied_at"], lid))
+            c.execute("UPDATE contacts SET status='replied' WHERE id=(SELECT contact_id FROM emails WHERE id=?) "
+                      "AND status NOT IN ('replied')", (lid,))
         if st == "sent" and e.get("bounced_at"):
             c.execute("UPDATE emails SET bounced_at=?, bounce_reason=COALESCE(NULLIF(?,''), bounce_reason) "
                       "WHERE id=? AND (bounced_at IS NULL OR bounced_at='')",
@@ -2418,7 +2592,7 @@ def scheduler_tick():
         return
     if _relay_enabled():
         relay_status_pull()
-        if TICK_COUNTER["n"] % 10 == 0:
+        if TICK_COUNTER["n"] % 5 == 0:
             try:
                 replies_tick()
             except Exception as e:
@@ -2426,6 +2600,10 @@ def scheduler_tick():
         if TICK_COUNTER["n"] % 30 == 0:
             try:
                 bounces_tick()
+            except Exception as e:
+                SCHEDULER_STATE["last_error"] = str(e)[:200]
+            try:
+                reads_tick()
             except Exception as e:
                 SCHEDULER_STATE["last_error"] = str(e)[:200]
         TICK_COUNTER["n"] += 1
@@ -2515,7 +2693,7 @@ def scheduler_tick():
         reminders_tick()
     except Exception as e:
         SCHEDULER_STATE["last_error"] = str(e)[:200]
-    if TICK_COUNTER["n"] % 10 == 0:
+    if TICK_COUNTER["n"] % 5 == 0:
         try:
             replies_tick()
         except Exception as e:
@@ -2523,6 +2701,10 @@ def scheduler_tick():
     if TICK_COUNTER["n"] % 30 == 0:
         try:
             bounces_tick()
+        except Exception as e:
+            SCHEDULER_STATE["last_error"] = str(e)[:200]
+        try:
+            reads_tick()
         except Exception as e:
             SCHEDULER_STATE["last_error"] = str(e)[:200]
 
@@ -3542,6 +3724,9 @@ def api_reports_summary():
     bounced_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj +
                           " WHERE is_reminder=0 AND status='sent' AND bounced_at IS NOT NULL AND bounced_at != ''" + msql,
                           margs).fetchone()["n"]
+    opened_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj +
+                         " WHERE is_reminder=0 AND opened_at IS NOT NULL AND opened_at != ''" + msql,
+                         margs).fetchone()["n"]
     days = []
     for i in range(13, -1, -1):
         d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
@@ -3566,8 +3751,10 @@ def api_reports_summary():
         "GROUP BY member ORDER BY sent DESC, total DESC").fetchall()]
     c.close()
     reply_rate = round(100.0 * replied_n / sent_n) if sent_n else 0
+    read_rate = round(100.0 * opened_n / sent_n) if sent_n else 0
     return jsonify({"ok": True, "emails": emails, "reminders": reminders,
-                    "sent": sent_n, "replied": replied_n, "bounced": bounced_n, "reply_rate": reply_rate,
+                    "sent": sent_n, "replied": replied_n, "opened": opened_n, "bounced": bounced_n,
+                    "reply_rate": reply_rate, "read_rate": read_rate,
                     "days": days, "companies": companies, "members": members})
 
 

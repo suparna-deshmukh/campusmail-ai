@@ -14,8 +14,8 @@ import { openTimePicker } from "/static/js/components/timepicker.js";
 import { openModeCard } from "/static/js/core/shell.js";
 
 const PAGE = 50;
-const STATUS_PARAM = { all: "", ready: "pending", drafted: "drafted", scheduled: "scheduled", sent: "sent", replied: "replied", bounced: "bounced", failed: "error", stopped: "cancelled" };
-const FILTER_ORDER = ["ready", "drafted", "scheduled", "sent", "replied", "bounced", "failed", "stopped"];
+const STATUS_PARAM = { all: "", ready: "pending", drafted: "drafted", scheduled: "scheduled", sent: "sent", replied: "replied", opened: "opened", bounced: "bounced", failed: "error", stopped: "cancelled" };
+const FILTER_ORDER = ["ready", "drafted", "scheduled", "sent", "replied", "opened", "bounced", "failed", "stopped"];
 const SORT_PARAM = { recipient: "company", status: "status", time: "time" };
 const SORT_DIR = { recipient: "asc", status: "asc", time: "desc" };
 

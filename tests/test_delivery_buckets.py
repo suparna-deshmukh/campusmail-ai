@@ -40,7 +40,7 @@ def test_replies_tick_skips_bounced(tenant, mock_gmail):
     good = _add_sent("a", 1, 5 * 24)        # past the 72h delivery window
     bad = _add_sent("b", 1, 5 * 24, bounce=True)
     appmod.replies_tick()
-    polled = [eid for pairs in mock_gmail.reply_pairs for (eid, _) in pairs]
+    polled = [eid for pairs in mock_gmail.reply_pairs for (eid, _, _) in pairs]
     assert good[0] in polled, "delivered mails must be re-checked for replies"
     assert bad[0] not in polled, "bounced mails are terminal: stop re-checking them"
 
@@ -48,14 +48,14 @@ def test_replies_tick_skips_bounced(tenant, mock_gmail):
 def test_replies_tick_rotates_past_first_40(tenant, mock_gmail):
     ids = _add_sent("rot", 45, 5 * 24)
     appmod.replies_tick()
-    first = {eid for pairs in mock_gmail.reply_pairs for (eid, _) in pairs}
+    first = {eid for pairs in mock_gmail.reply_pairs for (eid, _, _) in pairs}
     assert len(first) == 40
     appmod.replies_tick()
-    second = {eid for pairs in mock_gmail.reply_pairs[1:] for (eid, _) in pairs}
+    second = {eid for pairs in mock_gmail.reply_pairs[1:] for (eid, _, _) in pairs}
     assert len(second) == 5
     assert first | second == set(ids), "every sent mail must be re-checked over time"
     appmod.replies_tick()
-    third = {eid for pairs in mock_gmail.reply_pairs[2:] for (eid, _) in pairs}
+    third = {eid for pairs in mock_gmail.reply_pairs[2:] for (eid, _, _) in pairs}
     assert third and third.issubset(first), "cursor wraps around to keep re-checking"
 
 
@@ -85,7 +85,7 @@ def test_replies_tick_starts_shortly_after_send(tenant, mock_gmail):
     mid = _add_sent("mid", 1, 2)            # 2h old: past the grace, check now
     old = _add_sent("old", 1, 5 * 24)       # confidently delivered
     appmod.replies_tick()
-    polled = [eid for pairs in mock_gmail.reply_pairs for (eid, _) in pairs]
+    polled = [eid for pairs in mock_gmail.reply_pairs for (eid, _, _) in pairs]
     assert young[0] not in polled, "mails within the 1h grace are not yet reply-checked"
     assert mid[0] in polled, "mails past the 1h grace get reply-checked promptly"
     assert old[0] in polled, "delivered mails get reply-checked"

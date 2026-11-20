@@ -8,6 +8,7 @@ export const STATUS = {
   scheduled:  { label: "Scheduled",        short: "Scheduled",  cls: "scheduled",  icon: "clock" },
   sent:       { label: "Sent",             short: "Sent",       cls: "sent",       icon: "send" },
   replied:    { label: "Replied",          short: "Replied",    cls: "replied",    icon: "reply" },
+  opened:     { label: "Opened",           short: "Opened",     cls: "sent",       icon: "eye" },
   bounced:    { label: "Bounced",          short: "Bounced",    cls: "bounced",    icon: "mail-x" },
   failed:     { label: "Failed",           short: "Failed",     cls: "failed",     icon: "alert-triangle" },
   stopped:    { label: "Stopped",          short: "Stopped",    cls: "stopped",    icon: "pause-circle" },

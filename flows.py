@@ -1367,13 +1367,14 @@ class Reply(Flow):
                     import gmail_client
                     reply_text = None
                     e = _one_row("SELECT * FROM emails WHERE id=?", (int(s["email_id"]),))
-                    pairs = [(e["message_id"], e["to_addr"])] if e.get("message_id") else []
+                    # (email_id, message_id, recipient) - check_replies only confirms
+                    # whether a reply exists; the reply text is fetched at the draft step.
+                    pairs = [(int(s["email_id"]), e["message_id"], e["to_addr"])] if e.get("message_id") else []
                     if pairs:
                         try:
                             res = gmail_client.check_replies(int(e["account_id"] or _account_default(conv)), pairs)
-                            for item in (res if isinstance(res, list) else res.get("replies", [])):
-                                if isinstance(item, dict):
-                                    reply_text = item.get("body") or item.get("snippet")
+                            if isinstance(res, dict) and str(s["email_id"]) in res:
+                                reply_text = None
                         except Exception:
                             reply_text = None
                     text = _gen(conv, ai_client.suggest_reply, e.get("body_html") or "", reply_text or "")

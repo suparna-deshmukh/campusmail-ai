@@ -24,7 +24,7 @@ let tabsEl = null;
 /* ---------------- derived ---------------- */
 function counts() {
   const s = data.summary;
-  return { all: s.n_emails, ready: s.n_ready, drafted: s.n_drafted, scheduled: s.n_scheduled, sent: s.n_sent, replied: s.n_replied, bounced: s.n_bounced, failed: s.n_failed, stopped: s.n_stopped };
+  return { all: s.n_emails, ready: s.n_ready, drafted: s.n_drafted, scheduled: s.n_scheduled, sent: s.n_sent, opened: s.n_opened, replied: s.n_replied, bounced: s.n_bounced, failed: s.n_failed, stopped: s.n_stopped };
 }
 function campaignStatus() {
   const s = data.summary;
@@ -321,7 +321,8 @@ function countUp(node, to) {
 
 function statTiles() {
   const s = data.summary;
-  const rate = s.n_sent ? (100 * s.n_replied / s.n_sent) : 0;
+  const delivered = s.n_delivered != null ? s.n_delivered : (s.n_sent || 0);
+  const rate = s.n_sent ? (100 * (s.n_replied || 0) / s.n_sent) : 0;
   const tile = (label, value, sub, href, isPct = false) => {
     const v = el("div", { class: "stat-value" }, "0");
     const a = el("a", { class: "stat stat-link", href }, label, v, el("div", { class: "stat-sub" }, sub));
@@ -338,11 +339,13 @@ function statTiles() {
     });
     return a;
   };
+  const readRate = delivered ? (100 * (s.n_opened || 0) / delivered) : 0;
   return el("div", { class: "stat-row" },
     tile("Sent", s.n_sent, "delivered so far", "?tab=emails&status=sent"),
     (s.n_verifying || 0) > 0
       ? tile("Verifying", s.n_verifying, "delivery in flight, re-checking", "?tab=emails")
       : null,
+    tile("Read", s.n_opened || 0, delivered ? readRate + "% of delivered mails" : "not tracked", "?tab=emails&status=opened"),
     tile("Replied", s.n_replied, "people wrote back", "?tab=emails&status=replied"),
     tile("Reply rate", rate, s.n_sent ? "of " + fmtInt(s.n_sent) + " sent" : "no sends yet", "?tab=emails&status=replied", true),
     tile("Bounced", s.n_bounced, "addresses that did not work", "?tab=emails&status=bounced"));
@@ -350,32 +353,49 @@ function statTiles() {
 
 function funnelCard() {
   const s = data.summary;
-  // each row's percentage is relative to its own base stage (not the row above):
-  // bounced and replied are both measured against emailed
-  const items = [
-    { label: "Contacts", n: data.n_contacts, op: 1, base: -1 },
-    { label: "Emailed", n: data.n_emailed || 0, op: 0.55, base: 0 },
+  // staged funnel: total sent -> delivered -> read -> replied.
+  // each stage's percentage is of its own parent stage; bar width vs the total.
+  const sentAll = s.n_sent_all || (s.n_sent || 0) + (s.n_verifying || 0);
+  const delivered = s.n_delivered != null ? s.n_delivered : (s.n_sent || 0);
+  const stages = [
+    { label: "Total mails sent", n: sentAll, base: null, cls: "st-sent" },
+    { label: "Successfully sent", n: delivered, base: sentAll, cls: "st-delivered" },
+    { label: "Read", n: s.n_opened || 0, base: delivered, cls: "st-opened" },
+    { label: "Reply", n: s.n_replied || 0, base: delivered, cls: "st-replied" },
   ];
-  if (s.n_bounced) items.push({ label: "Bounced", n: s.n_bounced, op: 0.9, cls: "bar-bounced", base: 1 });
-  items.push({ label: "Replied", n: s.n_replied, op: 0.3, base: 1 });
-  const max = Math.max(1, ...items.map((it) => it.n));
-  const rows = items.map((it) => {
-    const base = it.base < 0 ? null : items[it.base];
-    const pct = !base ? "your list"
-      : base.n === 0 ? "no " + base.label.toLowerCase() + " yet"
-      : Math.round(100 * it.n / base.n) + "% of " + base.label.toLowerCase();
-    return el("div", { class: "funnel-row" },
-      el("div", { class: "funnel-label" }, it.label),
-      el("div", { class: "funnel-bar" + (it.cls ? " " + it.cls : ""), style: "width:" + Math.min(100, Math.max(2, 100 * it.n / max)) + "%;opacity:" + it.op }),
-      el("div", {},
-        el("div", { class: "funnel-val" }, fmtInt(it.n)),
-        el("div", { class: "funnel-pct" }, pct)));
+  const top = Math.max(1, stages[0].n);
+  const pctOf = (st, parent) => {
+    if (parent === null) return "base stage";
+    if (!parent) return "no sends yet";
+    return Math.round(100 * st.n / parent) + "%";
+  };
+  const children = [];
+  stages.forEach((st, i) => {
+    if (i) {
+      const prev = stages[i - 1];
+      const between = prev.n ? Math.round(100 * st.n / prev.n) : 0;
+      children.push(el("div", { class: "funnel2-arrow" },
+        icon("chevron-down", "i i-14"),
+        el("span", { class: "fl" }, prev.n ? between + "% reach" : "—")));
+    }
+    const w = Math.max(2, 100 * st.n / top);
+    children.push(el("div", { class: "funnel2-row " + st.cls },
+      el("div", { class: "funnel2-label" }, st.label),
+      el("div", { class: "funnel2-mid" },
+        el("div", { class: "funnel2-bar" }, el("i", { style: "width:" + w + "%" }))),
+      el("div", { class: "funnel2-nums" },
+        el("div", { class: "funnel2-num" }, fmtInt(st.n)),
+        el("div", { class: "funnel2-pct" }, pctOf(st, st.base)))));
   });
   const extra = [];
+  if (s.n_bounced) extra.push(fmtInt(s.n_bounced) + " bounced");
   if (s.n_failed) extra.push(fmtInt(s.n_failed) + " failed");
+  if (s.n_verifying) extra.push(fmtInt(s.n_verifying) + " still verifying");
   return el("div", { class: "card" },
-    el("div", { class: "card-head" }, el("div", { class: "t-card" }, "From contact to reply")),
-    el("div", { class: "funnel" }, ...rows),
+    el("div", { class: "card-head" },
+      el("div", { class: "t-card" }, "Delivery funnel"),
+      el("span", { class: "t-caption push" }, "read + reply need open-tracking on")),
+    el("div", { class: "funnel2" }, ...children),
     extra.length ? el("div", { class: "funnel-caption" }, extra.join(" · ")) : null);
 }
 

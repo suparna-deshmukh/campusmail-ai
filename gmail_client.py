@@ -279,28 +279,88 @@ def send_with_retry(account_id, to_addr, subject, body_html, attachments=None, c
     raise last
 
 
+def _headers_of(svc, msg_id):
+    """Header dict (lowercase names -> value) for one message, or {} on error."""
+    try:
+        meta = svc.users().messages().get(userId="me", id=msg_id,
+                                          format="metadata").execute()
+        return {h.get("name", "").lower(): h.get("value", "")
+                for h in meta.get("payload", {}).get("headers", [])}
+    except Exception:
+        return {}
+
+
+def is_auto_reply(headers):
+    """True for machine-generated mail (out-of-office / auto-forward receipts).
+    An OOO bounce-back proves the mailbox got the mail (a read signal) but is
+    not a human response, so it must not count as a recruiter reply."""
+    auto = (headers.get("auto-submitted") or "").strip().lower()
+    if auto in ("auto-replied", "auto-generated", "autoreply"):
+        return True
+    subj = (headers.get("subject") or "").strip().lower()
+    return subj.startswith(("automatic reply", "auto-reply", "autoforward",
+                            "out of office", "out-of-office", "o.o.o.",
+                            "traveling notice", "travel notice"))
+
+
+def open_pixel_url(public_base, email_id, ns=""):
+    """1x1 tracking-pixel URL for open-tracking; empty when unconfigured."""
+    base = (public_base or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if not base.startswith("http://") and not base.startswith("https://"):
+        base = "https://" + base
+    return "%s/t/px/%s" % (base, db.open_token_for(email_id, ns))
+
+
+def inject_open_pixel(body_html, pixel_url):
+    """Hide a tracking pixel in the HTML body so opens can be counted."""
+    if not pixel_url:
+        return body_html
+    tag = '<img width="1" height="1" border="0" src="%s" alt="" style="width:1px;height:1px;">' % pixel_url
+    if re.search(r"(?is)</(html|body)>", body_html):
+        return re.sub(r"(?is)</(html|body)>", tag + r"</\1>", body_html, count=1)
+    return body_html + tag
+
+
 def check_replies(account_id, pairs):
     """Check which of the given sent messages got a reply.
-    pairs: list of (local_email_id, message_id). Returns dict local_email_id -> True."""
+    pairs: list of (local_email_id, message_id, recipient_addr). Returns
+    dict local_email_id -> True.
+
+    Gmail search does NOT index the In-Reply-To / References headers, so the
+    old '"in-reply-to: <mid>"' queries could never match a real reply (the
+    reply counter stayed at 0). Reliable detection: pull the recent mail from
+    the recipient, then match the sent Message-Id against each header on the
+    client side. Recipient-scoped queries keep the volume small."""
     import time
     svc = get_service(account_id)
     found = {}
-    for local_id, mid in pairs:
-        if not mid:
+    for local_id, mid, to_addr in pairs:
+        to_addr = (to_addr or "").strip()
+        if not mid and not to_addr:
             continue
-        hit = False
-        for q in ('(is:inbox OR is:spam) "in-reply-to: ' + mid + '"', '(is:inbox OR is:spam) "references: ' + mid + '"'):
+        mid_clean = (mid or "").strip("<>")
+        window = 45
+        for label in ("INBOX", "SPAM"):
+            if len(found) >= len(pairs):
+                break
+            q = "newer_than:%dd" % window
+            if to_addr:
+                q += " from:%s" % to_addr
             try:
-                r = svc.users().messages().list(userId="me", q=q, maxResults=1).execute()
-                if r.get("messages"):
-                    hit = True
-                    break
+                r = svc.users().messages().list(userId="me", q=q,
+                                                labelIds=label, maxResults=50).execute()
             except Exception:
                 break
-            time.sleep(0.15)
-        if hit:
-            found[str(local_id)] = True
-        time.sleep(0.15)
+            for m in r.get("messages", []):
+                h = _headers_of(svc, m["id"])
+                refs = (h.get("references") or "") + " " + (h.get("in-reply-to") or "")
+                if mid_clean and mid_clean in refs and not is_auto_reply(h):
+                    found[str(local_id)] = True
+                    break
+            time.sleep(0.1)
+        time.sleep(0.1)
     return found
 
 
