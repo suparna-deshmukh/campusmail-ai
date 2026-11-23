@@ -23,6 +23,7 @@ Protocol (docs/SYNC_V2.md):
 """
 import datetime
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -60,6 +61,8 @@ TABLE_ORDER = ["users", "campaigns", "email_templates", "sheets", "batches",
                "contacts", "emails", "activity"]
 
 SYNC_STATE = {"last_run": 0, "last_pull": 0, "last_attempt": 0, "halted": False}
+# Serializes sync ticks: two ticks must never talk to the relay at once.
+_TICK_LOCK = threading.Lock()
 # 500-row batches: a full-state resync (~3.3k rows) is 7 relay calls instead of
 # ~66 - the push window (and any DB lock pressure around it) stays short.
 PUSH_BATCH = 500
@@ -221,7 +224,9 @@ def _push_table(table, rows, dels):
                         "relay requires a newer client; this instance stops syncing. " + str(parsed.get("error", ""))[:150], "sync")
         SYNC_STATE["halted"] = True
         return False, 0, 0
-    if status in (429, 503, 507):
+    if status in (403, 429, 503, 507):
+        # 403 = relay per-instance rate limit (reason rateLimitExceeded); same
+        # remedy as 429 - back off, don't retry in a tight loop.
         _bump_fail("push " + table + " http " + str(status) + " " + str(parsed.get("error", ""))[:120])
         return False, 0, 0
     _bump_fail("push " + table + " http " + str(status))
@@ -318,6 +323,13 @@ def _apply_change(c, table, rid, op, payload):
 
 def sync_tick(force=False):
     """One push-then-pull cycle over all synced tables (best effort, guarded)."""
+    # Serialize sync: the scheduled tick and the /sync/force thread must never
+    # push to the relay at the same time. Concurrent bursts are what trips the
+    # relay's per-instance rate limit (403 rateLimitExceeded). If a tick is
+    # already running, skip this one - the next cadence will pick up anything
+    # still pending, so nothing is lost.
+    if not _TICK_LOCK.acquire(blocking=False):
+        return
     try:
         _sync_tick_inner(force)
     except Exception as e:
@@ -328,6 +340,8 @@ def sync_tick(force=False):
         except Exception:
             pass
         SYNC_STATE["last_run"] = time.time()
+    finally:
+        _TICK_LOCK.release()
 
 
 def _sync_tick_inner(force=False):
@@ -416,7 +430,8 @@ def _sync_tick_inner(force=False):
         SYNC_STATE["halted"] = True
         db.log_activity("sync_version_rejected", "changes: " + body[:150], "sync")
         return
-    if status in (429, 503, 507):
+    if status in (403, 429, 503, 507):
+        # 403 = relay per-instance rate limit (reason rateLimitExceeded)
         _bump_fail("changes http " + str(status) + " " + body[:120])
         return
     if status != 200:

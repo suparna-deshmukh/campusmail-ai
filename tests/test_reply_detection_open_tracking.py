@@ -364,3 +364,44 @@ def test_apply_change_remote_payload_missing_column(tenant):
     c.close()
     assert ok is True
     assert row["is_test"] == 0, "local is_test must survive a payload that omits it"
+
+
+# ---------------- sync rate-limit regression ----------------
+
+def test_sync_ticks_never_run_concurrently(client, tenant, monkeypatch):
+    """Root-cause regression for the relay 403 rateLimitExceeded bursts: the
+    scheduled tick and a force click used to run in two threads and push to
+    the relay at the same time. Ticks must serialize (skip if busy)."""
+    import threading
+    import sync_relay
+
+    ran = {"active": 0, "max_active": 0, "skipped": 0}
+    def fake_inner(force=False):
+        with _lock:
+            if ran["active"] > 0:
+                raise AssertionError("two sync ticks overlapped")
+            ran["active"] += 1
+            ran["max_active"] = max(ran["max_active"], ran["active"])
+        try:
+            import time as _t
+            _t.sleep(0.05)
+        finally:
+            with _lock:
+                ran["active"] -= 1
+    _lock = threading.Lock()
+    monkeypatch.setattr(sync_relay, "_sync_tick_inner", fake_inner)
+    monkeypatch.setattr(sync_relay.db, "get_setting", lambda k, d="0": "0")
+    monkeypatch.setattr(sync_relay.db, "set_setting", lambda *a: None)
+
+    # clear state so both ticks attempt to run
+    sync_relay.SYNC_STATE.update({"last_run": 0, "last_pull": 0, "last_attempt": 0, "halted": False})
+
+    results = []
+    def runner(force):
+        sync_relay.sync_tick(force=force)
+        results.append(force)
+    t1 = threading.Thread(target=runner, args=(False,))
+    t2 = threading.Thread(target=runner, args=(True,))
+    t1.start(); t2.start(); t1.join(5); t2.join(5)
+    assert ran["max_active"] == 1, "a tick must skip when one is running"
+    assert not any(r is None for r in results)
