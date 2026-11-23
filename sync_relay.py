@@ -39,7 +39,7 @@ SYNC_COLUMNS = {
     "emails": ["id", "batch_id", "contact_id", "serial", "to_addr", "subject",
                "status", "scheduled_at", "sent_at", "error", "account_id",
                "message_id", "replied_at", "opened_at", "open_count",
-               "bounced_at", "bounce_reason", "reminder_count", "is_reminder",
+               "bounced_at", "bounce_reason", "reminder_count", "is_reminder", "is_test",
                "created_at", "updated_at", "updated_at_ms"],
     "batches": ["id", "name", "template_id", "mapping", "account_id", "attachments",
                 "reminder_days", "reminder_template_id", "reminder_max",

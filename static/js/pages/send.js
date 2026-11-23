@@ -1596,7 +1596,7 @@ async function drawChecks() {
       } });
       toast(d.mode === "draft"
         ? "Test saved to your Gmail Drafts (Safe mode is on)."
-        : "Test sent to " + data.meEmail + " - check your inbox.", { type: "success", duration: 8000 });
+        : "Test sent to " + data.meEmail + " - open it in Gmail and it will show as read.", { type: "success", duration: 8000 });
     } catch (e) { toast(e.message, { type: "error" }); }
   }));
 }

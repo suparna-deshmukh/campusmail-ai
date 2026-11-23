@@ -852,7 +852,8 @@ def undo_send(bid, uid, actor=None):
 def sends_today(include_held=True):
     c = db.conn()
     local_today = datetime.now().strftime("%Y-%m-%d")
-    n = c.execute("SELECT COUNT(*) n FROM emails WHERE status='sent' AND sent_at >= ?",
+    # test/self mails (is_test=1) never count against the daily cap
+    n = c.execute("SELECT COUNT(*) n FROM emails WHERE COALESCE(is_test,0)=0 AND status='sent' AND sent_at >= ?",
                   (local_today + " 00:00:00",)).fetchone()["n"]
     c.close()
     if include_held:
@@ -1162,16 +1163,46 @@ def snoozed_ids():
     return rows
 
 
-def email_mark_replied(eid, actor=None):
+def email_mark_replied(eid, on=True, actor=None):
     c = db.conn()
     r = c.execute("SELECT * FROM emails WHERE id=?", (int(eid),)).fetchone()
     if not r:
         c.close()
         raise ServiceError("Email not found", 404)
-    c.execute("UPDATE emails SET replied_at=?, updated_at=? WHERE id=?", (db.now_iso(), db.now_iso(), int(eid)))
-    c.execute("UPDATE contacts SET status='replied' WHERE id=?", (r["contact_id"],))
+    if on:
+        c.execute("UPDATE emails SET replied_at=?, updated_at=? WHERE id=?", (db.now_iso(), db.now_iso(), int(eid)))
+        if r["contact_id"]:
+            c.execute("UPDATE contacts SET status='replied' WHERE id=?", (r["contact_id"],))
+    else:
+        c.execute("UPDATE emails SET replied_at=NULL, updated_at=? WHERE id=?", (db.now_iso(), int(eid)))
     c.commit()
-    db.log_activity("mark_replied", "Email %d marked replied manually" % int(eid), actor_email(actor))
+    db.log_activity("mark_replied" if on else "mark_not_replied",
+                    "Email %d %s manually" % (int(eid), "marked replied" if on else "marked not replied"),
+                    actor_email(actor))
+    c.close()
+    return {"ok": True}
+
+
+def email_mark_opened(eid, on=True, actor=None):
+    """Manually mark a mail as read (opened) or not. Mirrors email_mark_replied;
+    lets a user record a read they saw outside the platform (e.g. on their
+    phone) or correct a false positive. First open sets opened_at and counts 1;
+    un-mark clears it."""
+    c = db.conn()
+    r = c.execute("SELECT * FROM emails WHERE id=?", (int(eid),)).fetchone()
+    if not r:
+        c.close()
+        raise ServiceError("Email not found", 404)
+    if on:
+        c.execute("UPDATE emails SET opened_at=?, open_count=COALESCE(open_count,0)+1, updated_at=? WHERE id=?",
+                  (db.now_iso(), db.now_iso(), int(eid)))
+    else:
+        c.execute("UPDATE emails SET opened_at=NULL, open_count=0, updated_at=? WHERE id=?",
+                  (db.now_iso(), int(eid)))
+    c.commit()
+    db.log_activity("mark_opened" if on else "mark_not_opened",
+                    "Email %d %s manually" % (int(eid), "marked read" if on else "marked not read"),
+                    actor_email(actor))
     c.close()
     return {"ok": True}
 
@@ -1211,23 +1242,50 @@ def email_reply(eid, body, account_id, as_draft=False, actor=None):
 
 def test_email_send(account_id, to, subject, body_html, actor, template_id=None, content_hash=None):
     """Send a rendered test email (spec 11.7). In safe mode it becomes a Gmail
-    draft. Records a durable test-send when tied to a template version."""
+    draft. Records a durable test-send when tied to a template version.
+
+    Every test mail also becomes a real, trackable email row (is_test=1) with
+    the open-tracking pixel injected, so "send me a test" exercises exactly
+    the same read-receipt path as a real send. Test rows never count toward
+    campaign/reports analytics or the daily cap."""
     import gmail_client
     require_account(int(account_id), actor)
+    c = db.conn()
+    c.execute("INSERT INTO batches(name, campaign_id, template_id, mapping, account_id, created_at) "
+              "VALUES(?, 0, 0, '{}', ?, ?)", ("test mail", int(account_id), db.now_iso()))
+    bid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+    c.execute("INSERT INTO emails(batch_id, contact_id, serial, to_addr, subject, body_html, account_id, "
+              "status, is_test, created_at) VALUES(?, 0, 'T', ?, ?, ?, ?, 'pending', 1, ?)",
+              (bid, to, subject, body_html, int(account_id), db.now_iso()))
+    eid = c.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+    tracked = open_tracking_body(body_html, eid)
+    if tracked != body_html:
+        c.execute("UPDATE emails SET body_html=? WHERE id=?", (tracked, eid))
+    c.commit()
+    c.close()
     if db.get_setting("safe_mode") == "1":
-        gmail_client.create_draft(int(account_id), to, "[Test] " + subject, body_html)
+        gmail_client.create_draft(int(account_id), to, "[Test] " + subject, tracked)
         mode = "draft"
+        c = db.conn()
+        c.execute("UPDATE emails SET status='drafted', error='' WHERE id=?", (eid,))
+        c.commit(); c.close()
     else:
-        gmail_client.send_with_retry(int(account_id), to, "[Test] " + subject, body_html)
+        res = gmail_client.send_with_retry(int(account_id), to, "[Test] " + subject, tracked)
+        mid = res.get("message_id", "") if isinstance(res, dict) else ""
         mode = "sent"
-    db.log_activity("test_email_%s" % mode, "[Test] %s -> %s" % (subject[:60], to), actor_email(actor))
+        c = db.conn()
+        c.execute("UPDATE emails SET status='sent', sent_at=?, message_id=? WHERE id=?",
+                  (db.now_iso(), mid, eid))
+        c.commit(); c.close()
+        cloud_push_email(eid, "sent")
+    db.log_activity("test_email_%s" % mode, "[Test] %s -> %s (email %d)" % (subject[:60], to, eid), actor_email(actor))
     if template_id and content_hash:
         c = db.conn()
         c.execute("INSERT INTO template_test_sends(template_id, content_hash, user_id, sent_at) VALUES(?,?,?,?)",
                   (int(template_id), content_hash, int(actor["id"]), db.now_iso()))
         c.commit()
         c.close()
-    return {"ok": True, "mode": mode}
+    return {"ok": True, "mode": mode, "email_id": eid}
 
 
 def template_tested(template_id, content_hash):

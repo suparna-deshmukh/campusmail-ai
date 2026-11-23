@@ -42,6 +42,7 @@ export function statusOf(email) {
   if (email.status === "sent") {
     if (email.bounced_at) return "bounced";
     if (email.replied_at) return "replied";
+    if (email.opened_at) return "opened";
     return "sent";
   }
   return "ready";
@@ -60,6 +61,8 @@ export const MSG = {
   partial: (done, total, failed) => `${done} of ${total} done. ${failed} ${plural(failed, "mail")} ${failed === 1 ? "failed" : "failed"}.`,
   stopped: (n) => `Stopped ${n} ${plural(n, "email")}.`,
   markedReplied: () => "Marked as replied.",
+  markedRead: () => "Marked as read.",
+  markedNotRead: () => "Marked as not read.",
   liveOn: () => "Live sending is on. Scheduled emails will go out.",
   liveOff: () => "Drafts only. Nothing will be sent.",
   importDone: (added, updated) => `${added} ${plural(added, "contact")} added, ${updated} ${plural(updated, "contact")} updated.`,

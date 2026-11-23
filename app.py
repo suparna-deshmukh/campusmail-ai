@@ -677,17 +677,17 @@ def api_state():
     c = db.conn()
     due = c.execute("SELECT COUNT(*) n FROM emails WHERE status='scheduled' AND scheduled_at <= ?", (now,)).fetchone()["n"]
     nxt = c.execute("SELECT scheduled_at FROM emails WHERE status='scheduled' ORDER BY scheduled_at LIMIT 1").fetchone()
-    sent_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent'").fetchone()["n"]
+    sent_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND COALESCE(is_test,0)=0 AND status='sent'").fetchone()["n"]
     replied_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
-                           "AND replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"]
-    opened_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND opened_at IS NOT NULL "
+                           "AND COALESCE(is_test,0)=0 AND replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"]
+    opened_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND COALESCE(is_test,0)=0 AND opened_at IS NOT NULL "
                          "AND opened_at != ''").fetchone()["n"]
     bounced_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
-                           "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"]
+                           "AND COALESCE(is_test,0)=0 AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"]
     reminders_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=1").fetchone()["n"]
     needs_n = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
                         "AND replied_at IS NOT NULL AND replied_at != '' "
-                        "AND (handled_at IS NULL OR handled_at = '')").fetchone()["n"]
+                        "AND COALESCE(is_test,0)=0 AND (handled_at IS NULL OR handled_at = '')").fetchone()["n"]
     c.close()
     return jsonify({
         "ok": True,
@@ -1194,7 +1194,7 @@ def api_activity():
 @app.route("/api/reports/team-summary")
 @login_required
 def api_team_reports_summary():
-    where = ["e.status != 'deleted'", "b.id IS NOT NULL"]
+    where = ["e.status != 'deleted'", "b.id IS NOT NULL", "COALESCE(e.is_test,0)=0"]
     args = []
     cid = request.args.get("campaign_id")
     if cid:
@@ -1340,7 +1340,7 @@ def api_emails_test():
         return api_err(e.message, e.code)
     except Exception as e:
         return api_err(str(e)[:200], 409)
-    return jsonify({"ok": True, "mode": out["mode"]})
+    return jsonify({"ok": True, "mode": out["mode"], "email_id": out.get("email_id")})
 
 
 @app.route("/api/merge/suggest")
@@ -1464,15 +1464,15 @@ def api_campaigns():
     for cam in c.execute("SELECT * FROM campaigns ORDER BY id DESC").fetchall():
         st = {r["status"]: r["n"] for r in c.execute(
             "SELECT e.status, COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
-            "WHERE b.campaign_id=? AND e.status != 'deleted' GROUP BY e.status", (cam["id"],))}
+            "WHERE b.campaign_id=? AND e.status != 'deleted' AND COALESCE(e.is_test,0)=0 GROUP BY e.status", (cam["id"],))}
         sent = st.get("sent", 0)
         replied = c.execute(
             "SELECT COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
-            "WHERE b.campaign_id=? AND e.status='sent' AND e.replied_at IS NOT NULL AND e.replied_at!=''",
+            "WHERE b.campaign_id=? AND e.status='sent' AND COALESCE(e.is_test,0)=0 AND e.replied_at IS NOT NULL AND e.replied_at!=''",
             (cam["id"],)).fetchone()["n"]
         bounced = c.execute(
             "SELECT COUNT(*) n FROM emails e JOIN batches b ON e.batch_id=b.id "
-            "WHERE b.campaign_id=? AND e.status='sent' AND e.bounced_at IS NOT NULL AND e.bounced_at!=''",
+            "WHERE b.campaign_id=? AND e.status='sent' AND COALESCE(e.is_test,0)=0 AND e.bounced_at IS NOT NULL AND e.bounced_at!=''",
             (cam["id"],)).fetchone()["n"]
         n_sheets = c.execute("SELECT COUNT(*) n FROM sheets WHERE campaign_id=?", (cam["id"],)).fetchone()["n"]
         n_contacts = c.execute(
@@ -2072,7 +2072,7 @@ def api_email_reply_suggest(eid):
 def sends_today():
     c = db.conn()
     local_today = datetime.now().strftime("%Y-%m-%d")
-    n = c.execute("SELECT COUNT(*) n FROM emails WHERE status='sent' AND sent_at >= ?",
+    n = c.execute("SELECT COUNT(*) n FROM emails WHERE COALESCE(is_test,0)=0 AND status='sent' AND sent_at >= ?",
                   (local_today + " 00:00:00",)).fetchone()["n"]
     c.close()
     return n
@@ -2096,7 +2096,8 @@ def replies_tick():
     recent_cut = (datetime.utcnow() - timedelta(hours=48)).strftime("%Y-%m-%d %H:%M:%S")
     base_where = ("status='sent' AND message_id != '' "
                   "AND COALESCE(" + services.sent_at_utc_sql("sent_at") + ", '1970-01-01 00:00:00') <= ? "
-                  "AND (replied_at IS NULL OR replied_at = '') AND (bounced_at IS NULL OR bounced_at = '') ")
+                  "AND (replied_at IS NULL OR replied_at = '') AND (bounced_at IS NULL OR bounced_at = '') "
+                  "AND COALESCE(is_test,0)=0 ")
     # fast path: anything sent in the last 48h is re-checked EVERY tick, so a
     # reply that arrives after an earlier pass is still noticed within one tick.
     rows = [dict(r) for r in c.execute(
@@ -2178,7 +2179,7 @@ def reads_tick():
     # sent mail we have for that address.
     c = db.conn()
     cand = {r["to_addr"].lower(): r["id"] for r in c.execute(
-        "SELECT id, to_addr FROM emails WHERE is_reminder=0 AND status='sent' "
+        "SELECT id, to_addr FROM emails WHERE is_reminder=0 AND COALESCE(is_test,0)=0 AND status='sent' "
         "AND (opened_at IS NULL OR opened_at='') AND (bounced_at IS NULL OR bounced_at='') "
         "AND to_addr != ''")}
     c.close()
@@ -2223,10 +2224,6 @@ def reads_tick():
             del cand[sender]  # don't re-mark the same recipient twice this pass
     if marked:
         db.log_activity("read_inferred", str(marked) + " mail(s) marked read (recipient wrote back)",
-                        "scheduler", throttle=3600)
-
-
-def _send_accounts():  db.log_activity("read_inferred", str(marked) + " mail(s) marked read (recipient wrote back)",
                         "scheduler", throttle=3600)
 
 
@@ -2275,7 +2272,7 @@ def bounces_tick():
             hard = gmail_client.parse_bounce_notice(n["text"], n["subject"])
             for addr, reason in hard:
                 row = c.execute("SELECT id FROM emails WHERE lower(to_addr)=lower(?) AND status='sent' "
-                                "AND (bounced_at IS NULL OR bounced_at='') ORDER BY id DESC LIMIT 1",
+                                "AND COALESCE(is_test,0)=0 AND (bounced_at IS NULL OR bounced_at='') ORDER BY id DESC LIMIT 1",
                                 (addr,)).fetchone()
                 if not row:
                     continue
@@ -2333,7 +2330,7 @@ def reminders_tick():
                 if sug:
                     mapping[f] = "column:" + sug
         due = [dict(r) for r in c.execute(
-            "SELECT * FROM emails WHERE batch_id=? AND status='sent' AND is_reminder=0 "
+            "SELECT * FROM emails WHERE batch_id=? AND status='sent' AND is_reminder=0 AND COALESCE(is_test,0)=0 "
             "AND (replied_at IS NULL OR replied_at = '') AND reminder_count < ? ORDER BY sent_at",
             (b["id"], b["reminder_max"])).fetchall()]
         for e in due:
@@ -3715,25 +3712,25 @@ def api_reports_summary():
     mj = ("LEFT JOIN batches b ON b.id=e.batch_id LEFT JOIN campaigns cam ON cam.id=b.campaign_id")
     c = db.conn()
     emails = {r["status"]: r["n"] for r in c.execute(
-        "SELECT status, COUNT(*) n FROM emails e " + mj + " WHERE is_reminder=0 AND e.status != 'deleted'" + msql,
+        "SELECT status, COUNT(*) n FROM emails e " + mj + " WHERE is_reminder=0 AND e.status != 'deleted' AND COALESCE(e.is_test,0)=0" + msql,
         margs).fetchall()}
     reminders = c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=1").fetchone()["n"]
-    sent_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj + " WHERE is_reminder=0 AND status='sent'" + msql,
+    sent_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj + " WHERE is_reminder=0 AND COALESCE(e.is_test,0)=0 AND status='sent'" + msql,
                        margs).fetchone()["n"]
     replied_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj +
-                          " WHERE is_reminder=0 AND status='sent' AND replied_at IS NOT NULL AND replied_at != ''" + msql,
+                          " WHERE is_reminder=0 AND COALESCE(e.is_test,0)=0 AND status='sent' AND replied_at IS NOT NULL AND replied_at != ''" + msql,
                           margs).fetchone()["n"]
     bounced_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj +
-                          " WHERE is_reminder=0 AND status='sent' AND bounced_at IS NOT NULL AND bounced_at != ''" + msql,
+                          " WHERE is_reminder=0 AND COALESCE(e.is_test,0)=0 AND status='sent' AND bounced_at IS NOT NULL AND bounced_at != ''" + msql,
                           margs).fetchone()["n"]
     opened_n = c.execute("SELECT COUNT(*) n FROM emails e " + mj +
-                         " WHERE is_reminder=0 AND opened_at IS NOT NULL AND opened_at != ''" + msql,
+                         " WHERE is_reminder=0 AND COALESCE(e.is_test,0)=0 AND opened_at IS NOT NULL AND opened_at != ''" + msql,
                          margs).fetchone()["n"]
     days = []
     for i in range(13, -1, -1):
         d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
         n = c.execute("SELECT COUNT(*) n FROM emails e " + mj +
-                      " WHERE status='sent' AND sent_at >= ? AND sent_at < ?" + msql,
+                      " WHERE COALESCE(e.is_test,0)=0 AND status='sent' AND sent_at >= ? AND sent_at < ?" + msql,
                       margs + [d + " 00:00:00", d + " 23:59:59"]).fetchone()["n"]
         days.append({"date": d[5:], "n": n})
     companies = [dict(r) for r in c.execute(
@@ -3742,14 +3739,14 @@ def api_reports_summary():
         "SUM(CASE WHEN e.replied_at IS NOT NULL AND e.replied_at != '' THEN 1 ELSE 0 END) replied, "
         "SUM(CASE WHEN e.bounced_at IS NOT NULL AND e.bounced_at != '' THEN 1 ELSE 0 END) bounced "
         "FROM emails e JOIN contacts co ON co.id = e.contact_id " + mj +
-        " WHERE e.is_reminder=0 AND e.status != 'deleted'" + msql +
+        " WHERE e.is_reminder=0 AND e.status != 'deleted' AND COALESCE(e.is_test,0)=0" + msql +
         " GROUP BY co.company ORDER BY total DESC LIMIT 12", margs).fetchall()]
     members = [dict(r) for r in c.execute(
         "SELECT " + MEMBER_EXPR + " AS member, COUNT(*) total, "
         "SUM(CASE WHEN e.status='sent' THEN 1 ELSE 0 END) sent, "
         "SUM(CASE WHEN e.replied_at IS NOT NULL AND e.replied_at != '' THEN 1 ELSE 0 END) replied, "
         "SUM(CASE WHEN e.bounced_at IS NOT NULL AND e.bounced_at != '' THEN 1 ELSE 0 END) bounced "
-        "FROM emails e " + mj + " WHERE e.is_reminder=0 AND e.status != 'deleted' "
+        "FROM emails e " + mj + " WHERE e.is_reminder=0 AND e.status != 'deleted' AND COALESCE(e.is_test,0)=0 "
         "GROUP BY member ORDER BY sent DESC, total DESC").fetchall()]
     c.close()
     reply_rate = round(100.0 * replied_n / sent_n) if sent_n else 0
@@ -3827,6 +3824,19 @@ def api_email_mark_replied(eid):
     on = bool(d.get("replied"))
     try:
         services.email_mark_replied(eid, on, request.user)
+    except services.ServiceError as e:
+        return api_err(e.message, e.code)
+    _cloud_push_email(eid)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/emails/<int:eid>/mark-read", methods=["POST"])
+@login_required
+def api_email_mark_read(eid):
+    d = request.get_json(force=True)
+    on = bool(d.get("read"))
+    try:
+        services.email_mark_opened(eid, on, request.user)
     except services.ServiceError as e:
         return api_err(e.message, e.code)
     _cloud_push_email(eid)

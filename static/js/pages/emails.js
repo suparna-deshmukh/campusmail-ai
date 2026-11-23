@@ -24,7 +24,8 @@ const ACTIONS = {
   ready: ["create-draft", "schedule", "stop", "remove"],
   drafted: ["schedule", "stop", "remove"],
   scheduled: ["reschedule", "stop"],
-  sent: ["reply", "mark-replied"],
+  sent: ["reply", "mark-replied", "mark-read"],
+  opened: ["reply", "mark-read", "mark-not-read"],
   replied: ["reply", "mark-not-replied"],
   bounced: ["remove"],
   failed: ["remove"],
@@ -34,11 +35,13 @@ const ACTION_LABEL = {
   "create-draft": "Create draft", schedule: "Schedule", reschedule: "Reschedule",
   "send-now": "Send now", stop: "Stop", remove: "Remove", reply: "Reply",
   "mark-replied": "Mark as replied", "mark-not-replied": "Mark as not replied",
+  "mark-read": "Mark as read", "mark-not-read": "Mark as not read",
 };
 const ACTION_ICON = {
   "create-draft": "file-pen", schedule: "clock", reschedule: "clock", "send-now": "send",
   stop: "pause-circle", remove: "trash-2", reply: "reply",
   "mark-replied": "check-circle-2", "mark-not-replied": "undo-2",
+  "mark-read": "eye", "mark-not-read": "undo-2",
 };
 
 function safeMode() { return !window.cm || !window.cm.state ? true : window.cm.state.safe_mode; }
@@ -647,6 +650,37 @@ export function initEmailsTab(host, ctx) {
 
   tab.markReplied = doMarkReplied;
 
+  function doMarkRead(tab, r, on) {
+    const prev = { opened_at: r.opened_at || null, open_count: r.open_count || 0 };
+    r.opened_at = on ? new Date().toISOString() : null;
+    if (on) r.open_count = (r.open_count || 0) + 1;
+    renderBody();
+    undoable(on ? MSG.markedRead() : MSG.markedNotRead(), async () => {
+      await api("/api/emails/" + r.id + "/mark-read", { body: { read: on } });
+      ctx.onChanged();
+    }, () => {
+      r.opened_at = prev.opened_at;
+      r.open_count = prev.open_count;
+      renderBody();
+    });
+  }
+
+  tab.markRead = doMarkRead;
+
+  // single dispatcher for row-level actions (primary button + kebab menu)
+  function doAction(tab, action, rows) {
+    if (action === "create-draft") doDrafts(tab, rows);
+    else if (action === "schedule" || action === "reschedule") doSchedule(tab, rows);
+    else if (action === "send-now") doSendNow(tab, rows);
+    else if (action === "stop") doStop(tab, rows);
+    else if (action === "remove") doRemove(tab, rows);
+    else if (action === "reply") { rows[0] && openEmailDrawer(rows[0], tab.ctx); }
+    else if (action === "mark-replied") doMarkReplied(tab, rows[0], true);
+    else if (action === "mark-not-replied") doMarkReplied(tab, rows[0], false);
+    else if (action === "mark-read") doMarkRead(tab, rows[0], true);
+    else if (action === "mark-not-read") doMarkRead(tab, rows[0], false);
+  }
+
   function afterChange() {
     ctx.onChanged();
     load();
@@ -781,14 +815,17 @@ export async function openEmailDrawer(seedRow, ctx) {
       else if (a === "remove") { tabActions.remove([r]); d.close(); }
       else if (a === "mark-replied") { tabActions.markReplied(r, true); d.close(); }
       else if (a === "mark-not-replied") { tabActions.markReplied(r, false); d.close(); }
+      else if (a === "mark-read") { tabActions.markRead(r, true); d.close(); }
+      else if (a === "mark-not-read") { tabActions.markRead(r, false); d.close(); }
     };
     const s_row = () => ({ ...full, company: seedRow.company, hr_name: seedRow.hr_name });
     const map = {
       ready: [["create-draft", "Create draft", "btn-secondary"], ["schedule", "Schedule", "btn-primary"]],
       drafted: [["schedule", "Schedule", "btn-primary"], ["stop", "Stop", "btn-ghost"]],
       scheduled: [["reschedule", "Reschedule", "btn-primary"], ["stop", "Stop", "btn-ghost"]],
-      sent: [["reply", "Reply", "btn-primary"], ["mark-replied", "Mark as replied", "btn-ghost"]],
-      replied: [["reply", "Reply", "btn-primary"], ["mark-not-replied", "Mark as not replied", "btn-ghost"]],
+      sent: [["reply", "Reply", "btn-primary"], ["mark-replied", "Mark as replied", "btn-ghost"], ["mark-read", "Mark as read", "btn-ghost"]],
+      opened: [["reply", "Reply", "btn-primary"], ["mark-read", "Mark as read", "btn-ghost"], ["mark-not-read", "Mark as not read", "btn-ghost"]],
+      replied: [["reply", "Reply", "btn-primary"], ["mark-not-replied", "Mark as not replied", "btn-ghost"], ["mark-read", "Mark as read", "btn-ghost"]],
       bounced: [["edit-contact", "Edit contact", "btn-secondary"], ["remove", "Remove", "btn-danger-ghost"]],
       failed: [["remove", "Remove", "btn-danger-ghost"]],
       stopped: [["remove", "Remove", "btn-danger-ghost"]],
@@ -849,7 +886,7 @@ export async function openEmailDrawer(seedRow, ctx) {
   if (headEl && headBtn) headEl.insertBefore(kebab, headBtn);
 
   const noop = () => {};
-  const tabActions = ctx.tab || { drafts: noop, schedule: noop, sendNow: noop, stop: noop, remove: noop, markReplied: noop };
+  const tabActions = ctx.tab || { drafts: noop, schedule: noop, sendNow: noop, stop: noop, remove: noop, markReplied: noop, markRead: noop };
   renderFoot();
   return d;
 }

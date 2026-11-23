@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 import db
 import gmail_client
-from conftest import get
+from conftest import get, post
 
 
 class _MsgMeta:
@@ -17,11 +17,12 @@ class _MsgMeta:
 
 
 class _FakeSvc:
-    """Minimal stand-in: list() returns recent msgs per label; get() returns
-    that message's References header. The reply is found by scanning headers,
-    exactly like the fixed check_replies."""
-    def __init__(self, meta_by_label):
-        self.meta_by_label = meta_by_label
+    """Minimal stand-in: list() returns the msg whose From address matches the
+    query's from: filter (like real Gmail); get() returns that message's
+    headers. The reply is found by scanning headers, exactly like the fixed
+    check_replies."""
+    def __init__(self, mid, frm, label="INBOX"):
+        self.meta_by_label = {label: [(mid, frm, "<" + mid + ">")], "SPAM": []}
 
     def users(self):
         return self
@@ -39,15 +40,18 @@ class _FakeSvc:
         class M:
             def list(self, **kw):
                 label = str(kw.get("labelIds") or "").upper()
-                msgs = outer.meta_by_label.get(label, [])
+                q = (kw.get("q") or "").lower()
+                frm = q.split("from:", 1)[1].strip() if "from:" in q else ""
+                msgs = [m for m in outer.meta_by_label.get(label, []) if not frm or frm in m[1]]
                 return _R({"messages": [{"id": m[0]} for m in msgs]})
 
             def get(self, **kw):
                 mid = kw["id"]
                 for label, msgs in outer.meta_by_label.items():
-                    for (m_id, refs) in msgs:
+                    for (m_id, frm, refs) in msgs:
                         if m_id == mid:
                             return _R({"payload": {"headers": [
+                                {"name": "From", "value": frm},
                                 {"name": "References", "value": refs},
                                 {"name": "In-Reply-To", "value": refs},
                             ]}})
@@ -58,12 +62,7 @@ class _FakeSvc:
 
 def _svc_with_reply(mid):
     # the reply sits in the inbox; its References header carries our Message-Id
-    return _FakeSvc({"INBOX": [("gmsg1", "<" + mid + ">")], "SPAM": []})
-
-
-    # the reply sits in the inbox, its References header carries our Message-Id
-    meta = [_MsgMeta("gmsg1", "<" + mid + ">")]
-    return _FakeSvc({"INBOX": meta, "SPAM": []})
+    return _FakeSvc(mid, "rec1@example.com")
 
 
 def _add_sent(tag, n=1, offset_hours=48):
@@ -86,7 +85,7 @@ def _add_sent(tag, n=1, offset_hours=48):
     return ids
 
 
-def test_check_replies_finds_reply_by_header_scan(monkeypatch):
+def test_check_replies_finds_reply_by_header_scan(tenant, monkeypatch):
     """The real bug: a reply exists (References = our Message-Id) but the old
     Gmail query could never match it. The client-side scan must find it."""
     eid = _add_sent("found")[0]
@@ -104,7 +103,7 @@ def test_check_replies_finds_reply_by_header_scan(monkeypatch):
     assert str(eid) in found, "reply must be detected by scanning headers"
 
 
-def test_check_replies_no_reply(monkeypatch):
+def test_check_replies_no_reply(tenant, monkeypatch):
     eid = _add_sent("none")[0]
     mid = "nomatch@mail.gmail.com"
     c = db.conn()
@@ -113,7 +112,7 @@ def test_check_replies_no_reply(monkeypatch):
     c.close()
 
     monkeypatch.setattr(gmail_client, "get_service",
-                        lambda acct: _FakeSvc({"INBOX": [_MsgMeta("g", "<other@x>")], "SPAM": []}))
+                        lambda acct: _FakeSvc("g", "rec1@example.com"))
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
     found = gmail_client.check_replies(1, [(eid, mid, "rec1@example.com")])
@@ -276,3 +275,71 @@ def test_reads_tick_bounced_never_read(client, tenant, mock_gmail, monkeypatch):
     row = c.execute("SELECT opened_at FROM emails WHERE id=?", (eid,)).fetchone()
     c.close()
     assert not row["opened_at"], "bounced mail must never be marked read"
+
+
+# ---------------- trackable self-test mails + manual mark-read ----------------
+
+def test_test_email_is_trackable_with_pixel(client, tenant, mock_gmail):
+    """'Send me a test' must exercise the same read-receipt path as a real
+    send: a trackable emails row (is_test=1) with the open pixel in the body."""
+    db.set_setting("public_base", "https://app.example.com")
+    db.set_setting("track_opens", "1")
+    r = post(client, "/api/emails/test", {"template_id": 1, "mapping": {}, "sheet_id": 1,
+                                          "account_id": tenant["account"]})
+    assert r.status_code == 200, r.data[:200]
+    d = r.json
+    assert d["ok"] and d["mode"] == "sent", d
+    assert "email_id" in d
+    c = db.conn()
+    row = c.execute("SELECT * FROM emails WHERE id=?", (d["email_id"],)).fetchone()
+    c.close()
+    assert row["is_test"] == 1
+    assert row["status"] == "sent" and row["sent_at"]
+    assert row["to_addr"] == "admin@test.dev"
+    body_sent = mock_gmail.sends[-1]["args"][3]
+    assert "/t/px/" in body_sent, "test mail body must carry the open-tracking pixel"
+
+
+def test_test_email_does_not_pollute_analytics(client, tenant, mock_gmail):
+    db.set_setting("public_base", "https://app.example.com")
+    post(client, "/api/emails/test", {"template_id": 1, "mapping": {}, "sheet_id": 1,
+                                      "account_id": tenant["account"]})
+    d = get(client, "/api/state").json
+    assert d["ok"], d
+    # the state reply block must not count the test mail as sent/opened
+    assert d["reply"]["sent"] == 0
+    assert d["reply"]["opened"] == 0
+
+
+def test_mark_read_endpoint(client, tenant):
+    eid = _add_sent("mr")[0]
+    r = post(client, "/api/emails/%d/mark-read" % eid, {"read": True})
+    assert r.status_code == 200, r.data[:200]
+    c = db.conn()
+    row = c.execute("SELECT opened_at, open_count FROM emails WHERE id=?", (eid,)).fetchone()
+    c.close()
+    assert row["opened_at"] and row["open_count"] == 1
+    # un-mark clears it
+    post(client, "/api/emails/%d/mark-read" % eid, {"read": False})
+    c = db.conn()
+    row = c.execute("SELECT opened_at, open_count FROM emails WHERE id=?", (eid,)).fetchone()
+    c.close()
+    assert not row["opened_at"] and row["open_count"] == 0
+
+
+def test_mark_replied_toggle(client, tenant):
+    """The mark-replied endpoint used to crash (3 args to a 2-arg service);
+    toggling on and off must both work."""
+    eid = _add_sent("mr2")[0]
+    r = post(client, "/api/emails/%d/mark-replied" % eid, {"replied": True})
+    assert r.status_code == 200, r.data[:200]
+    c = db.conn()
+    row = c.execute("SELECT replied_at FROM emails WHERE id=?", (eid,)).fetchone()
+    c.close()
+    assert row["replied_at"]
+    r = post(client, "/api/emails/%d/mark-replied" % eid, {"replied": False})
+    assert r.status_code == 200, r.data[:200]
+    c = db.conn()
+    row = c.execute("SELECT replied_at FROM emails WHERE id=?", (eid,)).fetchone()
+    c.close()
+    assert not row["replied_at"]
