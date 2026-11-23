@@ -405,3 +405,11 @@ def test_sync_ticks_never_run_concurrently(client, tenant, monkeypatch):
     t1.start(); t2.start(); t1.join(5); t2.join(5)
     assert ran["max_active"] == 1, "a tick must skip when one is running"
     assert not any(r is None for r in results)
+
+
+def test_inline_local_images_handles_none_body(tenant):
+    """Legacy imported mails have body_html=NULL; /api/emails/view must not
+    500 when rendering them (re.sub on None used to raise TypeError)."""
+    assert gmail_client.inline_local_images(None) is None
+    assert gmail_client.inline_local_images("") == ""
+    assert gmail_client.inline_local_images("<p>x</p>") == "<p>x</p>"

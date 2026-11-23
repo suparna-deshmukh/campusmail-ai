@@ -158,6 +158,8 @@ def inline_local_images(body_html):
     """Replace src="local:file.png" with base64 data URIs.
     Resolves the image through filestore (local disk or Supabase Storage),
     then falls back to the legacy template_images/ directory."""
+    if body_html is None:
+        return body_html
     from pathlib import Path
     import filestore
     img_dir = Path(__file__).resolve().parent / "template_images"
