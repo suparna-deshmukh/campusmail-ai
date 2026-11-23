@@ -4074,12 +4074,14 @@ def api_home():
     # until the API grows period params - see CHANGELOG-UI.md)
     c = db.conn()
     tiles = {
-        "sent": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent'").fetchone()["n"],
+        "sent": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND COALESCE(is_test,0)=0 AND status='sent'").fetchone()["n"],
         "replies": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
-                             "AND replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"],
+                             "AND COALESCE(is_test,0)=0 AND replied_at IS NOT NULL AND replied_at != ''").fetchone()["n"],
         "scheduled": c.execute("SELECT COUNT(*) n FROM emails WHERE status='scheduled'").fetchone()["n"],
         "bounced": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND status='sent' "
-                             "AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"],
+                             "AND COALESCE(is_test,0)=0 AND bounced_at IS NOT NULL AND bounced_at != ''").fetchone()["n"],
+        "read": c.execute("SELECT COUNT(*) n FROM emails WHERE is_reminder=0 AND COALESCE(is_test,0)=0 "
+                          "AND opened_at IS NOT NULL AND opened_at != ''").fetchone()["n"],
     }
     tiles["delivered"] = max(0, tiles["sent"] - tiles["bounced"])
     c.close()

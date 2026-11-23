@@ -343,3 +343,24 @@ def test_mark_replied_toggle(client, tenant):
     row = c.execute("SELECT replied_at FROM emails WHERE id=?", (eid,)).fetchone()
     c.close()
     assert not row["replied_at"]
+
+
+# ---------------- sync version-skew guard must not crash ----------------
+
+def test_apply_change_remote_payload_missing_column(tenant):
+    """Root-cause regression: _apply_change fetched the local row with only the
+    version columns, so the version-skew guard crashed with IndexError when the
+    remote payload omitted a non-version column (e.g. an older instance pushing
+    a row that has is_test locally). Any such upsert must apply cleanly."""
+    import sync_relay
+    eid = _add_sent("skew")[0]
+    c = db.conn()
+    # newer remote update that omits is_test (older instance payload shape)
+    payload = {"data": {"status": "sent", "updated_at": "2026-11-23 13:00:00",
+                        "updated_at_ms": int(__import__("time").time() * 1000) + 999999}}
+    ok = sync_relay._apply_change(c, "emails", eid, "upsert", payload)
+    c.commit()
+    row = c.execute("SELECT * FROM emails WHERE id=?", (eid,)).fetchone()
+    c.close()
+    assert ok is True
+    assert row["is_test"] == 0, "local is_test must survive a payload that omits it"

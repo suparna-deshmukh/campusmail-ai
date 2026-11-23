@@ -277,7 +277,9 @@ def _apply_change(c, table, rid, op, payload):
     if _local_tombstone_ms(c, table, rid) >= ms:
         return False  # local tombstone is newer - never resurrect
     cols = SYNC_COLUMNS[table]
-    local = c.execute("SELECT %s FROM %s WHERE id=?" % (vcols, table), (rid,)).fetchone()
+    # fetch ALL synced columns (not just version cols): the version-skew guard
+    # below reads local[col] for every column the remote payload omits.
+    local = c.execute("SELECT %s FROM %s WHERE id=?" % (",".join(cols), table), (rid,)).fetchone()
     local_id = rid
     if table == "users":
         # User identity is the email, not the id: the same person exists with

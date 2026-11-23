@@ -238,7 +238,7 @@ async function load() {
         el("p", { class: "home-greet-sub", id: "home-greet-sub" })),
       el("div", { class: "push", style: "flex:none" }, el("a", { class: "btn btn-primary", href: "/send" }, "Send emails"))),
     el("div", { id: "home-onboard" }),
-    el("div", { class: "stat-row five mb-6 hide", id: "home-tiles", style: "margin-bottom:24px" }),
+    el("div", { class: "stat-row six mb-6 hide", id: "home-tiles", style: "margin-bottom:24px" }),
     el("div", { class: "grid-12 mb-6", id: "home-cards", style: "margin-bottom:32px" }),
     el("div", { id: "home-campaigns" }),
   );
@@ -272,6 +272,7 @@ async function load() {
     const defs = [
       ["Emails sent", tiles.sent, "30 days", "/replies", true],
       ["Bounced", tiles.bounced, tiles.bounced ? "need fixing" : "none", "/replies?tab=bounced", true],
+      ["Read", tiles.read != null ? tiles.read : 0, (tiles.delivered ? Math.round(100 * (tiles.read != null ? tiles.read : 0) / tiles.delivered) : 0) + "% of delivered", "/reports", true],
       ["Replies", tiles.replies, "waiting: " + replyN, "/replies", true],
       ["Reply rate", null, "of " + fmtInt(tiles.delivered != null ? tiles.delivered : tiles.sent) + " delivered", null, false],
       ["Scheduled", tiles.scheduled, soon[0] ? "next " + upcomingWhen(soon[0].when).toLowerCase() : "none yet", "/campaigns", true],

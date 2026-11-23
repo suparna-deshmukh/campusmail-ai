@@ -192,7 +192,9 @@ body.offline .reconnect-chip { display: inline-block; }
   gap: var(--sp-4);
 }
 .stat-row.five { grid-template-columns: repeat(5, 1fr); }
+.stat-row.six { grid-template-columns: repeat(6, 1fr); }
 @media (max-width: 1023px) { .stat-row.five { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 1023px) { .stat-row.six { grid-template-columns: repeat(2, 1fr); } }
 
 /* Bottom progress line (page refresh) */
 .topbar-progress {
